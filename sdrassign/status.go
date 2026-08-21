@@ -1,6 +1,9 @@
 package sdrassign
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // BandStatus is the fully-derived display status for one band: an
 // Assignment combined with the live decoder-running and message-freshness
@@ -23,6 +26,7 @@ type BandStatus struct {
 	Ambiguous           bool
 	Conflict            bool
 	ExternallySatisfied bool
+	IdentityUnstable    bool
 	DecoderRunning      bool
 	Receiving           bool
 	Degraded            bool
@@ -47,6 +51,7 @@ func BuildBandStatus(a Assignment, liveDecoderRunning, liveReceiving bool) BandS
 		Ambiguous:           a.Ambiguous,
 		Conflict:            a.Conflict,
 		ExternallySatisfied: a.ExternallySatisfied,
+		IdentityUnstable:    a.IdentityUnstable,
 		DecoderRunning:      healthySignal && liveDecoderRunning,
 		Receiving:           healthySignal && liveDecoderRunning && liveReceiving,
 		Degraded:            a.Enabled && !a.ExternallySatisfied && (!a.Assigned || a.Conflict || !liveDecoderRunning),
@@ -59,6 +64,31 @@ func BuildBandStatus(a Assignment, liveDecoderRunning, liveReceiving bool) BandS
 	return s
 }
 
+// IsReceiving reports whether a band should currently be considered to be
+// receiving traffic, given the time its most recent message arrived, the
+// time its currently-bound receiver was (re)assigned, the current time, and
+// the freshness window.
+//
+// A message that arrived before the current receiver was assigned - e.g.
+// buffered activity from a predecessor device that has since been replaced,
+// or from before an ambiguous state was resolved by tagging - does not
+// count. Without this, a freshly (re)assigned receiver could read as
+// "receiving" for up to one freshness window on the strength of a
+// receiver it doesn't share any hardware with.
+//
+// All three times should come from the same monotonic clock (the caller's
+// stratuxClock, not wall time) so a real-time clock adjustment can't distort
+// the freshness comparison.
+func IsReceiving(lastMessageTime, assignedAt, now time.Time, freshness time.Duration) bool {
+	if lastMessageTime.IsZero() {
+		return false
+	}
+	if lastMessageTime.Before(assignedAt) {
+		return false
+	}
+	return now.Sub(lastMessageTime) < freshness
+}
+
 // DiagnosticReason builds the human-readable status line shown in the web
 // UI for one band. A disabled, externally-satisfied, unassigned, ambiguous
 // or conflicted band already has a complete explanation from Assign() at
@@ -69,11 +99,19 @@ func DiagnosticReason(a Assignment, decoderRunning, receiving bool) string {
 	if !a.Enabled || a.ExternallySatisfied || !a.Assigned || a.Ambiguous || a.Conflict {
 		return a.Reason
 	}
+	// IdentityUnstable bands are otherwise healthy - the live decoder/
+	// receiving state below is still meaningful and shown - but the
+	// device-identity caveat is important enough to always be visible
+	// alongside it, not just at assignment time.
+	var suffix string
+	if a.IdentityUnstable {
+		suffix = " Which SDR fills this role is not guaranteed to be stable across reboots; tag your SDRs with debian/sdr-tool.sh to fix that."
+	}
 	if !decoderRunning {
-		return fmt.Sprintf("%s SDR assigned (index %d) but its decoder is not currently running.", a.Band, a.Device.Index)
+		return fmt.Sprintf("%s SDR assigned (index %d) but its decoder is not currently running.%s", a.Band, a.Device.Index, suffix)
 	}
 	if receiving {
-		return fmt.Sprintf("%s receiving traffic.", a.Band)
+		return fmt.Sprintf("%s receiving traffic.%s", a.Band, suffix)
 	}
-	return fmt.Sprintf("%s SDR active; no messages received in the last minute. This is expected when there is no nearby RF traffic.", a.Band)
+	return fmt.Sprintf("%s SDR active; no messages received in the last minute. This is expected when there is no nearby RF traffic.%s", a.Band, suffix)
 }

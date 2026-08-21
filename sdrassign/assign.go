@@ -145,6 +145,18 @@ type Assignment struct {
 	// used; the rest are ignored rather than reassigned elsewhere.
 	Conflict bool
 
+	// IdentityUnstable is true when this band's role was unambiguous - it
+	// was the only enabled band still needing a receiver - but two or more
+	// indistinguishable untagged devices were available to fill it. The
+	// role assignment is deterministic and safe, but *which* of those
+	// devices ends up bound (the lowest USB enumeration index) is not
+	// proven stable across reboots or replugs, unlike a tagged assignment.
+	// This never accompanies Ambiguous: Ambiguous means the role itself
+	// could not be determined; IdentityUnstable means the role was clear
+	// but the specific device picked to fill it might not be, across
+	// reboots.
+	IdentityUnstable bool
+
 	// ExternallySatisfied is true when this band does not need an SDR
 	// because it is already being served by a different, non-SDR
 	// receiver. Assigned stays false in this case (no RTL-SDR is bound),
@@ -291,7 +303,7 @@ func Assign(devices []Device, uatEnabled, esEnabled, ognEnabled, aisEnabled bool
 			a.Device = d
 			a.Source = SourceTagged
 			firstTaggedIndex[band] = d.Index
-			a.Reason = fmt.Sprintf("%s assigned by tag (%s) to SDR index %d.", band, d.Serial, d.Index)
+			a.Reason = fmt.Sprintf("%s assigned by tag (%q) to SDR index %d.", band, d.Serial, d.Index)
 		} else {
 			a.Conflict = true
 			a.Reason = fmt.Sprintf(
@@ -344,8 +356,19 @@ func Assign(devices []Device, uatEnabled, esEnabled, ognEnabled, aisEnabled bool
 		a.Detected = true
 		a.Source = SourceAnonymous
 		a.Device = d
-		a.Reason = fmt.Sprintf("%s assigned to the only untagged SDR present (index %d). Tag it with debian/sdr-tool.sh to make this assignment stable.", b, d.Index)
-		if len(anonymous) > 1 {
+		if len(anonymous) == 1 {
+			a.Reason = fmt.Sprintf("%s assigned to the only untagged SDR present (index %d). Tag it with debian/sdr-tool.sh to make this assignment stable.", b, d.Index)
+		} else {
+			// The role is unambiguous (only this band needs a receiver),
+			// but which of the extra untagged devices fills it is chosen
+			// by enumeration index, which is not proven stable across
+			// reboots - say so plainly rather than implying the same
+			// stability a single-candidate pick would have.
+			a.IdentityUnstable = true
+			a.Reason = fmt.Sprintf(
+				"%s assigned to an untagged SDR (index %d); %d other untagged SDR(s) are also connected. "+
+					"Which one is used is not guaranteed to be stable across reboots. Tag your SDRs with debian/sdr-tool.sh to make this assignment stable.",
+				b, d.Index, len(anonymous)-1)
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
 				"%d extra untagged SDR(s) are connected but not needed; they were left unassigned.", len(anonymous)-1))
 		}

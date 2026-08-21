@@ -1,6 +1,7 @@
 package sdrassign
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -36,7 +37,8 @@ func assertEqualAssignment(t *testing.T, got, want Assignment, label string) {
 		got.Source != want.Source ||
 		got.Ambiguous != want.Ambiguous ||
 		got.Conflict != want.Conflict ||
-		got.ExternallySatisfied != want.ExternallySatisfied {
+		got.ExternallySatisfied != want.ExternallySatisfied ||
+		got.IdentityUnstable != want.IdentityUnstable {
 		t.Errorf("%s: got %+v, want %+v", label, got, want)
 	}
 }
@@ -100,6 +102,18 @@ func TestAssign_TaggedDevicesGoToDeclaredBand(t *testing.T) {
 	}
 	if r.UAT.Ambiguous || r.ES.Ambiguous || r.UAT.Conflict || r.ES.Conflict {
 		t.Errorf("tagged assignment should not be ambiguous or conflicted: UAT=%+v ES=%+v", r.UAT, r.ES)
+	}
+}
+
+// TestAssign_TaggedReasonQuotesSerial guards against unescaped device
+// serials reaching diagnostic/log text: the EEPROM serial is user/hardware
+// controlled and should always be inserted with Go-syntax quoting (%q),
+// which escapes control characters, rather than raw %s.
+func TestAssign_TaggedReasonQuotesSerial(t *testing.T) {
+	devices := []Device{dev(0, "stratux:978:0")}
+	r := Assign(devices, true, false, false, false, false)
+	if !strings.Contains(r.UAT.Reason, `"stratux:978:0"`) {
+		t.Errorf("expected the serial to be quoted in the reason text, got %q", r.UAT.Reason)
 	}
 }
 
@@ -265,6 +279,28 @@ func TestAssign_ExtraAnonymousDevicesNotAssignedArbitrarily(t *testing.T) {
 	}
 	if len(r.Warnings) == 0 {
 		t.Errorf("expected a warning noting the unused extra spares")
+	}
+	// The role (which band gets a receiver) is unambiguous - only UAT is
+	// enabled - but which of the three untagged devices fills it is picked
+	// by enumeration index, which is not proven stable across reboots.
+	// That must be surfaced, not silently treated as equivalent to the
+	// single-candidate case.
+	if !r.UAT.IdentityUnstable {
+		t.Fatalf("expected IdentityUnstable when more than one untagged candidate exists: %+v", r.UAT)
+	}
+	if r.UAT.Ambiguous {
+		t.Fatalf("IdentityUnstable is not the same as Ambiguous - the role itself is not in doubt: %+v", r.UAT)
+	}
+	if !strings.Contains(r.UAT.Reason, "not guaranteed to be stable") {
+		t.Errorf("expected the reason to call out the stability caveat, got %q", r.UAT.Reason)
+	}
+}
+
+func TestAssign_SingleAnonymousCandidateIsNotIdentityUnstable(t *testing.T) {
+	devices := []Device{dev(0, "")}
+	r := Assign(devices, true, false, false, false, false)
+	if r.UAT.IdentityUnstable {
+		t.Fatalf("a single anonymous candidate has nothing to be unstable relative to: %+v", r.UAT)
 	}
 }
 

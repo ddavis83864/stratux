@@ -1,6 +1,9 @@
 package sdrassign
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // disabledAssignment / healthyAssignment / etc. build minimal Assignment
 // values for exercising BuildBandStatus/DiagnosticReason directly, without
@@ -153,5 +156,70 @@ func TestDiagnosticReason_MatchesStructuredState(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// --- IsReceiving -------------------------------------------------------
+
+// TestIsReceiving_StaleMessageDoesNotSurviveReassignment is the regression
+// test for the scenario where a band is reassigned to a different receiver
+// (or an ambiguous state is resolved) and a message buffered from the prior
+// receiver, still within the freshness window, must not make the new
+// assignment appear to be receiving.
+func TestIsReceiving_StaleMessageDoesNotSurviveReassignment(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	lastMessage := now.Add(-5 * time.Second) // fresh by freshness window alone
+	assignedAt := now.Add(-1 * time.Second)  // reassigned after that message arrived
+
+	if IsReceiving(lastMessage, assignedAt, now, time.Minute) {
+		t.Fatalf("a message received before the current receiver was assigned must not count as receiving")
+	}
+}
+
+func TestIsReceiving_NoMessageEver(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	if IsReceiving(time.Time{}, time.Time{}, now, time.Minute) {
+		t.Fatalf("zero-value last-message time must never read as receiving")
+	}
+}
+
+func TestIsReceiving_FreshAfterAssignment(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	assignedAt := now.Add(-30 * time.Second)
+	lastMessage := now.Add(-5 * time.Second)
+	if !IsReceiving(lastMessage, assignedAt, now, time.Minute) {
+		t.Fatalf("a recent message after assignment must count as receiving")
+	}
+}
+
+func TestIsReceiving_ExpiredFreshnessWindow(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	assignedAt := now.Add(-2 * time.Minute)
+	lastMessage := now.Add(-90 * time.Second) // after assignment, but outside a 60s window
+	if IsReceiving(lastMessage, assignedAt, now, time.Minute) {
+		t.Fatalf("a message outside the freshness window must not count as receiving")
+	}
+}
+
+func TestIsReceiving_ExactlyAtFreshnessBoundary(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	assignedAt := now.Add(-2 * time.Minute)
+	lastMessage := now.Add(-time.Minute) // exactly at the boundary: not strictly before "now"
+	if IsReceiving(lastMessage, assignedAt, now, time.Minute) {
+		t.Fatalf("a message exactly at the freshness boundary must be treated as expired (now.Sub(t) < freshness is false when equal)")
+	}
+	// One nanosecond inside the window must count.
+	if !IsReceiving(lastMessage.Add(time.Nanosecond), assignedAt, now, time.Minute) {
+		t.Fatalf("a message one nanosecond inside the freshness window must count as receiving")
+	}
+}
+
+func TestIsReceiving_AssignedExactlyAtMessageTime(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	t0 := now.Add(-10 * time.Second)
+	// A message that arrived at the exact instant of (re)assignment is not
+	// "before" assignedAt, so it is not stale.
+	if !IsReceiving(t0, t0, now, time.Minute) {
+		t.Fatalf("a message at the exact assignment instant must not be treated as stale")
 	}
 }
