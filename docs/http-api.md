@@ -13,6 +13,11 @@ Returns the current Stratux system status as JSON, including software version, c
 
 Example fields: `Version`, `GPS_connected`, `GPS_satellites_locked`, `UAT_messages_last_minute`, `ES_messages_last_minute`, `CPUTemp`, `Errors`
 
+Primary 978/1090 receiver status is exposed as `UAT_*` / `ES_*` fields (`Enabled`, `Detected`,
+`Assigned`, `DeviceSerial`, `DeviceIndex`, `AssignmentSource`, `Ambiguous`, `Conflict`,
+`DecoderRunning`, `Receiving`, `Degraded`, `DiagnosticReason`) - see
+[hardware/sdr-and-bands.md](hardware/sdr-and-bands.md#verifying-assignment-in-the-status-page).
+
 #### `GET /getSituation`
 Returns the current GPS/AHRS situation: position, altitude, track, speed, vertical speed, and attitude (pitch/roll/slip-skid) if AHRS is connected.
 

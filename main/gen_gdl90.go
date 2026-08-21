@@ -977,6 +977,8 @@ func updateStatus() {
 		globalStatus.GPS_connected = false
 	}
 
+	updateSDRRadioStatus()
+
 	globalStatus.GPS_satellites_locked = mySituation.GPSSatellites
 	globalStatus.GPS_satellites_seen = mySituation.GPSSatellitesSeen
 	globalStatus.GPS_satellites_tracked = mySituation.GPSSatellitesTracked
@@ -1281,6 +1283,36 @@ type status struct {
 	Ping_connected                             bool
 	Pong_connected                             bool
 	UATRadio_connected                         bool
+	// Primary 978 UAT / 1090 ES SDR receiver status below (UAT_Enabled..
+	// ES_DiagnosticReason). These describe the dedicated RTL-SDR bound to
+	// each band by main/sdr.go, distinct from UATRadio_connected above (an
+	// external low-power UAT radio) and from the *_messages_* counters
+	// (which alone cannot distinguish "no local RF traffic" from "receiver
+	// failed"). See docs/hardware/sdr-and-bands.md.
+	UAT_Enabled                                bool
+	UAT_Detected                                bool
+	UAT_Assigned                                bool
+	UAT_DeviceSerial                            string
+	UAT_DeviceIndex                             int
+	UAT_AssignmentSource                        string // "tagged", "anonymous", or "none"
+	UAT_Ambiguous                               bool
+	UAT_Conflict                                bool
+	UAT_DecoderRunning                          bool
+	UAT_Receiving                               bool
+	UAT_Degraded                                bool
+	UAT_DiagnosticReason                        string
+	ES_Enabled                                  bool
+	ES_Detected                                 bool
+	ES_Assigned                                 bool
+	ES_DeviceSerial                             string
+	ES_DeviceIndex                              int
+	ES_AssignmentSource                         string // "tagged", "anonymous", or "none"
+	ES_Ambiguous                                bool
+	ES_Conflict                                 bool
+	ES_DecoderRunning                           bool
+	ES_Receiving                                bool
+	ES_Degraded                                 bool
+	ES_DiagnosticReason                         string
 	GPS_satellites_locked                      uint16
 	GPS_satellites_seen                        uint16
 	GPS_satellites_tracked                     uint16

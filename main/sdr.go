@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"log"
 	"os/exec"
 	"regexp"
@@ -974,4 +975,115 @@ func sdrInit() {
 	go sdrWatcher()
 	go uatReader()
 	go godump978.ProcessDataFromChannel()
+}
+
+// updateSDRRadioStatus refreshes the primary 978 UAT / 1090 ES receiver
+// status fields in globalStatus (see the "status.go" section of the status
+// struct in gen_gdl90.go) from the most recent assignment decision, the
+// live decoder-running signal, and recent message activity. It performs no
+// I/O and does not read UATDev/ESDev, so it is safe to call every second
+// from updateStatus() regardless of what the sdrWatcher goroutine is doing.
+func updateSDRRadioStatus() {
+	sdrAssignmentMu.RLock()
+	uat := sdrAssignment.UAT
+	es := sdrAssignment.ES
+	sdrAssignmentMu.RUnlock()
+
+	uatRunning := uatDecoderRunning.Load()
+	esRunning := esDecoderRunning.Load()
+	// Freshness window matches updateMessageStats(): a message is "recent"
+	// if received within the last minute. Zero recent messages does not by
+	// itself indicate receiver failure - it may simply mean no nearby RF
+	// traffic - so it is surfaced as UAT_Receiving/ES_Receiving rather than
+	// folded into UAT_Degraded/ES_Degraded.
+	uatReceiving := globalStatus.UAT_messages_last_minute > 0
+	esReceiving := globalStatus.ES_messages_last_minute > 0
+
+	u := buildSDRBandStatus(uat, uatRunning, uatReceiving)
+	globalStatus.UAT_Enabled = u.enabled
+	globalStatus.UAT_Detected = u.detected
+	globalStatus.UAT_Assigned = u.assigned
+	globalStatus.UAT_DeviceSerial = u.deviceSerial
+	globalStatus.UAT_DeviceIndex = u.deviceIndex
+	globalStatus.UAT_AssignmentSource = u.assignmentSource
+	globalStatus.UAT_Ambiguous = u.ambiguous
+	globalStatus.UAT_Conflict = u.conflict
+	globalStatus.UAT_DecoderRunning = u.decoderRunning
+	globalStatus.UAT_Receiving = u.receiving
+	globalStatus.UAT_Degraded = u.degraded
+	globalStatus.UAT_DiagnosticReason = u.reason
+
+	e := buildSDRBandStatus(es, esRunning, esReceiving)
+	globalStatus.ES_Enabled = e.enabled
+	globalStatus.ES_Detected = e.detected
+	globalStatus.ES_Assigned = e.assigned
+	globalStatus.ES_DeviceSerial = e.deviceSerial
+	globalStatus.ES_DeviceIndex = e.deviceIndex
+	globalStatus.ES_AssignmentSource = e.assignmentSource
+	globalStatus.ES_Ambiguous = e.ambiguous
+	globalStatus.ES_Conflict = e.conflict
+	globalStatus.ES_DecoderRunning = e.decoderRunning
+	globalStatus.ES_Receiving = e.receiving
+	globalStatus.ES_Degraded = e.degraded
+	globalStatus.ES_DiagnosticReason = e.reason
+}
+
+// sdrBandStatus mirrors the per-band fields added to the status struct in
+// gen_gdl90.go. It exists so buildSDRBandStatus() can be unit tested
+// without depending on globalStatus.
+type sdrBandStatus struct {
+	enabled          bool
+	detected         bool
+	assigned         bool
+	deviceSerial     string
+	deviceIndex      int
+	assignmentSource string
+	ambiguous        bool
+	conflict         bool
+	decoderRunning   bool
+	receiving        bool
+	degraded         bool
+	reason           string
+}
+
+// buildSDRBandStatus derives one band's display status from its assignment
+// decision plus the live decoder-running and message-freshness signals.
+func buildSDRBandStatus(a sdrassign.Assignment, liveDecoderRunning, liveReceiving bool) sdrBandStatus {
+	s := sdrBandStatus{
+		enabled:          a.Enabled,
+		detected:         a.Detected,
+		assigned:         a.Assigned,
+		deviceIndex:      -1,
+		assignmentSource: a.Source.String(),
+		ambiguous:        a.Ambiguous,
+		conflict:         a.Conflict,
+		decoderRunning:   a.Assigned && liveDecoderRunning,
+		receiving:        a.Assigned && liveDecoderRunning && liveReceiving,
+		degraded:         a.Enabled && (!a.Assigned || !liveDecoderRunning),
+		reason:           sdrDiagnosticReason(a, liveDecoderRunning, liveReceiving),
+	}
+	if a.Assigned {
+		s.deviceSerial = a.Device.Serial
+		s.deviceIndex = a.Device.Index
+	}
+	return s
+}
+
+// sdrDiagnosticReason builds the human-readable status line shown in the
+// web UI for one band. A disabled, unassigned, ambiguous or conflicted band
+// already has a complete explanation from sdrassign.Assign() at assignment
+// time; only a cleanly assigned band needs the live decoder/receiving state
+// layered on top, since that can change every second without a
+// reassignment happening.
+func sdrDiagnosticReason(a sdrassign.Assignment, decoderRunning, receiving bool) string {
+	if !a.Enabled || !a.Assigned || a.Ambiguous || a.Conflict {
+		return a.Reason
+	}
+	if !decoderRunning {
+		return fmt.Sprintf("%s SDR assigned (index %d) but its decoder is not currently running.", a.Band, a.Device.Index)
+	}
+	if receiving {
+		return fmt.Sprintf("%s receiving traffic.", a.Band)
+	}
+	return fmt.Sprintf("%s SDR active; no messages received in the last minute. This is expected when there is no nearby RF traffic.", a.Band)
 }
