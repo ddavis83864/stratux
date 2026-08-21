@@ -67,9 +67,21 @@ var AISDev *AIS
 // by updateSDRRadioStatus() to build the 978/1090 status shown in the web
 // UI, so it is guarded by sdrAssignmentMu since the two run on different
 // goroutines.
+//
+// uatAssignedAt / esAssignedAt record when configDevices() last (re)bound a
+// receiver to each band, on the same stratuxClock used to timestamp
+// messages (main/monotonic.go) so a real-time clock adjustment can't distort
+// the comparison. sdrassign.IsReceiving() uses this to make sure a message
+// buffered from a receiver that has since been replaced - e.g. resolving an
+// ambiguous or externally-satisfied state by tagging, or a hot-swap - can't
+// make the newly assigned receiver appear to already be receiving. Both are
+// set in the same critical section as sdrAssignment (see configDevices())
+// so a reader can never observe one updated without the other.
 var (
 	sdrAssignmentMu sync.RWMutex
 	sdrAssignment   sdrassign.Result
+	uatAssignedAt   time.Time
+	esAssignedAt    time.Time
 )
 
 // uatDecoderRunning / esDecoderRunning reflect whether the respective
@@ -202,7 +214,6 @@ func (u *UAT) read() {
 	defer u.wg.Done()
 	log.Println("Entered UAT read() ...")
 	var buffer = make([]uint8, rtl.DefaultBufLength)
-	uatDecoderRunning.Store(true)
 
 	for {
 		select {
@@ -218,6 +229,17 @@ func (u *UAT) read() {
 				}
 				break
 			}
+			// Only claim the read path is up once a sample buffer has
+			// actually been pulled off the device: unlike ES's dump1090
+			// subprocess, there is no separate confirmation step, so
+			// setting this any earlier (e.g. right after the device was
+			// opened) would report DecoderRunning=true before anything is
+			// proven to be flowing. This still only proves the raw-sample
+			// read loop is alive, not that godump978's demodulator
+			// goroutine (started once in sdrInit(), independent of any
+			// particular UATDev instance) is healthy - see
+			// docs/hardware/sdr-and-bands.md for that distinction.
+			uatDecoderRunning.Store(true)
 
 			if nRead > 0 {
 				buf := buffer[:nRead]
@@ -787,18 +809,33 @@ func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool
 	uatRadioConnected := globalStatus.UATRadio_connected
 	result := sdrassign.Assign(devices, uatEnabled, esEnabled, ognEnabled, aisEnabled, uatRadioConnected)
 
+	// createUAT/createES are decided once, up front, so the same booleans
+	// drive both the assignment-time bookkeeping below (in one critical
+	// section, so a concurrent updateSDRRadioStatus() call can never
+	// observe the new sdrAssignment paired with a stale xAssignedAt, or
+	// vice versa) and the actual device creation further down.
+	createUAT := result.UAT.Assigned && UATDev == nil
+	createES := result.ES.Assigned && ESDev == nil
+	now := stratuxClock.Time
+
 	sdrAssignmentMu.Lock()
 	sdrAssignment = result
+	if createUAT {
+		uatAssignedAt = now
+	}
+	if createES {
+		esAssignedAt = now
+	}
 	sdrAssignmentMu.Unlock()
 
 	for _, w := range result.Warnings {
 		log.Printf("SDR assignment: %s\n", w)
 	}
 
-	if result.UAT.Assigned && UATDev == nil {
+	if createUAT {
 		createUATDev(result.UAT.Device.Index, result.UAT.Device.Serial, result.UAT.Source == sdrassign.SourceTagged)
 	}
-	if result.ES.Assigned && ESDev == nil {
+	if createES {
 		createESDev(result.ES.Device.Index, result.ES.Device.Serial, result.ES.Source == sdrassign.SourceTagged)
 	}
 	if result.OGN.Assigned && OGNDev == nil {
@@ -866,6 +903,16 @@ func sdrWatcher() {
 			return
 		}
 
+		// forceReconfig is set when a device was torn down because it
+		// failed to start (shutdownX), as opposed to a settings/device
+		// count change. Without it, if nothing else about the settings or
+		// device count happens to change afterward, the "nothing changed"
+		// check below would skip configDevices() forever: the failed
+		// band's cached sdrAssignment would stay stale-Assigned, and its
+		// status would never be refreshed to reflect that it is actually
+		// unassigned and will not retry on its own.
+		forceReconfig := false
+
 		// true when a ReadSync call fails
 		if shutdownUAT {
 			if UATDev != nil {
@@ -873,6 +920,7 @@ func sdrWatcher() {
 				UATDev = nil
 			}
 			shutdownUAT = false
+			forceReconfig = true
 		}
 		// true when we get stderr output
 		if shutdownES {
@@ -881,6 +929,7 @@ func sdrWatcher() {
 				ESDev = nil
 			}
 			shutdownES = false
+			forceReconfig = true
 		}
 		// true when we get stderr output
 		if shutdownOGN {
@@ -889,6 +938,7 @@ func sdrWatcher() {
 				OGNDev = nil
 			}
 			shutdownOGN = false
+			forceReconfig = true
 		}
 		if shutdownAIS {
 			if AISDev != nil {
@@ -896,6 +946,7 @@ func sdrWatcher() {
 				AISDev = nil
 			}
 			shutdownAIS = false
+			forceReconfig = true
 		}
 
 		// capture current state
@@ -917,12 +968,13 @@ func sdrWatcher() {
 			count = 3
 		}
 
-		if interfaceCount == prevCount && prevESEnabled == esEnabled && prevUATEnabled == uatEnabled && prevOGNEnabled == ognEnabled && prevAISEnabled == aisEnabled &&
+		if !forceReconfig && interfaceCount == prevCount && prevESEnabled == esEnabled && prevUATEnabled == uatEnabled && prevOGNEnabled == ognEnabled && prevAISEnabled == aisEnabled &&
 			prevOGNTXEnabled == ognTXEnabled  && prevdump1090Gain == dump1090Gain {
 			continue
 		}
 
-		// the device count or the global settings have changed, reconfig
+		// the device count or the global settings have changed (or a
+		// device failed to start this tick), reconfig
 		if UATDev != nil {
 			UATDev.shutdown()
 			UATDev = nil
@@ -985,21 +1037,32 @@ func sdrInit() {
 // activity. It performs no I/O and does not read UATDev/ESDev, so it is
 // safe to call every second from updateStatus() regardless of what the
 // sdrWatcher goroutine is doing.
+// receivingFreshness is the window used to decide whether a band is
+// currently "receiving": a message must have arrived within this long of
+// now to count. Matches the 60-second window updateMessageStats() already
+// uses for the UAT/ES_messages_last_minute counters.
+const receivingFreshness = time.Minute
+
 func updateSDRRadioStatus() {
 	sdrAssignmentMu.RLock()
 	uat := sdrAssignment.UAT
 	es := sdrAssignment.ES
+	uatSince := uatAssignedAt
+	esSince := esAssignedAt
 	sdrAssignmentMu.RUnlock()
 
 	uatRunning := uatDecoderRunning.Load()
 	esRunning := esDecoderRunning.Load()
-	// Freshness window matches updateMessageStats(): a message is "recent"
-	// if received within the last minute. Zero recent messages does not by
-	// itself indicate receiver failure - it may simply mean no nearby RF
-	// traffic - so it is surfaced as UAT_Receiving/ES_Receiving rather than
-	// folded into UAT_Degraded/ES_Degraded.
-	uatReceiving := globalStatus.UAT_messages_last_minute > 0
-	esReceiving := globalStatus.ES_messages_last_minute > 0
+	// Zero recent messages does not by itself indicate receiver failure -
+	// it may simply mean no nearby RF traffic - so it is surfaced as
+	// UAT_Receiving/ES_Receiving rather than folded into UAT_Degraded/
+	// ES_Degraded. A message logged before the currently-bound receiver
+	// was (re)assigned does not count, so a freshly (re)assigned receiver
+	// can't appear to be receiving on the strength of a predecessor's
+	// buffered traffic; see sdrassign.IsReceiving().
+	now := stratuxClock.Time
+	uatReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_UAT), uatSince, now, receivingFreshness)
+	esReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_ES), esSince, now, receivingFreshness)
 
 	// The band-status derivation itself (the truth table combining
 	// enabled/detected/assigned/ambiguous/conflict/decoder/receiving into
@@ -1017,6 +1080,7 @@ func updateSDRRadioStatus() {
 	globalStatus.UAT_Ambiguous = u.Ambiguous
 	globalStatus.UAT_Conflict = u.Conflict
 	globalStatus.UAT_ExternallySatisfied = u.ExternallySatisfied
+	globalStatus.UAT_IdentityUnstable = u.IdentityUnstable
 	globalStatus.UAT_DecoderRunning = u.DecoderRunning
 	globalStatus.UAT_Receiving = u.Receiving
 	globalStatus.UAT_Degraded = u.Degraded
@@ -1032,6 +1096,7 @@ func updateSDRRadioStatus() {
 	globalStatus.ES_Ambiguous = e.Ambiguous
 	globalStatus.ES_Conflict = e.Conflict
 	globalStatus.ES_ExternallySatisfied = e.ExternallySatisfied
+	globalStatus.ES_IdentityUnstable = e.IdentityUnstable
 	globalStatus.ES_DecoderRunning = e.DecoderRunning
 	globalStatus.ES_Receiving = e.Receiving
 	globalStatus.ES_Degraded = e.Degraded

@@ -219,6 +219,13 @@ type msg struct {
 var msgLog []msg
 var msgLogMutex sync.Mutex
 
+// lastUATMessageTime / lastESMessageTime record when the most recent
+// message of each class was logged, guarded by msgLogMutex alongside
+// msgLog itself. Used by updateSDRRadioStatus() (via sdrassign.IsReceiving)
+// to determine whether a band is currently receiving without scanning the
+// whole log every second.
+var lastUATMessageTime, lastESMessageTime time.Time
+
 // Time stratuxrun was started.
 var timeStarted time.Time
 
@@ -860,6 +867,24 @@ func msgLogAppend(m msg) {
 	msgLogMutex.Lock()
 	defer msgLogMutex.Unlock()
 	msgLog = append(msgLog, m)
+	switch m.MessageClass {
+	case MSGCLASS_UAT:
+		lastUATMessageTime = m.TimeReceived
+	case MSGCLASS_ES:
+		lastESMessageTime = m.TimeReceived
+	}
+}
+
+// lastMessageTime returns the time the most recent message of the given
+// class (MSGCLASS_UAT or MSGCLASS_ES) was logged, or the zero Time if none
+// has been logged yet.
+func lastMessageTime(class int) time.Time {
+	msgLogMutex.Lock()
+	defer msgLogMutex.Unlock()
+	if class == MSGCLASS_UAT {
+		return lastUATMessageTime
+	}
+	return lastESMessageTime
 }
 
 func updateMessageStats() {
@@ -1298,6 +1323,7 @@ type status struct {
 	UAT_Ambiguous                               bool
 	UAT_Conflict                                bool
 	UAT_ExternallySatisfied                     bool // true when an external (non-SDR) low-power UAT radio already serves this band; see UATRadio_connected
+	UAT_IdentityUnstable                        bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
 	UAT_DecoderRunning                          bool
 	UAT_Receiving                               bool
 	UAT_Degraded                                bool
@@ -1311,6 +1337,7 @@ type status struct {
 	ES_Ambiguous                                bool
 	ES_Conflict                                 bool
 	ES_ExternallySatisfied                      bool // always false today: no external (non-SDR) 1090 ES receiver path exists
+	ES_IdentityUnstable                         bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
 	ES_DecoderRunning                           bool
 	ES_Receiving                                bool
 	ES_Degraded                                 bool
