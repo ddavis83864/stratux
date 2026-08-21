@@ -11,7 +11,6 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"log"
 	"os/exec"
 	"regexp"
@@ -773,11 +772,20 @@ func discoverSDRDevices(count int) []sdrassign.Device {
 // assignment regardless of discovery order. When a stable, unambiguous
 // assignment cannot be derived (two or more enabled bands competing for two
 // or more indistinguishable, untagged dongles), the affected bands are left
-// unassigned rather than guessed at; see sdrAssignment / status.go for how
-// that is surfaced to the user.
+// unassigned rather than guessed at; see updateSDRRadioStatus() and
+// sdrassign.BuildBandStatus() for how that is surfaced to the user.
 func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool) {
 	devices := discoverSDRDevices(count)
-	result := sdrassign.Assign(devices, uatEnabled, esEnabled, ognEnabled, aisEnabled)
+	// UATRadio_connected indicates an external (non-RTL-SDR) low-power UAT
+	// radio is already serving 978. Read once so Assign() and the create
+	// call below agree on the same value. Assign() excludes UAT from
+	// competing for anonymous devices in that case - e.g. so a single spare
+	// dongle intended for 1090 ES isn't misreported as ambiguous just
+	// because UAT still looks "unmet" - but an explicitly tagged
+	// stratux:978 dongle still always wins, since a tag is an explicit user
+	// choice and is never silently overridden.
+	uatRadioConnected := globalStatus.UATRadio_connected
+	result := sdrassign.Assign(devices, uatEnabled, esEnabled, ognEnabled, aisEnabled, uatRadioConnected)
 
 	sdrAssignmentMu.Lock()
 	sdrAssignment = result
@@ -787,13 +795,7 @@ func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool
 		log.Printf("SDR assignment: %s\n", w)
 	}
 
-	// UATRadio_connected indicates an external (non-RTL-SDR) low-power UAT
-	// radio is already serving 978. Matches the pre-existing behavior: an
-	// anonymous RTL-SDR is not bound to 978 on top of it, but an explicitly
-	// tagged stratux:978 dongle still is - a tag is an explicit user choice
-	// and is never silently overridden.
-	if result.UAT.Assigned && UATDev == nil &&
-		(result.UAT.Source == sdrassign.SourceTagged || !globalStatus.UATRadio_connected) {
+	if result.UAT.Assigned && UATDev == nil {
 		createUATDev(result.UAT.Device.Index, result.UAT.Device.Serial, result.UAT.Source == sdrassign.SourceTagged)
 	}
 	if result.ES.Assigned && ESDev == nil {
@@ -978,11 +980,11 @@ func sdrInit() {
 }
 
 // updateSDRRadioStatus refreshes the primary 978 UAT / 1090 ES receiver
-// status fields in globalStatus (see the "status.go" section of the status
-// struct in gen_gdl90.go) from the most recent assignment decision, the
-// live decoder-running signal, and recent message activity. It performs no
-// I/O and does not read UATDev/ESDev, so it is safe to call every second
-// from updateStatus() regardless of what the sdrWatcher goroutine is doing.
+// status fields on the status struct in gen_gdl90.go from the most recent
+// assignment decision, the live decoder-running signal, and recent message
+// activity. It performs no I/O and does not read UATDev/ESDev, so it is
+// safe to call every second from updateStatus() regardless of what the
+// sdrWatcher goroutine is doing.
 func updateSDRRadioStatus() {
 	sdrAssignmentMu.RLock()
 	uat := sdrAssignment.UAT
@@ -999,91 +1001,39 @@ func updateSDRRadioStatus() {
 	uatReceiving := globalStatus.UAT_messages_last_minute > 0
 	esReceiving := globalStatus.ES_messages_last_minute > 0
 
-	u := buildSDRBandStatus(uat, uatRunning, uatReceiving)
-	globalStatus.UAT_Enabled = u.enabled
-	globalStatus.UAT_Detected = u.detected
-	globalStatus.UAT_Assigned = u.assigned
-	globalStatus.UAT_DeviceSerial = u.deviceSerial
-	globalStatus.UAT_DeviceIndex = u.deviceIndex
-	globalStatus.UAT_AssignmentSource = u.assignmentSource
-	globalStatus.UAT_Ambiguous = u.ambiguous
-	globalStatus.UAT_Conflict = u.conflict
-	globalStatus.UAT_DecoderRunning = u.decoderRunning
-	globalStatus.UAT_Receiving = u.receiving
-	globalStatus.UAT_Degraded = u.degraded
-	globalStatus.UAT_DiagnosticReason = u.reason
+	// The band-status derivation itself (the truth table combining
+	// enabled/detected/assigned/ambiguous/conflict/decoder/receiving into
+	// Degraded and a diagnostic reason) lives in sdrassign.BuildBandStatus,
+	// not here, specifically so it can be unit tested: this main package
+	// requires cgo and a locally-built libdump978.so just to compile, so
+	// nothing here can be exercised with `go test`.
+	u := sdrassign.BuildBandStatus(uat, uatRunning, uatReceiving)
+	globalStatus.UAT_Enabled = u.Enabled
+	globalStatus.UAT_Detected = u.Detected
+	globalStatus.UAT_Assigned = u.Assigned
+	globalStatus.UAT_DeviceSerial = u.DeviceSerial
+	globalStatus.UAT_DeviceIndex = u.DeviceIndex
+	globalStatus.UAT_AssignmentSource = u.AssignmentSource
+	globalStatus.UAT_Ambiguous = u.Ambiguous
+	globalStatus.UAT_Conflict = u.Conflict
+	globalStatus.UAT_ExternallySatisfied = u.ExternallySatisfied
+	globalStatus.UAT_DecoderRunning = u.DecoderRunning
+	globalStatus.UAT_Receiving = u.Receiving
+	globalStatus.UAT_Degraded = u.Degraded
+	globalStatus.UAT_DiagnosticReason = u.Reason
 
-	e := buildSDRBandStatus(es, esRunning, esReceiving)
-	globalStatus.ES_Enabled = e.enabled
-	globalStatus.ES_Detected = e.detected
-	globalStatus.ES_Assigned = e.assigned
-	globalStatus.ES_DeviceSerial = e.deviceSerial
-	globalStatus.ES_DeviceIndex = e.deviceIndex
-	globalStatus.ES_AssignmentSource = e.assignmentSource
-	globalStatus.ES_Ambiguous = e.ambiguous
-	globalStatus.ES_Conflict = e.conflict
-	globalStatus.ES_DecoderRunning = e.decoderRunning
-	globalStatus.ES_Receiving = e.receiving
-	globalStatus.ES_Degraded = e.degraded
-	globalStatus.ES_DiagnosticReason = e.reason
-}
-
-// sdrBandStatus mirrors the per-band fields added to the status struct in
-// gen_gdl90.go. It exists so buildSDRBandStatus() can be unit tested
-// without depending on globalStatus.
-type sdrBandStatus struct {
-	enabled          bool
-	detected         bool
-	assigned         bool
-	deviceSerial     string
-	deviceIndex      int
-	assignmentSource string
-	ambiguous        bool
-	conflict         bool
-	decoderRunning   bool
-	receiving        bool
-	degraded         bool
-	reason           string
-}
-
-// buildSDRBandStatus derives one band's display status from its assignment
-// decision plus the live decoder-running and message-freshness signals.
-func buildSDRBandStatus(a sdrassign.Assignment, liveDecoderRunning, liveReceiving bool) sdrBandStatus {
-	s := sdrBandStatus{
-		enabled:          a.Enabled,
-		detected:         a.Detected,
-		assigned:         a.Assigned,
-		deviceIndex:      -1,
-		assignmentSource: a.Source.String(),
-		ambiguous:        a.Ambiguous,
-		conflict:         a.Conflict,
-		decoderRunning:   a.Assigned && liveDecoderRunning,
-		receiving:        a.Assigned && liveDecoderRunning && liveReceiving,
-		degraded:         a.Enabled && (!a.Assigned || !liveDecoderRunning),
-		reason:           sdrDiagnosticReason(a, liveDecoderRunning, liveReceiving),
-	}
-	if a.Assigned {
-		s.deviceSerial = a.Device.Serial
-		s.deviceIndex = a.Device.Index
-	}
-	return s
-}
-
-// sdrDiagnosticReason builds the human-readable status line shown in the
-// web UI for one band. A disabled, unassigned, ambiguous or conflicted band
-// already has a complete explanation from sdrassign.Assign() at assignment
-// time; only a cleanly assigned band needs the live decoder/receiving state
-// layered on top, since that can change every second without a
-// reassignment happening.
-func sdrDiagnosticReason(a sdrassign.Assignment, decoderRunning, receiving bool) string {
-	if !a.Enabled || !a.Assigned || a.Ambiguous || a.Conflict {
-		return a.Reason
-	}
-	if !decoderRunning {
-		return fmt.Sprintf("%s SDR assigned (index %d) but its decoder is not currently running.", a.Band, a.Device.Index)
-	}
-	if receiving {
-		return fmt.Sprintf("%s receiving traffic.", a.Band)
-	}
-	return fmt.Sprintf("%s SDR active; no messages received in the last minute. This is expected when there is no nearby RF traffic.", a.Band)
+	e := sdrassign.BuildBandStatus(es, esRunning, esReceiving)
+	globalStatus.ES_Enabled = e.Enabled
+	globalStatus.ES_Detected = e.Detected
+	globalStatus.ES_Assigned = e.Assigned
+	globalStatus.ES_DeviceSerial = e.DeviceSerial
+	globalStatus.ES_DeviceIndex = e.DeviceIndex
+	globalStatus.ES_AssignmentSource = e.AssignmentSource
+	globalStatus.ES_Ambiguous = e.Ambiguous
+	globalStatus.ES_Conflict = e.Conflict
+	globalStatus.ES_ExternallySatisfied = e.ExternallySatisfied
+	globalStatus.ES_DecoderRunning = e.DecoderRunning
+	globalStatus.ES_Receiving = e.Receiving
+	globalStatus.ES_Degraded = e.Degraded
+	globalStatus.ES_DiagnosticReason = e.Reason
 }

@@ -22,6 +22,15 @@ A device's USB enumeration index is not proven stable across reboots
 as a tie-breaker when exactly one candidate remains for exactly one
 unfulfilled band; it is never used to arbitrate between two or more
 candidates for two or more bands.
+
+A 978 UAT receiver can also be served by an external, non-SDR low-power
+UAT radio entirely outside this package (see main/lowpower_uat.go). When
+the caller reports one connected, Assign() excludes UAT from the pool of
+bands competing for anonymous devices - unless a dongle is explicitly
+tagged for UAT, in which case the tag still wins, matching a user's
+explicit choice. Without this, a single spare, untagged dongle intended
+for 1090 ES would be misreported as ambiguous merely because UAT still
+looked "unmet" to the algorithm, even though nothing needs to serve it.
 */
 package sdrassign
 
@@ -70,6 +79,11 @@ const (
 	// Stratux tag and was assigned because it was the sole untagged
 	// candidate for the sole unfulfilled enabled band.
 	SourceAnonymous
+	// SourceExternal means the band needs no RTL-SDR at all because it is
+	// already being served by a different, non-SDR receiver (currently
+	// only meaningful for UAT with a connected external low-power UAT
+	// radio). No Device is bound; see Assignment.ExternallySatisfied.
+	SourceExternal
 )
 
 // String renders the source using the vocabulary from the SDR/status docs.
@@ -79,6 +93,8 @@ func (s Source) String() string {
 		return "tagged"
 	case SourceAnonymous:
 		return "anonymous"
+	case SourceExternal:
+		return "external"
 	default:
 		return "none"
 	}
@@ -128,6 +144,13 @@ type Assignment struct {
 	// own tag. The first (lowest-index) tagged device, if any, is still
 	// used; the rest are ignored rather than reassigned elsewhere.
 	Conflict bool
+
+	// ExternallySatisfied is true when this band does not need an SDR
+	// because it is already being served by a different, non-SDR
+	// receiver. Assigned stays false in this case (no RTL-SDR is bound),
+	// but the band must not be treated as missing, ambiguous, or
+	// degraded - see Source/SourceExternal.
+	ExternallySatisfied bool
 
 	// Reason is a human-readable explanation of the current state,
 	// intended for display in the status UI.
@@ -217,9 +240,15 @@ func matchedBand(serial string) (band Band, tagged bool, supported bool) {
 
 // Assign computes SDR band assignment for the given devices. It is a pure
 // function: the result depends only on the (Index, Serial) pairs present in
-// devices and on which bands are enabled, never on the order devices are
-// supplied in and never on any package-level state.
-func Assign(devices []Device, uatEnabled, esEnabled, ognEnabled, aisEnabled bool) Result {
+// devices, which bands are enabled, and uatSatisfiedExternally, never on the
+// order devices are supplied in and never on any package-level state.
+//
+// uatSatisfiedExternally reports whether 978 UAT is already being served by
+// a non-SDR receiver outside this package (main/lowpower_uat.go). When true,
+// UAT is excluded from competing for anonymous devices - an untagged dongle
+// that would otherwise make UAT+ES ambiguous can then be assigned to ES
+// unambiguously - but an explicitly tagged UAT dongle still always wins.
+func Assign(devices []Device, uatEnabled, esEnabled, ognEnabled, aisEnabled bool, uatSatisfiedExternally bool) Result {
 	enabled := map[Band]bool{UAT: uatEnabled, ES: esEnabled, OGN: ognEnabled, AIS: aisEnabled}
 
 	// Work on a copy sorted by index so the two passes below are
@@ -283,9 +312,20 @@ func Assign(devices []Device, uatEnabled, esEnabled, ognEnabled, aisEnabled bool
 	var unmet []Band
 	for _, b := range allBands {
 		a := result.forBand(b)
-		if enabled[b] && !a.Assigned {
-			unmet = append(unmet, b)
+		if !enabled[b] || a.Assigned {
+			continue
 		}
+		// UAT is already covered by an external, non-SDR receiver and
+		// no dongle is explicitly tagged for it: it doesn't need (and
+		// must not consume) an anonymous device, and must not make ES
+		// or any other band look ambiguous on its account.
+		if b == UAT && uatSatisfiedExternally {
+			a.Source = SourceExternal
+			a.ExternallySatisfied = true
+			a.Reason = "978 UAT is enabled and already served by an external low-power UAT radio; no RTL-SDR is needed for this band."
+			continue
+		}
+		unmet = append(unmet, b)
 	}
 
 	switch {

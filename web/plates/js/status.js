@@ -11,8 +11,9 @@ function StatusCtrl($rootScope, $scope, $state, $http, $interval, craftService) 
 	// documented in docs/hardware/sdr-and-bands.md: a disabled band is
 	// never shown as faulted, and "no messages" alone is never shown as
 	// failed since it may simply mean no nearby RF traffic.
-	function sdrBandState(enabled, ambiguous, conflict, assigned, decoderRunning, receiving) {
+	function sdrBandState(enabled, ambiguous, conflict, assigned, decoderRunning, receiving, externallySatisfied) {
 		if (!enabled) return { label: 'Disabled', cls: 'label-default' };
+		if (externallySatisfied) return { label: 'External', cls: 'label-info' };
 		if (ambiguous) return { label: 'Ambiguous', cls: 'label-danger' };
 		if (conflict) return { label: 'Tag Conflict', cls: 'label-danger' };
 		if (!assigned) return { label: 'Not Detected', cls: 'label-danger' };
@@ -81,13 +82,13 @@ function StatusCtrl($rootScope, $scope, $state, $http, $interval, craftService) 
 			// so an older backend that doesn't send them yet just shows
 			// both bands as "Disabled" rather than throwing.
 			var uatState = sdrBandState(status.UAT_Enabled, status.UAT_Ambiguous, status.UAT_Conflict,
-				status.UAT_Assigned, status.UAT_DecoderRunning, status.UAT_Receiving);
+				status.UAT_Assigned, status.UAT_DecoderRunning, status.UAT_Receiving, status.UAT_ExternallySatisfied);
 			$scope.UAT_StateLabel = uatState.label;
 			$scope.UAT_StateClass = uatState.cls;
 			$scope.UAT_DiagnosticReason = status.UAT_DiagnosticReason || '';
 
 			var esState = sdrBandState(status.ES_Enabled, status.ES_Ambiguous, status.ES_Conflict,
-				status.ES_Assigned, status.ES_DecoderRunning, status.ES_Receiving);
+				status.ES_Assigned, status.ES_DecoderRunning, status.ES_Receiving, status.ES_ExternallySatisfied);
 			$scope.ES_StateLabel = esState.label;
 			$scope.ES_StateClass = esState.cls;
 			$scope.ES_DiagnosticReason = status.ES_DiagnosticReason || '';

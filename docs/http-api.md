@@ -15,7 +15,7 @@ Example fields: `Version`, `GPS_connected`, `GPS_satellites_locked`, `UAT_messag
 
 Primary 978/1090 receiver status is exposed as `UAT_*` / `ES_*` fields (`Enabled`, `Detected`,
 `Assigned`, `DeviceSerial`, `DeviceIndex`, `AssignmentSource`, `Ambiguous`, `Conflict`,
-`DecoderRunning`, `Receiving`, `Degraded`, `DiagnosticReason`) - see
+`ExternallySatisfied`, `DecoderRunning`, `Receiving`, `Degraded`, `DiagnosticReason`) - see
 [hardware/sdr-and-bands.md](hardware/sdr-and-bands.md#verifying-assignment-in-the-status-page).
 
 #### `GET /getSituation`

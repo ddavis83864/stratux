@@ -1294,9 +1294,10 @@ type status struct {
 	UAT_Assigned                                bool
 	UAT_DeviceSerial                            string
 	UAT_DeviceIndex                             int
-	UAT_AssignmentSource                        string // "tagged", "anonymous", or "none"
+	UAT_AssignmentSource                        string // "tagged", "anonymous", "external", or "none"
 	UAT_Ambiguous                               bool
 	UAT_Conflict                                bool
+	UAT_ExternallySatisfied                     bool // true when an external (non-SDR) low-power UAT radio already serves this band; see UATRadio_connected
 	UAT_DecoderRunning                          bool
 	UAT_Receiving                               bool
 	UAT_Degraded                                bool
@@ -1306,9 +1307,10 @@ type status struct {
 	ES_Assigned                                 bool
 	ES_DeviceSerial                             string
 	ES_DeviceIndex                              int
-	ES_AssignmentSource                         string // "tagged", "anonymous", or "none"
+	ES_AssignmentSource                         string // "tagged", "anonymous", "external", or "none"
 	ES_Ambiguous                                bool
 	ES_Conflict                                 bool
+	ES_ExternallySatisfied                      bool // always false today: no external (non-SDR) 1090 ES receiver path exists
 	ES_DecoderRunning                           bool
 	ES_Receiving                                bool
 	ES_Degraded                                 bool

@@ -82,11 +82,22 @@ it, then starts a demodulator for each device it assigns. Two passes:
 2. **Anonymous pass** - among the untagged devices left over, remaining enabled bands are
    filled only when the outcome is unambiguous:
    - **One** enabled band still needs a receiver and **one or more** untagged devices exist:
-     the lowest-index device is assigned deterministically (any extras are left unused).
+     the lowest-index device is assigned deterministically (any extras are left unused). If
+     more than one untagged device is present, *which* device fills that role is not itself
+     proven stable across reboots (only the role assignment is) - tag it if you want both to
+     be stable.
    - **Two or more** enabled bands still need a receiver and **any** untagged devices exist:
      every affected band is reported **ambiguous** and none of them are assigned.
    - **No** untagged devices exist for a band that still needs one: that band is reported
      enabled-but-not-detected (a plain missing-hardware state, not ambiguity).
+
+If 978 UAT is already being served by an external low-power UAT radio (see
+[hardware/ogn-ais-receivers.md](ogn-ais-receivers.md) or the `UATRadio_connected` status field),
+UAT is excluded from the "remaining enabled bands" above entirely - it doesn't need, and won't
+consume, an anonymous SDR. This is what lets a single spare, untagged dongle unambiguously serve
+1090 ES in that configuration instead of being reported ambiguous just because UAT still looked
+unfulfilled. An explicitly tagged `stratux:978` dongle still always takes priority over the
+external radio, since a tag is an explicit user choice.
 
 ## Verifying assignment in the status page
 
@@ -100,20 +111,22 @@ WebSocket):
 | `Detected` | A compatible SDR was found for this band (tagged, or an available untagged spare). |
 | `Assigned` | A receiver is bound to this band. |
 | `DeviceSerial` / `DeviceIndex` | Identity of the bound receiver (empty/`-1` if unassigned). |
-| `AssignmentSource` | `"tagged"`, `"anonymous"`, or `"none"`. |
+| `AssignmentSource` | `"tagged"`, `"anonymous"`, `"external"`, or `"none"`. |
 | `Ambiguous` | Two or more untagged dongles could serve this band and Stratux could not tell them apart - **tag your SDRs**. |
 | `Conflict` | More than one device is tagged for this band; the first is used, the rest are ignored. |
+| `ExternallySatisfied` | This band needs no RTL-SDR because a different, non-SDR receiver already serves it (UAT only, when `UATRadio_connected` is true). `Assigned` stays false in this case, but the band is healthy. |
 | `DecoderRunning` | The demodulator (`dump1090` for 1090, the in-process 978 decoder) is currently believed to be running. Distinct from `Assigned`: `dump1090` is a supervised subprocess that briefly restarts after a crash, during which the receiver stays assigned but the decoder is not running. |
 | `Receiving` | At least one valid message was decoded in the last 60 seconds. |
-| `Degraded` | Enabled but not fully healthy (`!Assigned \|\| !DecoderRunning`). |
+| `Degraded` | Enabled but not fully healthy (`!ExternallySatisfied && (!Assigned \|\| Conflict \|\| !DecoderRunning)`). A duplicate-tag conflict always counts as degraded, even if the retained device happens to be receiving fine, since a conflict must never read as healthy. |
 | `DiagnosticReason` | Human-readable explanation shown in the UI. |
 
 A badge of **Disabled** (gray) is expected when the band is off - it is never shown as faulted.
-**Ambiguous** or **Not Detected** / **Tag Conflict** (red) mean action is needed; **Starting**
-(amber) is a transient decoder-restart state; **No Traffic** (amber) means the receiver is
-running but nothing has been decoded in the last minute - this is normal with no nearby RF
-traffic, not necessarily a fault; **Receiving** (green) means messages are actively being
-decoded.
+**External** (blue, 978 UAT only) means an external low-power UAT radio already covers this band,
+so no SDR is bound or needed - also not a fault. **Ambiguous** or **Not Detected** / **Tag
+Conflict** (red) mean action is needed; **Starting** (amber) is a transient decoder-restart
+state; **No Traffic** (amber) means the receiver is running but nothing has been decoded in the
+last minute - this is normal with no nearby RF traffic, not necessarily a fault; **Receiving**
+(green) means messages are actively being decoded.
 
 ### What an ambiguous-assignment warning means
 
