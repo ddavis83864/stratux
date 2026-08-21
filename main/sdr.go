@@ -23,6 +23,7 @@ import (
 
 	rtl "github.com/jpoirier/gortlsdr"
 	"github.com/stratux/stratux/godump978"
+	"github.com/stratux/stratux/sdrassign"
 )
 
 // Device holds per dongle values and attributes
@@ -61,6 +62,27 @@ var OGNDev *OGN
 // AISDev holds a 162 MHz dongle object
 var AISDev *AIS
 
+// sdrAssignment is the most recent deterministic band assignment decision
+// (see the sdrassign package). It is populated by configDevices() and read
+// by updateSDRRadioStatus() to build the 978/1090 status shown in the web
+// UI, so it is guarded by sdrAssignmentMu since the two run on different
+// goroutines.
+var (
+	sdrAssignmentMu sync.RWMutex
+	sdrAssignment   sdrassign.Result
+)
+
+// uatDecoderRunning / esDecoderRunning reflect whether the respective
+// band's decode path is currently believed to be active, as distinct from
+// whether a receiver is merely assigned (UATDev/ESDev != nil). This matters
+// most for ES: dump1090 is a supervised subprocess that is auto-restarted
+// on crash without tearing down ESDev, so ESDev can be non-nil for a few
+// seconds while no decoder is actually running.
+var (
+	uatDecoderRunning atomic.Bool
+	esDecoderRunning  atomic.Bool
+)
+
 type Dump1090TermMessage struct {
 	Text   string
 	Source string
@@ -89,6 +111,7 @@ func (e *ES) read() {
 	err := cmd.Start()
 	if err != nil {
 		log.Printf("Error executing " + STRATUX_HOME + "/bin/dump1090: %s\n", err)
+		esDecoderRunning.Store(false)
 		// don't return immediately, use the proper shutdown procedure
 		shutdownES = true
 		for {
@@ -100,6 +123,7 @@ func (e *ES) read() {
 			}
 		}
 	}
+	esDecoderRunning.Store(true)
 
 	log.Println("Executed " + cmd.String() + " successfully...")
 
@@ -157,6 +181,7 @@ func (e *ES) read() {
 	}()
 
 	cmd.Wait()
+	esDecoderRunning.Store(false)
 
 	// we get here if A) the dump1090 process died
 	// on its own or B) cmd.Process.Kill() was called
@@ -177,6 +202,7 @@ func (u *UAT) read() {
 	defer u.wg.Done()
 	log.Println("Entered UAT read() ...")
 	var buffer = make([]uint8, rtl.DefaultBufLength)
+	uatDecoderRunning.Store(true)
 
 	for {
 		select {
@@ -186,6 +212,7 @@ func (u *UAT) read() {
 				if globalSettings.DEBUG {
 					log.Printf("\tReadSync Failed - error: %s\n", err)
 				}
+				uatDecoderRunning.Store(false)
 				if shutdownUAT != true {
 					shutdownUAT = true
 				}
@@ -198,6 +225,7 @@ func (u *UAT) read() {
 			}
 		case <-u.closeCh:
 			log.Println("UAT read(): shutdown msg received...")
+			uatDecoderRunning.Store(false)
 			return
 		}
 	}
@@ -656,50 +684,6 @@ func sdrKill() {
 	}
 }
 
-func reCompile(s string) *regexp.Regexp {
-	// note , compile returns a nil pointer on error
-	r, _ := regexp.Compile(s)
-	return r
-}
-
-type regexUAT regexp.Regexp
-type regexES regexp.Regexp
-type regexOGN regexp.Regexp
-type regexAIS regexp.Regexp
-
-var rUAT = (*regexUAT)(reCompile("str?a?t?u?x:978"))
-var rES = (*regexES)(reCompile("str?a?t?u?x:1090"))
-var rOGN = (*regexES)(reCompile("str?a?t?u?x:868"))
-var rAIS = (*regexAIS)(reCompile("str?a?t?u?x:162"))
-
-func (r *regexUAT) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:978")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexES) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:1090")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexOGN) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:868")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexAIS) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:162")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
 func createUATDev(id int, serial string, idSet bool) error {
 	UATDev = &UAT{indexID: id, serial: serial}
 	if err := UATDev.sdrConfig(); err != nil {
@@ -760,50 +744,65 @@ func createAISDev(id int, serial string, idSet bool) error {
 	return nil
 }
 
-func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool) {
-	// once the tagged dongles have been assigned, explicitly range over
-	// the remaining IDs and assign them to any anonymous dongles
-	unusedIDs := make(map[int]string)
-
-	// loop 1: assign tagged dongles
+// discoverSDRDevices enumerates the currently plugged-in RTL-SDR dongles for
+// use by sdrassign.Assign(). Device.Index is the transient, process-local
+// libusb enumeration index; it is not a stable identity (see sdrassign's
+// package doc), so it must never be relied on beyond this single evaluation.
+func discoverSDRDevices(count int) []sdrassign.Device {
+	devices := make([]sdrassign.Device, 0, count)
 	for i := 0; i < count; i++ {
 		_, _, s, err := rtl.GetDeviceUsbStrings(i)
-		if err == nil {
-			//FIXME: Trim NULL from the serial. Best done in gortlsdr, but putting this here for now.
-			s = strings.Trim(s, "\x00")
-			// no need to check if createXDev returned an error; if it
-			// failed to config the error is logged and we can ignore
-			// it here so it doesn't get queued up again
-			if uatEnabled && UATDev == nil && rUAT.hasID(s) {
-				createUATDev(i, s, true)
-			} else if esEnabled && ESDev == nil && rES.hasID(s) {
-				createESDev(i, s, true)
-			} else if ognEnabled && OGNDev == nil && rOGN.hasID(s) {
-				createOGNDev(i, s, true)
-			} else if aisEnabled && AISDev == nil && rAIS.hasID(s) {
-				createAISDev(i, s, true)
-			} else {
-				unusedIDs[i] = s
-			}
-		} else {
+		if err != nil {
 			log.Printf("rtl.GetDeviceUsbStrings id %d: %s\n", i, err)
+			continue
 		}
+		//FIXME: Trim NULL from the serial. Best done in gortlsdr, but putting this here for now.
+		s = strings.Trim(s, "\x00")
+		devices = append(devices, sdrassign.Device{Index: i, Serial: s})
+	}
+	return devices
+}
+
+// configDevices assigns discovered SDR dongles to the enabled bands and
+// starts the corresponding demodulator for each newly assigned device.
+//
+// The assignment decision itself is delegated to sdrassign.Assign(), a
+// pure, deterministic function: it does not depend on map iteration order,
+// so the same set of tagged and anonymous dongles always produces the same
+// assignment regardless of discovery order. When a stable, unambiguous
+// assignment cannot be derived (two or more enabled bands competing for two
+// or more indistinguishable, untagged dongles), the affected bands are left
+// unassigned rather than guessed at; see sdrAssignment / status.go for how
+// that is surfaced to the user.
+func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool) {
+	devices := discoverSDRDevices(count)
+	result := sdrassign.Assign(devices, uatEnabled, esEnabled, ognEnabled, aisEnabled)
+
+	sdrAssignmentMu.Lock()
+	sdrAssignment = result
+	sdrAssignmentMu.Unlock()
+
+	for _, w := range result.Warnings {
+		log.Printf("SDR assignment: %s\n", w)
 	}
 
-	// loop 2: assign anonymous dongles but sanity check the serial ids
-	// so we don't cross config for dual assigned dongles. e.g. when two
-	// dongles are set to the same stratux id and the unconsumed,
-	// non-anonymous, dongle makes it to this loop.
-	for i, s := range unusedIDs {
-		if uatEnabled && !globalStatus.UATRadio_connected && UATDev == nil && !rES.hasID(s) && !rOGN.hasID(s) {
-			createUATDev(i, s, false)
-		} else if esEnabled && ESDev == nil && !rUAT.hasID(s) && !rOGN.hasID(s) {
-			createESDev(i, s, false)
-		} else if ognEnabled && OGNDev == nil {
-			createOGNDev(i, s, false)
-		} else if aisEnabled && AISDev == nil {
-			createAISDev(i, s, false)
-		}
+	// UATRadio_connected indicates an external (non-RTL-SDR) low-power UAT
+	// radio is already serving 978. Matches the pre-existing behavior: an
+	// anonymous RTL-SDR is not bound to 978 on top of it, but an explicitly
+	// tagged stratux:978 dongle still is - a tag is an explicit user choice
+	// and is never silently overridden.
+	if result.UAT.Assigned && UATDev == nil &&
+		(result.UAT.Source == sdrassign.SourceTagged || !globalStatus.UATRadio_connected) {
+		createUATDev(result.UAT.Device.Index, result.UAT.Device.Serial, result.UAT.Source == sdrassign.SourceTagged)
+	}
+	if result.ES.Assigned && ESDev == nil {
+		createESDev(result.ES.Device.Index, result.ES.Device.Serial, result.ES.Source == sdrassign.SourceTagged)
+	}
+	if result.OGN.Assigned && OGNDev == nil {
+		createOGNDev(result.OGN.Device.Index, result.OGN.Device.Serial, result.OGN.Source == sdrassign.SourceTagged)
+	}
+	if result.AIS.Assigned && AISDev == nil {
+		createAISDev(result.AIS.Device.Index, result.AIS.Device.Serial, result.AIS.Source == sdrassign.SourceTagged)
 	}
 }
 
