@@ -40,11 +40,11 @@
 				<div class="row" ng-class="{'section_invisible': (!visible_uat && !visible_es)}">
 					<div class="col-sm-6 label_adj" ng-class="{'section_invisible': !visible_uat}">
 						<strong class="col-xs-5">978 UAT Receiver:</strong>
-						<span class="col-xs-7"><span class="label" ng-class="UAT_StateClass">{{UAT_StateLabel}}</span></span>
+						<span class="col-xs-7"><span class="label" ng-class="UAT_StateClass" title="{{UAT_DeviceTitle}}">{{UAT_StateLabel}}</span></span>
 					</div>
 					<div class="col-sm-6 label_adj" ng-class="{'section_invisible': !visible_es}">
 						<strong class="col-xs-5">1090 ES Receiver:</strong>
-						<span class="col-xs-7"><span class="label" ng-class="ES_StateClass">{{ES_StateLabel}}</span></span>
+						<span class="col-xs-7"><span class="label" ng-class="ES_StateClass" title="{{ES_DeviceTitle}}">{{ES_StateLabel}}</span></span>
 					</div>
 				</div>
 				<div class="row" ng-class="{'section_invisible': !visible_uat}">

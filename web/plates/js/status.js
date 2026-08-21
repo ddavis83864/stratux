@@ -11,7 +11,13 @@ function StatusCtrl($rootScope, $scope, $state, $http, $interval, craftService) 
 	// documented in docs/hardware/sdr-and-bands.md: a disabled band is
 	// never shown as faulted, and "no messages" alone is never shown as
 	// failed since it may simply mean no nearby RF traffic.
+	//
+	// enabled is read with === so an older backend that doesn't send the
+	// UAT_Enabled/ES_Enabled fields yet (undefined) shows "Unknown" rather
+	// than falsely asserting the band is turned off - the daemon may well
+	// have it enabled and working, this frontend just has no way to know.
 	function sdrBandState(enabled, ambiguous, conflict, assigned, decoderRunning, receiving, externallySatisfied) {
+		if (enabled === undefined) return { label: 'Unknown', cls: 'label-default' };
 		if (!enabled) return { label: 'Disabled', cls: 'label-default' };
 		if (externallySatisfied) return { label: 'External', cls: 'label-info' };
 		if (ambiguous) return { label: 'Ambiguous', cls: 'label-danger' };
@@ -20,6 +26,15 @@ function StatusCtrl($rootScope, $scope, $state, $http, $interval, craftService) 
 		if (!decoderRunning) return { label: 'Starting', cls: 'label-warning' };
 		if (receiving) return { label: 'Receiving', cls: 'label-success' };
 		return { label: 'No Traffic', cls: 'label-warning' };
+	}
+
+	// sdrDeviceTitle builds a plain-text tooltip identifying the assigned
+	// receiver (index + EEPROM serial). angular's title="{{...}}" binding
+	// inserts it as a text attribute value, not HTML, so this is safe even
+	// though the serial originates from device hardware.
+	function sdrDeviceTitle(serial, index) {
+		if (!serial && (index === undefined || index === -1)) return '';
+		return 'SDR index ' + index + (serial ? ' (' + serial + ')' : '');
 	}
 
 	function connect($scope) {
@@ -79,19 +94,21 @@ function StatusCtrl($rootScope, $scope, $state, $http, $interval, craftService) 
 			$scope.AIS_messages_total = status.AIS_messages_total;
 			$scope.AIS_connected = status.AIS_connected;
 			// Primary 978/1090 receiver status. Fields are read defensively
-			// so an older backend that doesn't send them yet just shows
-			// both bands as "Disabled" rather than throwing.
+			// so an older backend that doesn't send them yet shows "Unknown"
+			// rather than falsely asserting the band is disabled.
 			var uatState = sdrBandState(status.UAT_Enabled, status.UAT_Ambiguous, status.UAT_Conflict,
 				status.UAT_Assigned, status.UAT_DecoderRunning, status.UAT_Receiving, status.UAT_ExternallySatisfied);
 			$scope.UAT_StateLabel = uatState.label;
 			$scope.UAT_StateClass = uatState.cls;
 			$scope.UAT_DiagnosticReason = status.UAT_DiagnosticReason || '';
+			$scope.UAT_DeviceTitle = sdrDeviceTitle(status.UAT_DeviceSerial, status.UAT_DeviceIndex);
 
 			var esState = sdrBandState(status.ES_Enabled, status.ES_Ambiguous, status.ES_Conflict,
 				status.ES_Assigned, status.ES_DecoderRunning, status.ES_Receiving, status.ES_ExternallySatisfied);
 			$scope.ES_StateLabel = esState.label;
 			$scope.ES_StateClass = esState.cls;
 			$scope.ES_DiagnosticReason = status.ES_DiagnosticReason || '';
+			$scope.ES_DeviceTitle = sdrDeviceTitle(status.ES_DeviceSerial, status.ES_DeviceIndex);
 
 			$scope.GPS_satellites_locked = status.GPS_satellites_locked;
 			$scope.GPS_satellites_tracked = status.GPS_satellites_tracked;

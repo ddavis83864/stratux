@@ -115,18 +115,23 @@ WebSocket):
 | `Ambiguous` | Two or more untagged dongles could serve this band and Stratux could not tell them apart - **tag your SDRs**. |
 | `Conflict` | More than one device is tagged for this band; the first is used, the rest are ignored. |
 | `ExternallySatisfied` | This band needs no RTL-SDR because a different, non-SDR receiver already serves it (UAT only, when `UATRadio_connected` is true). `Assigned` stays false in this case, but the band is healthy. |
-| `DecoderRunning` | The demodulator (`dump1090` for 1090, the in-process 978 decoder) is currently believed to be running. Distinct from `Assigned`: `dump1090` is a supervised subprocess that briefly restarts after a crash, during which the receiver stays assigned but the decoder is not running. |
-| `Receiving` | At least one valid message was decoded in the last 60 seconds. |
+| `IdentityUnstable` | The band's role was unambiguous (it was the only enabled band still needing a receiver), but two or more indistinguishable untagged devices were connected, so *which* one was picked is not proven stable across reboots - unlike `Ambiguous`, the band is still assigned and can be healthy. |
+| `DecoderRunning` | The demodulator (`dump1090` for 1090, the in-process 978 decoder) is currently believed to be running. Distinct from `Assigned`: `dump1090` is a supervised subprocess that briefly restarts after a crash, during which the receiver stays assigned but the decoder is not running. For 978, this only proves the raw-sample USB read loop has successfully pulled data from the device at least once - unlike 1090's supervised subprocess, there is no independent confirmation that the in-process demodulator itself is healthy. |
+| `Receiving` | At least one valid message was decoded within the last 60 seconds *by the currently-assigned receiver* - a message logged before the current receiver was (re)assigned (e.g. from a predecessor device, or before an ambiguous state was resolved) does not count, so a freshly (re)assigned receiver cannot appear to be receiving on a predecessor's traffic. |
 | `Degraded` | Enabled but not fully healthy (`!ExternallySatisfied && (!Assigned \|\| Conflict \|\| !DecoderRunning)`). A duplicate-tag conflict always counts as degraded, even if the retained device happens to be receiving fine, since a conflict must never read as healthy. |
 | `DiagnosticReason` | Human-readable explanation shown in the UI. |
 
 A badge of **Disabled** (gray) is expected when the band is off - it is never shown as faulted.
+**Unknown** (gray) means the frontend hasn't received these fields from the backend yet (e.g. an
+older backend, or the page just loaded) - it is not a claim that the band is actually disabled.
 **External** (blue, 978 UAT only) means an external low-power UAT radio already covers this band,
 so no SDR is bound or needed - also not a fault. **Ambiguous** or **Not Detected** / **Tag
 Conflict** (red) mean action is needed; **Starting** (amber) is a transient decoder-restart
 state; **No Traffic** (amber) means the receiver is running but nothing has been decoded in the
 last minute - this is normal with no nearby RF traffic, not necessarily a fault; **Receiving**
-(green) means messages are actively being decoded.
+(green) means messages are actively being decoded. Hover over a badge to see the assigned SDR's
+index and serial, when one is assigned; when `IdentityUnstable` is true, the diagnostic text
+beneath the badge says so explicitly regardless of which of the above states it's otherwise in.
 
 ### What an ambiguous-assignment warning means
 
@@ -144,11 +149,20 @@ reassigned to cover for it - each band's status is independent.
 
 ### Verifying after a cold reboot
 
-Because assignment is now a deterministic function of tags (or, for a single untagged spare, of
-an unambiguous 1-enabled-band/1-device match), a correctly tagged dual-band setup, or a
-single-band setup with one spare SDR, assigns the same way every boot. After a cold reboot,
-open the Status page and confirm both badges show the expected receiver (**Receiving** once RF
-traffic is present, or **No Traffic** if none is currently in range) rather than **Ambiguous**.
+A correctly tagged dual-band setup always assigns the same physical dongle to the same band,
+every boot: assignment is a deterministic function of tags. A single-band setup with exactly one
+untagged spare SDR is equally stable: there's only one enabled band and only one candidate, so
+there's nothing to pick between.
+
+A single-band setup with *more than one* untagged spare connected is only role-stable, not
+device-stable: the one enabled band will always get a receiver, but *which* of the spares it
+gets can change between boots (USB enumeration order is not guaranteed stable), and the status
+page will show `IdentityUnstable` for it. Tag the spare you actually intend to use if you want
+that to be stable too.
+
+After a cold reboot, open the Status page and confirm both badges show the expected receiver
+(**Receiving** once RF traffic is present, or **No Traffic** if none is currently in range)
+rather than **Ambiguous**.
 
 Traffic and weather reception remain supplemental to other means of separation and situational
 awareness, and are always dependent on RF line-of-sight and coverage - a healthy **Receiving**

@@ -15,8 +15,11 @@ Example fields: `Version`, `GPS_connected`, `GPS_satellites_locked`, `UAT_messag
 
 Primary 978/1090 receiver status is exposed as `UAT_*` / `ES_*` fields (`Enabled`, `Detected`,
 `Assigned`, `DeviceSerial`, `DeviceIndex`, `AssignmentSource`, `Ambiguous`, `Conflict`,
-`ExternallySatisfied`, `DecoderRunning`, `Receiving`, `Degraded`, `DiagnosticReason`) - see
+`ExternallySatisfied`, `IdentityUnstable`, `DecoderRunning`, `Receiving`, `Degraded`,
+`DiagnosticReason`) - see
 [hardware/sdr-and-bands.md](hardware/sdr-and-bands.md#verifying-assignment-in-the-status-page).
+A frontend that hasn't received these fields yet (older cached page, or a backend predating
+this API) should treat the band as unknown, not as disabled.
 
 #### `GET /getSituation`
 Returns the current GPS/AHRS situation: position, altitude, track, speed, vertical speed, and attitude (pitch/roll/slip-skid) if AHRS is connected.
