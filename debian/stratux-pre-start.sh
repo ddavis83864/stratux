@@ -269,7 +269,14 @@ if [ -f "${OTA_STATE}" ]; then
 				sync
 
 				ota_log "installing ${OTA_PACKAGE} (attempt $((OTA_ATTEMPTS+1)))"
-				DPKG_OUTPUT="$(dpkg -i --force-depends "${OTA_PACKAGE}" 2>&1)"
+				# STRATUX_OTA_INSTALL tells the package's own maintainer
+				# scripts to skip starting/stopping the service - this
+				# dpkg -i runs from stratux.service's own ExecStartPre,
+				# and a systemctl start/stop from postinst/preinst/prerm
+				# here would recurse into that same unit's ExecStartPre
+				# while this dpkg -i still holds dpkg's lock. Found on
+				# real hardware - see docs/ota.md.
+				DPKG_OUTPUT="$(STRATUX_OTA_INSTALL=1 dpkg -i --force-depends "${OTA_PACKAGE}" 2>&1)"
 				DPKG_RC=$?
 				echo "${DPKG_OUTPUT}" >> "${STX_LOG}"
 

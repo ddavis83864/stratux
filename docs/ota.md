@@ -221,6 +221,49 @@ instead - already present on the base image and used elsewhere on the device (e.
 network config). Re-validated identically across the same nine sandboxed scenarios with the `jq`
 stub removed entirely and every call site grepped to confirm no `jq` invocation remains.
 
+## A maintainer-script reentrancy defect found on the first live install attempt
+
+With both fixes above in place, the first real install attempt on hardware still failed - this
+time from a defect neither sandbox run could have caught, because it depends on the package's own
+maintainer scripts, which the sandbox stubs out. `dpkg -i`'s `postinst` calls `systemctl start
+stratux` (and `preinst`/`prerm` call `systemctl stop`) as ordinary, correct package-maintenance
+practice. But this `dpkg -i` is invoked from `stratux-pre-start.sh`, which is itself
+`stratux.service`'s own `ExecStartPre` - so `systemctl start stratux` from inside that `dpkg -i`
+starts the very same unit currently activating, which re-invokes `ExecStartPre` (this same script)
+*while the outer `dpkg -i` is still running and holding dpkg's lock*. The reentrant invocation saw
+`Stage=installing` and, with no way to know it was itself running inside another install already
+in progress, took its own independent retry decision - calling `dpkg -i` again, which failed
+immediately on dpkg's lock (`rc=2`), and then rebooted mid-install. This is a structural defect,
+not specific to the manual bootstrap this first deployment required: any boot-driven install
+would hit the identical recursion, since `postinst` always tries to restart the service it just
+updated.
+
+Confirmed from hardware evidence, not inferred: `systemctl status stratux` showed the failed
+`ExecStartPre` chain with `dpkg`, `stratux.prerm`, and a nested `systemctl` all listed as "remains
+running after unit stopped", and `Restart=always`/`StartLimitBurst=5`/`StartLimitIntervalUSec=10s`
+(from `stratux.service`) explains why the device stabilized on its own after the burst limit was
+hit, rather than looping indefinitely.
+
+Fixed by gating every `systemctl start`/`stop`/`restart` in `preinst.dpkg`/`postinst.dpkg`/
+`prerm.dpkg` behind a `STRATUX_OTA_INSTALL` environment variable, set only when
+`stratux-pre-start.sh` invokes `dpkg -i` itself. This is safe precisely because that script always
+reboots once `dpkg -i` returns (success, retry, or rollback) - the next boot's normal init
+sequence starts the service correctly every time, so the maintainer scripts' own service control
+is redundant during an OTA install and actively harmful. `systemctl daemon-reload` and `systemctl
+enable` remain unconditional in `postinst` (they don't start anything, and unit-file/enablement
+state should stay current regardless of who invoked the install). Verified directly by running
+each maintainer script with a stubbed `systemctl` on `PATH`, with and without the environment
+variable set, confirming zero `systemctl` invocations when set and the original behavior
+unchanged when unset.
+
+The live device recovered cleanly through this session's own designed rollback path once
+`Attempts` reached its bound: files restored from the pre-install backup, overlay marker removed,
+overlay confirmed restored (`findmnt`), and the daemon confirmed back at the pre-deployment
+version and commit - `stratux.service` active with `NRestarts=0` throughout. The backup's own
+scope was independently confirmed complete against the package's full file manifest
+(`dpkg-deb --contents`): every shipped file falls under one of the three backed-up paths, so
+nothing was left un-covered by the restore.
+
 ## Known limitations
 
 - The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, since

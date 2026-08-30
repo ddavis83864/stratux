@@ -5,6 +5,18 @@ systemctl daemon-reload
 echo "Enabling stratux"
 systemctl enable stratux
 
+# STRATUX_OTA_INSTALL is set by the OTA install mechanism
+# (debian/stratux-pre-start.sh) when it runs dpkg -i itself. That script
+# always reboots once dpkg -i returns (success, retry, or rollback), so
+# nothing here needs to be (re)started - and it must not be: this dpkg -i
+# is invoked from stratux.service's own ExecStartPre, and systemctl
+# start/restart here would recurse into that same unit's ExecStartPre
+# while this dpkg -i still holds dpkg's lock, corrupting the install.
+# Found on real hardware; see docs/ota.md.
+if [ -n "${STRATUX_OTA_INSTALL:-}" ]; then
+    exit 0
+fi
+
 echo "Enabling udev"
 systemctl restart udev
 
