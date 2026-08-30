@@ -18,13 +18,10 @@ SCRIPT_MASK="update*stratux*v*.sh"
 TEMP_SCRIPT_LOCATION="$TEMP_DIRECTORY/$SCRIPT_MASK"
 SCRIPT_UPDATE_LOCATION="/root/$SCRIPT_MASK"
 
-######################
-# package based update
-PACKAGE_MASK="stratux*.deb"
-# packages are placed here after download, before movement to PACKAGE_UPDATE_LOCATION
-TEMP_PACKAGE_LOCATION="$TEMP_DIRECTORY/$PACKAGE_MASK"
-# packages are placed here for update
-PACKAGE_UPDATE_LOCATION="/root/$PACKAGE_MASK"
+# Package-based (.deb) updates are handled below by the deterministic OTA
+# state machine (OTA_DIR et al.), staged under the persistent data
+# partition rather than this legacy TEMP_DIRECTORY - see that section for
+# details.
 
 # Detect whether the overlay filesystem is currently active.
 # /overlay/robase is always present (used by overlayctl for management), so we
@@ -85,54 +82,152 @@ if [ -e ${SCRIPT_UPDATE_LOCATION} ]; then
 fi
 
 ##############
-# Stage 1 (overlay active): deb in SD card download location.
-# Copy it directly to the lower ext4 layer so it survives the reboot,
-# then disable overlay so the next boot runs dpkg on bare ext4.
-if [ -e ${TEMP_PACKAGE_LOCATION} ]; then
-	TEMP_PACKAGE_FILE=`ls -1t ${TEMP_PACKAGE_LOCATION} | head -1`
-	wLog "Found update package $TEMP_PACKAGE_FILE"
+# Deterministic, resumable package-update (.deb) state machine.
+#
+# State lives in a single JSON file on the persistent data partition (not
+# /boot/firmware, not the overlay), written by both this script and the Go
+# daemon (main/ota.go) - see the `ota` package for the canonical stage/
+# action definitions this shell logic re-derives.
+#
+# The one persistent marker location - proven on real hardware by
+# device-number identity, not assumed - is /overlay/robase/overlay/disable
+# while the overlay is active: it shares its device number with the real
+# mounted ext4 lower root. A lookalike path,
+# /overlay/pivot/overlay/disable, is a tmpfs shadow left mounted there by
+# init-overlay's own mount choreography (the original top-level /overlay
+# tmpfs mount is never explicitly relocated when its named children are
+# moved into the pivoted root) and does NOT survive a reboot. Writing the
+# marker therefore always follows the same narrow sequence: remount
+# /overlay/robase read-write, write, sync, remount /overlay/robase
+# read-only. See docs/ota.md for the full evidence.
+OTA_DIR="/var/lib/stratux-data/updates"
+OTA_STATE="${OTA_DIR}/state.json"
+OTA_BACKUP_DIR="${OTA_DIR}/backup"
+
+ota_log() {
+	wLog "OTA: $1"
+}
+
+ota_save_stage() {
+	# $1: new Stage value. $2 (optional): LastError to record.
+	if [ -n "$2" ]; then
+		jq --arg s "$1" --arg e "$2" '.Stage=$s | .LastError=$e' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
+	else
+		jq --arg s "$1" '.Stage=$s' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
+	fi
+	sync
+}
+
+# ota_request_overlay_enable removes the persistent disable marker so the
+# *next* boot returns to the protected overlay. Safe to call whether the
+# overlay is currently active (narrow remount-rw/write/sync/relock-ro) or
+# already inactive (bare ext4 root is directly writable - no remount
+# dance needed).
+ota_request_overlay_enable() {
 	if overlay_is_active; then
-		wLog "Overlay active — staging package to ext4 lower layer and disabling overlay..."
-		if /sbin/overlayctl unlock && cp "${TEMP_PACKAGE_FILE}" /overlay/robase/root/; then
-			rm -f "${TEMP_PACKAGE_FILE}"
-			/sbin/overlayctl disable
-			wLog "Package staged. Rebooting to install on bare ext4..."
+		/sbin/overlayctl unlock || return 1
+		rm -f /overlay/robase/overlay/disable
+		sync
+		/sbin/overlayctl lock
+	else
+		rm -f /overlay/disable
+		sync
+	fi
+}
+
+if [ -f "${OTA_STATE}" ]; then
+	OTA_STAGE="$(jq -r .Stage "${OTA_STATE}" 2>/dev/null)"
+	OTA_PACKAGE="$(jq -r .PackagePath "${OTA_STATE}" 2>/dev/null)"
+	OTA_SHA256="$(jq -r .ExpectedSHA256 "${OTA_STATE}" 2>/dev/null)"
+	OTA_ATTEMPTS="$(jq -r '.Attempts // 0' "${OTA_STATE}" 2>/dev/null)"
+	ota_log "state found: stage=${OTA_STAGE} package=${OTA_PACKAGE} attempts=${OTA_ATTEMPTS}"
+
+	# --- Install stage: only ever runs once bare ext4 is confirmed. ---
+	if [ "${OTA_STAGE}" = "disable_requested" ] && ! overlay_is_active; then
+		if [ ! -e "${OTA_PACKAGE}" ]; then
+			ota_log "ERROR: staged package missing on bare root (${OTA_PACKAGE})"
+			ota_save_stage "failed" "staged package missing on bare root"
+		else
+			ACTUAL_SHA256="$(sha256sum "${OTA_PACKAGE}" | cut -d' ' -f1)"
+			if [ "${ACTUAL_SHA256}" != "${OTA_SHA256}" ]; then
+				ota_log "ERROR: hash mismatch on bare root (got ${ACTUAL_SHA256}, expected ${OTA_SHA256})"
+				ota_save_stage "failed" "hash mismatch on bare root"
+			else
+				# Bare ext4 root is directly writable - no remount dance
+				# needed for the backup or for dpkg itself.
+				mkdir -p "${OTA_BACKUP_DIR}"
+				BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+				ota_log "backing up current install to ${BACKUP_FILE} before installing"
+				tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules 2>>"${STX_LOG}"
+
+				jq --arg b "${BACKUP_FILE}" '.Stage="installing" | .BackupPath=$b | .Attempts=((.Attempts // 0)+1)' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
+				sync
+
+				ota_log "installing ${OTA_PACKAGE} (attempt $((OTA_ATTEMPTS+1)))"
+				DPKG_OUTPUT="$(dpkg -i --force-depends "${OTA_PACKAGE}" 2>&1)"
+				DPKG_RC=$?
+				echo "${DPKG_OUTPUT}" >> "${STX_LOG}"
+
+				if [ ${DPKG_RC} -eq 0 ]; then
+					ota_log "dpkg install succeeded"
+					ota_save_stage "installed"
+					ota_request_overlay_enable
+					ota_log "re-enabled overlay for next boot; rebooting"
+					sync
+					reboot
+					exit 0
+				else
+					ota_log "ERROR: dpkg -i failed (rc=${DPKG_RC}, attempt $((OTA_ATTEMPTS+1)))"
+					if [ "$((OTA_ATTEMPTS+1))" -ge 3 ]; then
+						ota_log "exhausted install attempts; marking failed for rollback"
+						ota_save_stage "failed" "dpkg -i failed after 3 attempts: ${DPKG_OUTPUT}"
+						ota_request_overlay_enable
+						sync
+						reboot
+						exit 0
+					fi
+					# Still have attempts left - stay on bare ext4 and
+					# reboot to retry (ExecStartPre re-runs this same
+					# logic on the next boot with Attempts already
+					# incremented). Do NOT re-enable the overlay yet.
+					sync
+					reboot
+					exit 0
+				fi
+			fi
+		fi
+	fi
+
+	# --- Failure/rollback: restore the pre-install backup and always
+	#     re-enable the overlay before returning to normal operation. ---
+	if [ "${OTA_STAGE}" = "failed" ]; then
+		if overlay_is_active; then
+			ota_log "ERROR: failed state found while overlay is active - unexpected; requesting disable to run rollback on bare root"
+			if /sbin/overlayctl unlock; then
+				echo 1 > /overlay/robase/overlay/disable
+				sync
+				/sbin/overlayctl lock
+				sync
+				reboot
+				exit 0
+			fi
+		else
+			BACKUP_FILE="$(jq -r '.BackupPath // empty' "${OTA_STATE}" 2>/dev/null)"
+			if [ -n "${BACKUP_FILE}" ] && [ -e "${BACKUP_FILE}" ]; then
+				ota_log "rolling back using ${BACKUP_FILE}"
+				tar xzf "${BACKUP_FILE}" -C / 2>>"${STX_LOG}"
+				systemctl daemon-reload 2>>"${STX_LOG}"
+				ota_log "rollback restore complete"
+			else
+				ota_log "ERROR: no usable backup found for rollback ($(jq -r '.LastError // empty' "${OTA_STATE}"))"
+			fi
+			ota_save_stage "rolled_back"
+			ota_request_overlay_enable
+			ota_log "re-enabled overlay for next boot; rebooting"
 			sync
 			reboot
 			exit 0
-		else
-			wLog "ERROR: Failed to stage package to ext4 lower layer. Update aborted."
-			/sbin/overlayctl lock
 		fi
-	else
-		# Overlay already inactive — copy to /root/ for next section to pick up
-		cp "${TEMP_PACKAGE_FILE}" /root/
-		rm -f "${TEMP_PACKAGE_FILE}"
-	fi
-fi
-
-# Stage 2 (overlay inactive): install the deb from /root/ and re-enable overlay
-if [ -e ${PACKAGE_UPDATE_LOCATION} ]; then
-	UPDATE_PACKAGE_FILE=`ls -1t ${PACKAGE_UPDATE_LOCATION} | head -1`
-	if [ -n "${UPDATE_PACKAGE_FILE}" ]; then
-		wLog "Installing update package ${UPDATE_PACKAGE_FILE}..."
-		# Move the deb to /tmp and re-enable overlay BEFORE calling dpkg.
-		# The dpkg postinst runs 'systemctl daemon-reload && systemctl start stratux'
-		# which will kill this ExecStartPre process via daemon-reload. By cleaning up
-		# first the system is in a consistent state even if dpkg kills this script.
-		UPDATE_TEMP_FILE="/tmp/$(basename "${UPDATE_PACKAGE_FILE}")"
-		mv "${UPDATE_PACKAGE_FILE}" "${UPDATE_TEMP_FILE}"
-		/sbin/overlayctl enable
-		if dpkg -i --force-depends "${UPDATE_TEMP_FILE}"; then
-			wLog "Package installed successfully."
-		else
-			wLog "ERROR: dpkg failed to install ${UPDATE_TEMP_FILE}."
-		fi
-		rm -f "${UPDATE_TEMP_FILE}"
-		wLog "Finished. Rebooting..."
-		sync
-		reboot
-		exit 0
 	fi
 fi
 

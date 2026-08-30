@@ -226,9 +226,20 @@ const healthUpdateInterval = 5 * time.Second
 // process. Call once from main().
 func healthUpdateLoop() {
 	updateHealth() // populate immediately so /getHealth never returns an empty report right after startup
+	otaAdvanceLogged("startup")
 	ticker := time.NewTicker(healthUpdateInterval)
 	for range ticker.C {
 		updateHealth()
+		otaAdvanceLogged("tick")
+	}
+}
+
+// otaAdvanceLogged calls otaAdvance and logs any error, so a problem
+// advancing the OTA state machine is visible without making the health
+// tick itself fail.
+func otaAdvanceLogged(context string) {
+	if err := otaAdvance(); err != nil {
+		log.Printf("OTA: advance (%s) error: %s\n", context, err)
 	}
 }
 
