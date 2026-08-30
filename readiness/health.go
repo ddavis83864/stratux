@@ -56,17 +56,29 @@ type RadioHealth struct {
 }
 
 // StateFromBandStatus maps sdrassign's existing (Enabled/Assigned/
-// Ambiguous/Conflict/Degraded) signals onto the unified ComponentState.
+// Ambiguous/Conflict/ExternallySatisfied/Degraded) signals onto the
+// unified ComponentState.
 //
 // A band the operator has intentionally disabled maps to StateNotInstalled
 // (gray, "nothing to check here"), not StateNotReady - it is a
 // configuration choice, not a failure, and must not render red or amber.
 // Band.Enabled/Band.Reason still say plainly that it is disabled by
 // configuration, so this is not ambiguous with genuinely absent hardware.
+//
+// ExternallySatisfied is checked before Assigned/Ambiguous/Conflict, not
+// after: an externally-satisfied band (a non-SDR low-power radio already
+// serving it, e.g. an external 978 UAT receiver) is never SDR-assigned by
+// definition - sdrassign.BuildBandStatus's own Degraded formula already
+// excludes ExternallySatisfied bands from being considered degraded for
+// exactly this reason (`!a.ExternallySatisfied && (!a.Assigned || ...)`).
+// Mapping !b.Assigned straight to StateNotReady without this check would
+// misreport a healthy external receiver as a missing one.
 func StateFromBandStatus(b sdrassign.BandStatus) ComponentState {
 	switch {
 	case !b.Enabled:
 		return StateNotInstalled
+	case b.ExternallySatisfied:
+		return StateReady
 	case b.Ambiguous, b.Conflict, !b.Assigned:
 		return StateNotReady
 	case b.Degraded:

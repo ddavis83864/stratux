@@ -12,7 +12,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -21,13 +23,10 @@ import (
 )
 
 // PersistentDataPath is where the mission's dedicated third partition is
-// mounted. PersistentDataExpectedUUID is that partition's filesystem UUID
-// as provisioned on the development card; a deployment using a different
-// card/partition layout should override this (e.g. via a future settings
-// field) rather than hardcoding a new value here.
-var (
-	PersistentDataPath         = "/var/lib/stratux-data"
-	PersistentDataExpectedUUID = "fa3cfa53-8933-4263-a19b-25227dbf13e6"
+// mounted. PersistentDataFSType is the filesystem type it must be.
+const (
+	PersistentDataPath   = "/var/lib/stratux-data"
+	PersistentDataFSType = "ext4"
 )
 
 // timeTrust is the trusted-time state machine gps.go's RMC handler feeds.
@@ -76,6 +75,40 @@ func bandStatusFromGlobalStatus(enabled, detected, assigned bool, deviceSerial s
 		Degraded:            degraded,
 		Reason:              reason,
 	}
+}
+
+// ensurePersistentDataUUID resolves the filesystem UUID expected at
+// PersistentDataPath.
+//
+// If the operator has explicitly configured globalSettings.PersistentDataUUID
+// (via /setSettings, the same mechanism as every other setting), that value
+// is authoritative and this function does nothing else - "configurable".
+//
+// Otherwise, the very first time PersistentDataPath is found mounted as a
+// structurally-valid, writable ext4 filesystem (readiness.DiscoverableMount),
+// its UUID is pinned into globalSettings.PersistentDataUUID and persisted via
+// saveSettings() - "discoverable through a safe installation configuration".
+// This never accepts an arbitrary mount: the ext4 filesystem-type gate must
+// pass, and pinning only happens once, the same way a fresh install would
+// certify its own hardware. Every check after pinning - whether the UUID
+// came from settings or from discovery - is the same strict exact-match
+// comparison in readiness.EvaluateStorage.
+func ensurePersistentDataUUID() {
+	if globalSettings.PersistentDataUUID != "" {
+		return
+	}
+	mnt, err := readiness.FindMount(PersistentDataPath)
+	if err != nil {
+		return
+	}
+	_, statErr := os.Stat(PersistentDataPath)
+	present := statErr == nil
+	if !readiness.DiscoverableMount(mnt, present, PersistentDataFSType) {
+		return
+	}
+	globalSettings.PersistentDataUUID = mnt.UUID
+	saveSettings()
+	log.Printf("readiness: pinned persistent-data filesystem UUID %s at %s (first successful discovery, no UUID was previously configured)\n", mnt.UUID, PersistentDataPath)
 }
 
 // updateHealth rebuilds globalHealth from current live signals. It is
@@ -142,7 +175,8 @@ func updateHealth() {
 	throttle, _ := readiness.GetThrottled()       // zero-value (not throttled) on non-Pi dev builds
 	system := readiness.BuildSystemHealth(globalStatus.Version, globalStatus.Build, time.Duration(globalStatus.Uptime)*time.Nanosecond, float64(globalStatus.CPUTemp), throttle.Throttled(), throttle.Undervoltage(), failedUnits)
 
-	storage := readiness.CertifyPersistentStorage(PersistentDataPath, PersistentDataExpectedUUID, readiness.DefaultPersistentStorageThresholds())
+	ensurePersistentDataUUID()
+	storage := readiness.CertifyPersistentStorage(PersistentDataPath, globalSettings.PersistentDataUUID, readiness.DefaultPersistentStorageThresholds())
 	overlay := readiness.CertifyPersistentStorage("/", "", readiness.DefaultPersistentStorageThresholds())
 
 	ahrs := readiness.NotInstalled("AHRS board not yet installed; expected in a future hardware revision")

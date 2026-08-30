@@ -138,11 +138,23 @@ data path that already exists rather than adding a second, currently-unused UTC 
 `StorageHealth` distinguishes the protected temporary overlay from the dedicated persistent
 partition — see the fstab/mount evidence in [architecture.md](architecture.md) for the current
 partition layout (`/dev/mmcblk0p3`, ext4, UUID `fa3cfa53-8933-4263-a19b-25227dbf13e6`, mounted at
-`/var/lib/stratux-data`). `main/health.go` certifies both paths (`PersistentDataPath`,
-`PersistentDataExpectedUUID` — override these if a deployment uses a different card layout) and
-reports them as separate health-API fields (`Storage`, `TemporaryOverlay`); **`DiskBytesFree` in
-`/getStatus` is unchanged** and continues to reflect `/` as it always has, for backward
-compatibility with existing clients.
+`/var/lib/stratux-data`). `main/health.go` certifies both `PersistentDataPath`
+(`/var/lib/stratux-data`, constant) and reports them as separate health-API fields (`Storage`,
+`TemporaryOverlay`); **`DiskBytesFree` in `/getStatus` is unchanged** and continues to reflect
+`/` as it always has, for backward compatibility with existing clients.
+
+**Expected UUID — configurable, or safely discoverable, never silently accepted.** The
+partition's expected filesystem UUID is `globalSettings.PersistentDataUUID`, an ordinary
+settings field (`GET`/`POST /getSettings` /`/setSettings`, like everything else in
+`globalSettings`) — set it explicitly for a known installation. If it is left empty,
+`main/health.go`'s `ensurePersistentDataUUID()` pins it automatically **the first time**
+`PersistentDataPath` is found mounted as a structurally-valid filesystem
+(`readiness.DiscoverableMount`: present, mounted, read-write, and — the critical gate — exactly
+the expected filesystem type, `ext4`). This is deliberately not "trust whatever's mounted":
+an overlay or tmpfs mount at the same path (or a read-only one) never passes the type/read-write
+gate and is never pinned. Once a UUID is set — by either path — every later check is the same
+strict exact-match comparison in `readiness.EvaluateStorage` as before; discovery only ever runs
+once, not on every health tick.
 
 Certification checks: present (the path exists), mounted (via `findmnt`, using its
 `-P` pairs output rather than fixed-column output — column-based parsing silently misaligns
@@ -266,6 +278,9 @@ matching UTC too, not a prerequisite for correct stored data.
 - [ ] `AHRS`/`Baro`/`Fan` all read `NOT_INSTALLED` with no numeric fields present, until the
       corresponding hardware exists.
 - [ ] The dashboard never shows red solely because there is no current aircraft/tower in range.
+- [ ] An external (non-SDR) low-power 978 UAT receiver reads `READY`, not missing/`NOT_READY`,
+      even though legacy `/getStatus`'s `UAT_Assigned` is `false` for it (it was never
+      SDR-assigned in the first place) — see `StateFromBandStatus`'s `ExternallySatisfied` check.
 - [ ] Existing regression checklist in [building.md](building.md) / hardware docs still passes:
       deterministic SDR assignment, 978/1090/FIS-B decoding, GDL90 output, GPYes positioning,
       Wi-Fi AP, existing web pages/APIs, boot without AHRS, boot with persistent storage absent.
@@ -276,9 +291,10 @@ matching UTC too, not a prerequisite for correct stored data.
   clock set, the same mechanism as a hard step, just without the once-per-boot restriction.
 - GPX/KML export are interface-only; only CSV export is implemented.
 - Automatic flight recording is not enabled by this change.
-- `PersistentDataExpectedUUID` (`main/health.go`) is hardcoded to the development card's
-  provisioned UUID; a different card/partition layout needs this value updated (ideally via a
-  future settings field) rather than a code change.
+- Discovery pins on the *first* structurally-valid ext4 mount found at `PersistentDataPath` if
+  no UUID is configured; if that first mount is somehow the wrong ext4 filesystem (e.g. during
+  bring-up with an unintended card), the operator must clear `PersistentDataUUID` via
+  `/setSettings` to let it re-pin, rather than it self-correcting automatically.
 - This foundation has been validated by unit tests and a full daemon build; hardware validation
   (the checklist above, on the actual development card) is tracked separately — see the PR for
   current status.

@@ -189,6 +189,33 @@ func TestBuildRadioHealth_DisabledBandIsNotInstalledNotFailed(t *testing.T) {
 	}
 }
 
+func TestBuildRadioHealth_ExternallySatisfiedUnassignedBandIsReady(t *testing.T) {
+	// An external low-power 978 UAT radio serves the band directly - it is
+	// never SDR-assigned, so Assigned is false, but this must not read as
+	// missing/NOT_READY. Mirrors sdrassign's own BuildBandStatus, which
+	// excludes ExternallySatisfied bands from Degraded for the same reason.
+	external := sdrassign.BandStatus{
+		Enabled:             true,
+		Assigned:            false,
+		ExternallySatisfied: true,
+		AssignmentSource:    "external",
+		Reason:              "978 UAT served by an external low-power radio.",
+	}
+	h := BuildRadioHealth(external, 1200, 40, 60, time.Now(), time.Now(), 2, map[string]int{"METAR": 10})
+	if h.State != StateReady {
+		t.Errorf("an externally-satisfied, SDR-unassigned band must read READY, got %q (color %s)", h.State, h.State.Color())
+	}
+}
+
+func TestBuildRadioHealth_ExternallySatisfiedOverridesConflict(t *testing.T) {
+	// ExternallySatisfied is checked before Ambiguous/Conflict/Assigned in
+	// StateFromBandStatus, matching sdrassign's own precedence.
+	b := sdrassign.BandStatus{Enabled: true, ExternallySatisfied: true, Conflict: true, Ambiguous: true, Assigned: false}
+	if got := StateFromBandStatus(b); got != StateReady {
+		t.Errorf("StateFromBandStatus with ExternallySatisfied=true = %q, want READY", got)
+	}
+}
+
 func TestBuildRadioHealth_ConflictIsNotReady(t *testing.T) {
 	conflict := sdrassign.BandStatus{Enabled: true, Assigned: true, Conflict: true, Reason: "duplicate tag conflict"}
 	h := BuildRadioHealth(conflict, 0, 0, 0, time.Time{}, time.Now(), 0, nil)

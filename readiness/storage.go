@@ -195,6 +195,26 @@ type MountInfo struct {
 	ReadOnly bool
 }
 
+// DiscoverableMount reports whether info is structurally sound enough to
+// safely pin as the expected persistent-data filesystem the first time no
+// UUID has been configured yet: actually present, actually mounted,
+// read-write, and - critically - the expected filesystem type (ext4 for
+// the mission's dedicated data partition).
+//
+// This is the gate between "configurable" and "discoverable" in the
+// installation-safety design: an operator can always set an expected UUID
+// explicitly ahead of time, but if none is set, the very first UUID this
+// package will ever trust is only pinned from a mount that already looks
+// exactly like the intended partition - never from an arbitrary mount
+// (e.g. an accidental bind mount, a USB stick, or the tmpfs overlay
+// itself, which would never pass fsType=="ext4"). Once pinned, every
+// subsequent check is the ordinary strict UUID comparison in
+// EvaluateStorage - this function is only consulted for the one-time
+// discovery decision, not on every check.
+func DiscoverableMount(info MountInfo, present bool, expectedFSType string) bool {
+	return present && info.Mounted && !info.ReadOnly && info.FSType == expectedFSType && info.UUID != ""
+}
+
 var findmntPairPattern = regexp.MustCompile(`(\w+)="([^"]*)"`)
 
 // FindMount reports the current mount for path using findmnt(8), which is

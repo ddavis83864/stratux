@@ -206,6 +206,49 @@ func TestCertifyPersistentStorage_RealTempDirIsWritableAndReady(t *testing.T) {
 	}
 }
 
+func TestDiscoverableMount_GoodExt4Mount(t *testing.T) {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "fa3cfa53-8933-4263-a19b-25227dbf13e6", ReadOnly: false}
+	if !DiscoverableMount(info, true, "ext4") {
+		t.Error("a present, mounted, writable ext4 filesystem with a UUID should be discoverable")
+	}
+}
+
+func TestDiscoverableMount_RejectsWrongFilesystemType(t *testing.T) {
+	// An overlay or tmpfs mount at the same path must never be silently
+	// pinned as the persistent-data partition.
+	info := MountInfo{Mounted: true, FSType: "overlay", UUID: "", ReadOnly: false}
+	if DiscoverableMount(info, true, "ext4") {
+		t.Error("an overlay filesystem must not be discoverable as the ext4 persistent-data partition")
+	}
+	tmpfs := MountInfo{Mounted: true, FSType: "tmpfs", UUID: "", ReadOnly: false}
+	if DiscoverableMount(tmpfs, true, "ext4") {
+		t.Error("a tmpfs filesystem must not be discoverable as the ext4 persistent-data partition")
+	}
+}
+
+func TestDiscoverableMount_RejectsReadOnly(t *testing.T) {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "u", ReadOnly: true}
+	if DiscoverableMount(info, true, "ext4") {
+		t.Error("a read-only mount must not be discovered/pinned")
+	}
+}
+
+func TestDiscoverableMount_RejectsNotMountedOrAbsent(t *testing.T) {
+	if DiscoverableMount(MountInfo{Mounted: false}, true, "ext4") {
+		t.Error("an unmounted path must not be discoverable")
+	}
+	if DiscoverableMount(MountInfo{Mounted: true, FSType: "ext4", UUID: "u"}, false, "ext4") {
+		t.Error("an absent path must not be discoverable even if MountInfo looks fine")
+	}
+}
+
+func TestDiscoverableMount_RejectsEmptyUUID(t *testing.T) {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "", ReadOnly: false}
+	if DiscoverableMount(info, true, "ext4") {
+		t.Error("a mount with no UUID at all must not be discoverable - there would be nothing to pin")
+	}
+}
+
 func TestCertifyPersistentStorage_MissingPathIsNotReady(t *testing.T) {
 	h := CertifyPersistentStorage("/nonexistent/readiness/mission/path", "", DefaultPersistentStorageThresholds())
 	if h.Present {
