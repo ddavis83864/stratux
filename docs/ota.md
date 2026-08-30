@@ -177,6 +177,33 @@ Two mission requirements are structural, not just documented intent:
   re-verifies the file's actual SHA-256 against the recorded expected value before proceeding -
   the file merely existing is never treated as proof it is the right, uncorrupted package.
 
+## A wedging retry-guard defect found by dry-run testing, before touching hardware
+
+The install/rollback block in `debian/stratux-pre-start.sh` had never actually been executed -
+only syntax-checked (`bash -n`) - before it was exercised end to end in an isolated sandbox (a
+scratch directory tree with stubbed `overlayctl`/`dpkg`/`dpkg-query`/`reboot`/`systemctl`/
+`findmnt` on `PATH`, each script invocation representing one simulated boot). That run surfaced a
+real defect: the top-level guard only matched `Stage == "disable_requested"`, but a failed
+`dpkg -i` advances `Stage` to `"installing"` *before* the retry reboot. On the next boot the guard
+no longer matched anything, so the block never ran again - `Attempts` stayed frozen, the overlay
+was never re-enabled, and the device would wedge on bare ext4 indefinitely after a single
+transient install failure (an `ENOSPC`-class failure, precisely the kind this mechanism exists to
+survive, being the most likely real-world trigger).
+
+Fixed by widening the guard to also resume from `Stage == "installing"`, re-deriving success from
+`dpkg-query`'s own status/version (in case a previous `dpkg -i` actually completed just before a
+reboot or power loss cut the script off before it could record `"installed"` - the same
+power-loss-safe philosophy `ota.Decide` already uses on the Go side) rather than blindly retrying
+or blindly trusting the stage name, and reusing the single backup taken before the first attempt
+instead of creating a redundant one per retry. Re-validated in the same sandbox across nine
+scenarios: overlay still active (await-reboot, no dpkg touched), missing staged package, hash
+mismatch, first-attempt success, a persistent failure exhausting all 3 attempts across separate
+boots and then rolling back, a transient failure recovering on a later attempt with the backup
+reused rather than duplicated, the power-loss-safe resume short-circuit (dpkg already healthy,
+`dpkg -i` not re-invoked), and rollback genuinely restoring the pre-install backup's content. No
+package was installed on real hardware to find or fix this - it was caught entirely by the kind of
+loopback/namespace validation this mechanism was already meant to prefer over live reboot cycles.
+
 ## Known limitations
 
 - The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, since

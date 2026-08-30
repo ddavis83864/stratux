@@ -143,22 +143,80 @@ if [ -f "${OTA_STATE}" ]; then
 	ota_log "state found: stage=${OTA_STAGE} package=${OTA_PACKAGE} attempts=${OTA_ATTEMPTS}"
 
 	# --- Install stage: only ever runs once bare ext4 is confirmed. ---
-	if [ "${OTA_STAGE}" = "disable_requested" ] && ! overlay_is_active; then
+	# Must trigger on both the first attempt (Stage == disable_requested)
+	# and any resumed attempt after a retry reboot or an interrupted
+	# install / power loss (Stage == installing). A guard that only
+	# matched disable_requested would wedge the device forever after the
+	# first failed dpkg -i: Stage advances to "installing" before the
+	# retry reboot, so this block would never run again - Attempts frozen,
+	# overlay never re-enabled. Caught by dry-run test before this fix
+	# landed; see docs/ota.md.
+	if { [ "${OTA_STAGE}" = "disable_requested" ] || [ "${OTA_STAGE}" = "installing" ]; } && ! overlay_is_active; then
+		RESUMING=false
+		[ "${OTA_STAGE}" = "installing" ] && RESUMING=true
+
+		if $RESUMING; then
+			# A previous dpkg -i may have actually completed just before
+			# a reboot or power loss cut this script off before it could
+			# record "installed" - re-derive success from dpkg's own
+			# status rather than blindly retrying or blindly trusting
+			# the stage name.
+			DPKG_STATUS="$(dpkg-query -W -f='${Status}' stratux 2>/dev/null)"
+			DPKG_VERSION="$(dpkg-query -W -f='${Version}' stratux 2>/dev/null)"
+			EXPECTED_VERSION="$(jq -r .ExpectedVersion "${OTA_STATE}" 2>/dev/null)"
+			if [ "${DPKG_STATUS}" = "install ok installed" ] && [ "${DPKG_VERSION}" = "${EXPECTED_VERSION}" ]; then
+				ota_log "resumed installing stage: dpkg already reports this version healthy - prior attempt actually succeeded"
+				ota_save_stage "installed"
+				ota_request_overlay_enable
+				ota_log "re-enabled overlay for next boot; rebooting"
+				sync
+				reboot
+				exit 0
+			fi
+			if [ "${OTA_ATTEMPTS}" -ge 3 ]; then
+				ota_log "exhausted install attempts on resume; marking failed for rollback"
+				ota_save_stage "failed" "dpkg -i did not succeed after ${OTA_ATTEMPTS} attempts"
+				ota_request_overlay_enable
+				sync
+				reboot
+				exit 0
+			fi
+		fi
+
 		if [ ! -e "${OTA_PACKAGE}" ]; then
 			ota_log "ERROR: staged package missing on bare root (${OTA_PACKAGE})"
 			ota_save_stage "failed" "staged package missing on bare root"
+			if $RESUMING; then
+				ota_request_overlay_enable
+				sync
+				reboot
+				exit 0
+			fi
 		else
 			ACTUAL_SHA256="$(sha256sum "${OTA_PACKAGE}" | cut -d' ' -f1)"
 			if [ "${ACTUAL_SHA256}" != "${OTA_SHA256}" ]; then
 				ota_log "ERROR: hash mismatch on bare root (got ${ACTUAL_SHA256}, expected ${OTA_SHA256})"
 				ota_save_stage "failed" "hash mismatch on bare root"
+				if $RESUMING; then
+					ota_request_overlay_enable
+					sync
+					reboot
+					exit 0
+				fi
 			else
 				# Bare ext4 root is directly writable - no remount dance
-				# needed for the backup or for dpkg itself.
-				mkdir -p "${OTA_BACKUP_DIR}"
-				BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
-				ota_log "backing up current install to ${BACKUP_FILE} before installing"
-				tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules 2>>"${STX_LOG}"
+				# needed for the backup or for dpkg itself. On a resumed
+				# attempt, reuse the backup already taken before the
+				# first attempt rather than taking (and retaining) a new
+				# one per retry.
+				if $RESUMING; then
+					BACKUP_FILE="$(jq -r '.BackupPath // empty' "${OTA_STATE}" 2>/dev/null)"
+				else
+					mkdir -p "${OTA_BACKUP_DIR}"
+					BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+					ota_log "backing up current install to ${BACKUP_FILE} before installing"
+					tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules 2>>"${STX_LOG}"
+				fi
 
 				jq --arg b "${BACKUP_FILE}" '.Stage="installing" | .BackupPath=$b | .Attempts=((.Attempts // 0)+1)' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
 				sync
@@ -187,9 +245,9 @@ if [ -f "${OTA_STATE}" ]; then
 						exit 0
 					fi
 					# Still have attempts left - stay on bare ext4 and
-					# reboot to retry (ExecStartPre re-runs this same
-					# logic on the next boot with Attempts already
-					# incremented). Do NOT re-enable the overlay yet.
+					# reboot to retry. Stage remains "installing", and
+					# the top-level guard above now matches that stage
+					# too, so the next boot re-enters this same block.
 					sync
 					reboot
 					exit 0
