@@ -19,6 +19,7 @@ var URL_SETTINGS_GET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getSettings"
 var URL_SETTINGS_SET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setSettings";
 var URL_SHUTDOWN            = URL_HOST_PROTOCOL + URL_HOST_BASE + "/shutdown";
 var URL_STATUS_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStatus";
+var URL_HEALTH_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getHealth";
 var URL_REGION_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRegion";
 var URL_REGION_SET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setRegion";
 var URL_TOWERS_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getTowers";
@@ -52,6 +53,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/',
 			templateUrl: 'plates/status.html',
 			controller: 'StatusCtrl',
+			reloadOnSearch: false
+		})
+		.state('readiness', {
+			url: '/readiness',
+			templateUrl: 'plates/readiness.html',
+			controller: 'ReadinessCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {

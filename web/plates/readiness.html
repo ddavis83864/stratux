@@ -1,0 +1,128 @@
+<div class="col-sm-12">
+	<div class="text-center">
+		<a ng-click="VersionClick()" class="btn btn-hidden"><strong>Version: <span><tt>{{Health.System.Version}} ({{Health.System.Commit.substr(0,10)}})</tt></span></strong></a>
+	</div>
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Readiness</span>
+			<span class="label" ng-class="OverallClass">{{Health.Overall}}</span>
+			<span ng-show="ConnectState == 'Disconnected'" class="label label-danger">Disconnected</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Supplemental, non-certified situational-awareness equipment. This overview
+				summarizes component health; it is not a flight-readiness certification.
+			</p>
+
+			<div class="row">
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">978 UAT</strong>
+					<span class="col-xs-6"><span class="label" ng-class="UAT978Class">{{Health.UAT978.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.UAT978.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TotalFrames">
+						{{Health.UAT978.TotalFrames}} frames total, {{Health.UAT978.MessageRateLastMinute}}/min,
+						last {{LastFrameAgeUAT}}s ago
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TowerCount">
+						{{Health.UAT978.TowerCount}} FIS-B tower(s) seen
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">1090 ES</strong>
+					<span class="col-xs-6"><span class="label" ng-class="ES1090Class">{{Health.ES1090.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.ES1090.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.ES1090.TotalFrames">
+						{{Health.ES1090.TotalFrames}} frames total, {{Health.ES1090.MessageRateLastMinute}}/min,
+						last {{LastFrameAgeES}}s ago
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">GPS</strong>
+					<span class="col-xs-6"><span class="label" ng-class="GPSClass">{{Health.GPS.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.GPS.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.GPS.Present">
+						{{Health.GPS.DeviceType}}, {{Health.GPS.SatellitesInSolution}} sats in solution
+						({{Health.GPS.SatellitesSeen}} seen), &plusmn;{{Health.GPS.AccuracyMeters}}m
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Time</strong>
+					<span class="col-xs-6"><span class="label" ng-class="TimeClass">{{Health.Time.State}}</span></span>
+					<span class="col-xs-12 small text-muted">
+						Source: {{Health.Time.Source || 'none'}}<span ng-show="TimeSourceAge !== null">, synced {{TimeSourceAge}}s ago</span>
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Time.LastSyncError">
+						{{Health.Time.LastSyncError}}
+					</span>
+					<span class="col-xs-12 small" ng-class="{'text-danger': !Health.Time.RecordingAllowed}">
+						Recording {{Health.Time.RecordingAllowed ? 'permitted' : 'not permitted'}} by trusted time
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">GDL90 / Clients</strong>
+					<span class="col-xs-6"><span class="label" ng-class="GDL90Class">{{Health.GDL90.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.GDL90.Reason}}</span>
+					<span class="col-xs-12 small text-muted">
+						{{Health.GDL90.RecentClientCount}} recent client(s)
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">System</strong>
+					<span class="col-xs-6"><span class="label" ng-class="SystemClass">{{Health.System.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.System.Reason}}</span>
+					<span class="col-xs-12 small text-muted">
+						{{Health.System.CPUTempC | number:1}}&deg;C
+						<span ng-show="Health.System.Throttled" class="text-danger">&middot; throttled</span>
+						<span ng-show="Health.System.UndervoltageDetected" class="text-danger">&middot; undervoltage</span>
+					</span>
+					<span class="col-xs-12 small text-danger" ng-repeat="svc in Health.System.FailedServices">
+						failed: {{svc}}
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Persistent Storage</strong>
+					<span class="col-xs-6"><span class="label" ng-class="StorageClass">{{Health.Storage.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Storage.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Storage.Present">
+						{{(Health.Storage.UsedBytes/1073741824) | number:1}} /
+						{{(Health.Storage.TotalBytes/1073741824) | number:1}} GB used
+						({{Health.Storage.UtilizationPercent | number:1}}%)
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Overlay (temp)</strong>
+					<span class="col-xs-6"><span class="label" ng-class="OverlayClass">{{Health.TemporaryOverlay.State}}</span></span>
+					<span class="col-xs-12 small text-muted">
+						Protected RAM-backed root overlay - not recording capacity.
+						{{Health.TemporaryOverlay.UtilizationPercent | number:1}}% used.
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">AHRS</strong>
+					<span class="col-xs-6"><span class="label" ng-class="AHRSClass">{{Health.AHRS.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.AHRS.Reason}}</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Barometer</strong>
+					<span class="col-xs-6"><span class="label" ng-class="BaroClass">{{Health.Baro.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Baro.Reason}}</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Fan Controller</strong>
+					<span class="col-xs-6"><span class="label" ng-class="FanClass">{{Health.Fan.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Fan.Reason}}</span>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
