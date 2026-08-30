@@ -233,16 +233,27 @@ starts the very same unit currently activating, which re-invokes `ExecStartPre` 
 *while the outer `dpkg -i` is still running and holding dpkg's lock*. The reentrant invocation saw
 `Stage=installing` and, with no way to know it was itself running inside another install already
 in progress, took its own independent retry decision - calling `dpkg -i` again, which failed
-immediately on dpkg's lock (`rc=2`), and then rebooted mid-install. This is a structural defect,
-not specific to the manual bootstrap this first deployment required: any boot-driven install
-would hit the identical recursion, since `postinst` always tries to restart the service it just
-updated.
+immediately on dpkg's lock (`rc=2`), and then rebooted mid-install.
 
 Confirmed from hardware evidence, not inferred: `systemctl status stratux` showed the failed
 `ExecStartPre` chain with `dpkg`, `stratux.prerm`, and a nested `systemctl` all listed as "remains
 running after unit stopped", and `Restart=always`/`StartLimitBurst=5`/`StartLimitIntervalUSec=10s`
 (from `stratux.service`) explains why the device stabilized on its own after the burst limit was
 hit, rather than looping indefinitely.
+
+**Correction, from a later, genuinely boot-driven (non-manual) install**: this defect was found
+and reproduced while manually invoking the install script directly (`sudo bash ...sh`, needed to
+bootstrap the very first version of this mechanism onto a device that had never run it before) -
+not via `systemctl start stratux` itself. A subsequent fully boot-driven install (no manual
+invocation at all - `ExecStartPre` running normally as part of the reboot systemd already performs
+for this state machine) completed in a single attempt with no reentrancy observed, which is
+consistent with systemd not spawning a second `ExecStartPre` for a `systemctl start` request
+against a unit already activating. Whether the recursion is possible during a genuine boot-driven
+install was therefore not conclusively isolated either way - the original wording here overstated
+that it was. The `STRATUX_OTA_INSTALL` gate below is kept regardless, both because it was observed
+under the manual-bootstrap invocation this mechanism will always require exactly once per fresh
+device, and because it removes the question entirely rather than relying on an unconfirmed
+assumption about systemd's job-deduplication behavior.
 
 Fixed by gating every `systemctl start`/`stop`/`restart` in `preinst.dpkg`/`postinst.dpkg`/
 `prerm.dpkg` behind a `STRATUX_OTA_INSTALL` environment variable, set only when
