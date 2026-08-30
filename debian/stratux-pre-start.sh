@@ -146,6 +146,105 @@ os.replace(tmp, path)
 	sync
 }
 
+# ota_dpkg_meta_backup captures the minimum dpkg-database state needed to
+# reconcile `dpkg -s stratux` on rollback: the package's own stanza in
+# /var/lib/dpkg/status (every other package's stanza is left completely
+# untouched - this never reads or writes the rest of that file) and its
+# per-package control files under /var/lib/dpkg/info/stratux.*. This is
+# deliberately narrow: never a copy of the whole /var/lib/dpkg hierarchy.
+# $1: destination directory (created fresh). Mirrors ota.ExtractStanza in
+# the `ota` Go package, which carries the tested specification of the
+# splice; see docs/ota.md for why the algorithm lives in both places.
+ota_dpkg_meta_backup() {
+	local dest="$1"
+	rm -rf "${dest}"
+	mkdir -p "${dest}/info"
+	python3 -c '
+import sys
+path, dest = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as f:
+        status = f.read()
+except FileNotFoundError:
+    status = b""
+for s in [s for s in status.strip(b"\n").split(b"\n\n") if s.strip()]:
+    for line in s.split(b"\n"):
+        if line.startswith(b"Package:") and line.split(b":", 1)[1].strip() == b"stratux":
+            with open(dest, "wb") as out:
+                out.write(s.strip(b"\n") + b"\n")
+            sys.exit(0)
+sys.exit(1)
+' /var/lib/dpkg/status "${dest}/status-stanza.txt" || rm -f "${dest}/status-stanza.txt"
+	cp -a /var/lib/dpkg/info/stratux.* "${dest}/info/" 2>/dev/null || true
+}
+
+# ota_dpkg_meta_restore reconciles dpkg's own database from a directory
+# produced by ota_dpkg_meta_backup - the exact inverse splice. Missing or
+# corrupt metadata (an older backup taken before this fix existed, or one
+# that never completed) degrades to a logged warning rather than aborting -
+# the file-level restore that already ran is not undone by this failing.
+# $1: source directory (may not exist).
+#
+# Written atomically (temp file + fsync + rename, then fsync the containing
+# directory) so a power loss during rollback itself leaves /var/lib/dpkg/
+# status either fully the old content or fully the new content, never torn.
+# Safe to invoke repeatedly: replacing a stanza with identical content is a
+# no-op, and re-copying the same info/ files is a no-op.
+ota_dpkg_meta_restore() {
+	local src="$1"
+	if [ ! -d "${src}" ]; then
+		ota_log "WARNING: no dpkg metadata found in backup (${src}) - dpkg's own database was not reconciled; files were still restored"
+		return 1
+	fi
+	python3 -c '
+import os, sys
+status_path, stanza_file = sys.argv[1], sys.argv[2]
+def split_stanzas(data):
+    data = data.strip(b"\n")
+    return [s for s in data.split(b"\n\n") if s.strip()] if data else []
+def stanza_pkg(s):
+    for line in s.split(b"\n"):
+        if line.startswith(b"Package:"):
+            return line.split(b":", 1)[1].strip()
+    return None
+with open(status_path, "rb") as f:
+    status = f.read()
+new_stanza = None
+if os.path.exists(stanza_file):
+    with open(stanza_file, "rb") as f:
+        new_stanza = f.read().strip(b"\n")
+out, replaced = [], False
+for s in split_stanzas(status):
+    if stanza_pkg(s) == b"stratux":
+        replaced = True
+        if new_stanza is not None:
+            out.append(new_stanza)
+        continue
+    out.append(s)
+if not replaced and new_stanza is not None:
+    out.append(new_stanza)
+result = b"\n\n".join(out)
+if result:
+    result += b"\n"
+tmp = status_path + ".ota-tmp"
+with open(tmp, "wb") as f:
+    f.write(result)
+    f.flush()
+    os.fsync(f.fileno())
+os.replace(tmp, status_path)
+dirfd = os.open(os.path.dirname(status_path), os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+' /var/lib/dpkg/status "${src}/status-stanza.txt"
+	rm -f /var/lib/dpkg/info/stratux.*
+	if [ -d "${src}/info" ]; then
+		cp -a "${src}/info/." /var/lib/dpkg/info/ 2>/dev/null || true
+	fi
+	sync
+}
+
 ota_begin_install() {
 	# $1: backup path to record. Sets Stage=installing, BackupPath=$1,
 	# and increments Attempts - one atomic update, same as the combined
@@ -261,8 +360,11 @@ if [ -f "${OTA_STATE}" ]; then
 				else
 					mkdir -p "${OTA_BACKUP_DIR}"
 					BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
-					ota_log "backing up current install to ${BACKUP_FILE} before installing"
-					tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules 2>>"${STX_LOG}"
+					BACKUP_STAGE="$(mktemp -d)"
+					ota_dpkg_meta_backup "${BACKUP_STAGE}/ota-dpkg-meta"
+					ota_log "backing up current install (files + dpkg metadata) to ${BACKUP_FILE} before installing"
+					tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules -C "${BACKUP_STAGE}" ota-dpkg-meta 2>>"${STX_LOG}"
+					rm -rf "${BACKUP_STAGE}"
 				fi
 
 				ota_begin_install "${BACKUP_FILE}"
@@ -327,9 +429,16 @@ if [ -f "${OTA_STATE}" ]; then
 			BACKUP_FILE="$(ota_json_get BackupPath '')"
 			if [ -n "${BACKUP_FILE}" ] && [ -e "${BACKUP_FILE}" ]; then
 				ota_log "rolling back using ${BACKUP_FILE}"
-				tar xzf "${BACKUP_FILE}" -C / 2>>"${STX_LOG}"
+				tar xzf "${BACKUP_FILE}" -C / --exclude='ota-dpkg-meta' 2>>"${STX_LOG}"
+				DPKG_META_TMP="$(mktemp -d)"
+				if tar xzf "${BACKUP_FILE}" -C "${DPKG_META_TMP}" ota-dpkg-meta 2>>"${STX_LOG}"; then
+					ota_dpkg_meta_restore "${DPKG_META_TMP}/ota-dpkg-meta"
+				else
+					ota_log "WARNING: backup ${BACKUP_FILE} has no dpkg metadata (older backup format) - dpkg's own database was not reconciled; files were still restored"
+				fi
+				rm -rf "${DPKG_META_TMP}"
 				systemctl daemon-reload 2>>"${STX_LOG}"
-				ota_log "rollback restore complete"
+				ota_log "rollback restore complete (files and dpkg database reconciled)"
 			else
 				ota_log "ERROR: no usable backup found for rollback ($(ota_json_get LastError ''))"
 			fi

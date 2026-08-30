@@ -264,11 +264,68 @@ scope was independently confirmed complete against the package's full file manif
 (`dpkg-deb --contents`): every shipped file falls under one of the three backed-up paths, so
 nothing was left un-covered by the restore.
 
+## Package-database reconciliation on rollback
+
+A file-level rollback alone left a real reliability defect, not a cosmetic one: restoring
+`/opt/stratux` and the unit files from the tar backup put the correct bytes back on disk, but
+`dpkg -s stratux` kept reporting whatever state the interrupted install had left it in (e.g.
+`install ok unpacked`) rather than the version actually present on disk. That mismatch is a false
+premise for any later `dpkg -i` or `dpkg --configure -a`, which reasons about the package from
+dpkg's own database, not from what files happen to be on disk.
+
+The fix is deliberately narrow - never a copy of the whole `/var/lib/dpkg` hierarchy, which would
+risk corrupting unrelated packages' state:
+
+- **Backup** (`ota_dpkg_meta_backup`, taken once per transaction alongside the existing file tar,
+  before the first `dpkg -i` attempt): the `stratux` package's own stanza in
+  `/var/lib/dpkg/status` - extracted without reading, modifying, or even necessarily preserving
+  the byte layout of any other package's stanza in that file - and its per-package control files
+  under `/var/lib/dpkg/info/stratux.*`. Both are folded into the same backup tarball under a
+  synthetic `ota-dpkg-meta/` member so one backup file remains one transaction's complete restore
+  point.
+- **Restore** (`ota_dpkg_meta_restore`, run as part of rollback, right after the file restore):
+  splices the backed-up stanza back into `/var/lib/dpkg/status` in place of whatever is there now
+  (or removes it if the package genuinely had no stanza before this transaction - the fresh-install
+  case), and replaces `/var/lib/dpkg/info/stratux.*` with exactly the backed-up set (removing
+  whatever the failed install left there first). Every other package's stanza and info files are
+  never touched.
+- **Power-loss safety**: the status-file splice is written atomically - temp file, `fsync`,
+  `os.replace`, then `fsync` the containing directory - so a power loss during the write itself
+  leaves `/var/lib/dpkg/status` either fully the old content or fully the new content, never torn.
+  A power loss between the file restore and the metadata restore simply resumes both on the next
+  boot, since `Stage` only advances to `rolled_back` after both steps complete.
+- **Idempotent**: splicing the same stanza in twice, or re-copying the same info/ files twice,
+  produces an identical result both times - repeated rollback invocation is safe by construction,
+  not by an added guard.
+- **Graceful degradation**: a backup taken by an older version of this script (before this fix
+  existed) or one with a corrupt/incomplete `ota-dpkg-meta` member is detected and logged as a
+  warning; the file-level restore still completes and the transaction still reaches `rolled_back`
+  - `dpkg`'s database is left unreconciled in that one case, but the device is not left stuck, and
+  the gap is visible in the log rather than silent.
+
+The splice algorithm (`ExtractStanza`/`ReplaceStanza`) is implemented and unit-tested as pure logic
+in the `ota` Go package (`ota/dpkgmeta.go`, `ota/dpkgmeta_test.go`) - stanza replacement in place,
+removal, append-when-missing, exact-name matching (no `stratux-foo` collision with `stratux`),
+idempotency, and neighbor-stanza preservation - and mirrored by an equivalent python3 script
+embedded in `debian/stratux-pre-start.sh`, for the same reason the rest of the bare-ext4 state
+machine is re-derived in bash rather than shared: `ExecStartPre` runs before the Go daemon exists
+on a freshly-booted bare-ext4 system. Verified end to end (not just at the algorithm level) via the
+sandboxed dry-run harness: a successful install reconciles dpkg's database to the new version; a
+rollback reconciles it back to the exact prior version and status; the same rollback invoked twice
+is a no-op the second time; a fresh install started after a completed rollback succeeds cleanly;
+re-entering the `installing` stage when dpkg already reports the target version installed
+short-circuits without invoking `dpkg -i` again; and a backup missing its metadata member degrades
+to a logged warning without blocking the file-level restore.
+
 ## Known limitations
 
-- The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, since
+- The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, and the
+  same dpkg-metadata splice algorithm `ota.ExtractStanza`/`ota.ReplaceStanza` encode in Go, since
   `ExecStartPre` runs before the Go daemon exists on a freshly-booted bare-ext4 system. Keeping
-  the two in sync is a manual discipline, not enforced by a shared implementation.
-- Rollback restores files and reloads systemd; it does not re-run `dpkg` to un-record the
-  attempted version from dpkg's own database. A dpkg-level "downgrade" record mismatch after a
-  rollback is a known, accepted gap.
+  the bash and Go implementations in sync is a manual discipline, not enforced by a shared
+  implementation.
+- A backup taken before the package-database reconciliation fix existed (or one whose
+  `ota-dpkg-meta` member is otherwise missing/corrupt) cannot have `dpkg`'s database reconciled
+  from it - restore falls back to files-only, logs a warning, and still reaches `rolled_back`
+  rather than getting stuck, but the operator should expect to run `dpkg --configure -a` or an
+  equivalent manual fixup afterward in that specific case.
