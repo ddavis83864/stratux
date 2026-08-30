@@ -1293,6 +1293,7 @@ func managementInterface() {
 		})
 
 	http.HandleFunc("/getStatus", handleStatusRequest)
+	http.HandleFunc("/getHealth", handleHealthRequest)
 	http.HandleFunc("/getSituation", handleSituationRequest)
 	http.HandleFunc("/getTowers", handleTowersRequest)
 	http.HandleFunc("/getSatellites", handleSatellitesRequest)

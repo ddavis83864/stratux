@@ -29,6 +29,7 @@ import (
 	"os/exec"
 
 	"github.com/stratux/stratux/common"
+	"github.com/stratux/stratux/readiness"
 )
 
 const (
@@ -1324,23 +1325,52 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				gpsTime = time.Now().UTC()
 			}
 
-			if err == nil && gpsTime.After(time.Date(2016, time.January, 0, 0, 0, 0, 0, time.UTC)) { // Ignore dates before 2016-JAN-01.
+			// Coarse legacy sanity check retained only as a guard before
+			// even constructing a sample; readiness.EvaluateSample (via
+			// ObserveGNSS below) is what actually decides trust, using
+			// the configured plausible-date bounds - see
+			// docs/time-trust.md.
+			if err == nil && gpsTime.After(time.Date(2016, time.January, 0, 0, 0, 0, 0, time.UTC)) {
 				tmpSituation.GPSLastGPSTimeStratuxTime = stratuxClock.Time
 				tmpSituation.GPSTime = gpsTime
 				stratuxClock.SetRealTimeReference(gpsTime)
-				if time.Since(gpsTime) > 300*time.Millisecond || time.Since(gpsTime) < -300*time.Millisecond {
-					setStr := gpsTime.Format("20060102 15:04:05.000") + " UTC"
-					log.Printf("setting system time from %s to: '%s'\n", time.Now().Format("20060102 15:04:05.000"), setStr)
-					var err error
+
+				// By this point in processNMEALineLow, the sentence's NMEA
+				// checksum has already been validated (top of the
+				// function) and its status field checked ("x[2] != "A""
+				// returns early above) - both are always true here, and
+				// AcceptableFix is set to the same "A" (active navigation
+				// receiver) signal for consistency, since RMC does not
+				// carry a separate fix-type field to check independently.
+				sample := readiness.GNSSTimeSample{
+					HardwarePresent: true,
+					ChecksumValid:   true,
+					StatusValid:     true,
+					Parseable:       true,
+					AcceptableFix:   true,
+					UTC:             gpsTime,
+					ReceivedAt:      stratuxClock.Time,
+				}
+				decision := timeTrust.ObserveGNSS(sample, stratuxClock.Time, time.Now().UTC(), isRecordingActive())
+				switch decision.Action {
+				case readiness.ClockActionStepOnce, readiness.ClockActionSlew:
+					setStr := decision.NewUTC.Format("20060102 15:04:05.000") + " UTC"
+					log.Printf("trusted-time %s: %s (setting system time from %s to '%s')\n", decision.Action, decision.Reason, time.Now().Format("20060102 15:04:05.000"), setStr)
 					if common.IsRunningAsRoot() {
-						err = exec.Command("date", "-s", setStr).Run()
-					}					
-					if err != nil {
-						log.Printf("Set Date failure: %s error\n", err)
-					} else {
-						log.Printf("Time set from GPS. Current time is %v\n", time.Now())
+						if err := exec.Command("date", "-s", setStr).Run(); err != nil {
+							log.Printf("Set Date failure: %s error\n", err)
+						} else {
+							log.Printf("Time set from GPS. Current time is %v\n", time.Now())
+						}
+					}
+				case readiness.ClockActionRejectBackward:
+					log.Printf("trusted-time: %s\n", decision.Reason)
+				default:
+					if globalSettings.DEBUG {
+						log.Printf("trusted-time: no clock action (%s)\n", decision.Reason)
 					}
 				}
+
 				TraceLog.OnTimestamp(gpsTime)
 			}
 		}

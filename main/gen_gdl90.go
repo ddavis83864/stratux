@@ -1838,6 +1838,7 @@ func main() {
 
 	// Start the management interface.
 	go managementInterface()
+	go healthUpdateLoop()
 	go traceLoggerWatchdog()
 
 	crcInit() // Initialize CRC16 table.
