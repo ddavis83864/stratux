@@ -155,4 +155,33 @@ if [ -f /boot/firmware/.stratux-first-boot ]; then
 	fi
 fi
 
+###############
+# Standardize the appliance on UTC. Stored timestamps (health events, and
+# future recording data) are UTC regardless of system timezone, but the
+# system timezone itself has shipped as a stale build-time default
+# (Europe/London) on some images. This runs on every boot, is a no-op
+# once corrected, and uses the overlay unlock/lock pattern already used
+# elsewhere in this script so the fix persists through the protected
+# read-only root exactly like a real image rebuild would - an
+# already-flashed card gets the correct, persistent timezone without
+# needing to be reflashed.
+CURRENT_TZ="$(cat /etc/timezone 2>/dev/null)"
+if [ "$CURRENT_TZ" != "UTC" ]; then
+	wLog "System timezone is '${CURRENT_TZ}', correcting to UTC..."
+	if overlay_is_active; then
+		if /sbin/overlayctl unlock; then
+			echo "UTC" > /overlay/robase/etc/timezone
+			ln -sf /usr/share/zoneinfo/UTC /overlay/robase/etc/localtime
+			/sbin/overlayctl lock
+			wLog "Timezone corrected to UTC (persisted through the overlay's lower layer)."
+		else
+			wLog "ERROR: could not unlock overlay to correct timezone; will retry next boot."
+		fi
+	else
+		echo "UTC" > /etc/timezone
+		ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+		wLog "Timezone corrected to UTC (overlay inactive, wrote directly)."
+	fi
+fi
+
 wLog "Exited without updating anything..."
