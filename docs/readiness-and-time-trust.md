@@ -52,10 +52,17 @@ Per-component records live in `readiness/health.go`:
   weather-product counts. A user-disabled band reads `NOT_INSTALLED` (gray), not a failure.
 - **`GPSHealth`** distinguishes "present without a fix" (`DEGRADED` — routine at startup or
   indoors) from "missing/unresponsive device" (`NOT_READY`).
-- **`GDL90Health`** never reports `NOT_READY` for zero connected clients; `ForeFlightClientDetected`
-  is only ever set from evidence that actually identifies a ForeFlight client, since most GDL90
-  clients do not self-identify — its absence means "not confirmed," not "ForeFlight is not
-  connected."
+- **`GDL90Health`** never reports `NOT_READY` for zero connected clients. `ForeFlightDetection`
+  (a `ClientObservability` record: `State` — `DETECTED`/`NOT_DETECTED`/`UNKNOWN`/`UNSUPPORTED` —
+  plus `Reason` and `DetectionBasis`) replaces a bare "is ForeFlight connected" bool with an
+  honest account of what can actually be concluded. Stratux's client tracking
+  (`main/network.go`) is built entirely on ICMP echo-reply/destination-unreachable liveness
+  probing — it never receives or parses any application-identifying signal from an EFB client —
+  so `DETECTED` is unreachable with the protocol as currently implemented; zero clients
+  associated is real evidence for `NOT_DETECTED`; one or more clients present is honestly
+  `UNSUPPORTED`, never a guess that it's specifically ForeFlight. The legacy
+  `ForeFlightClientDetected` bool is kept for existing consumers, always exactly
+  `(State == DETECTED)`.
 - **`SystemHealth`** covers version/commit/uptime, CPU temperature, throttling/undervoltage
   (`readiness.GetThrottled`, parsing `vcgencmd get_throttled`'s bitmask — see
   `readiness/vcgencmd.go`), and failed systemd units (`readiness.ListFailedUnits`).
@@ -195,11 +202,20 @@ opening another WebSocket. Tile colors are derived directly from each component'
 `ComponentState` via the same mapping documented above — the frontend does not re-derive
 health, it only renders what the backend already decided.
 
-## Diagnostic bundle (`readiness/diagnostics.go`)
+## Diagnostic bundle (`readiness/diagnostics.go`, wired via `main/diagnosticsapi.go`)
 
 `BuildDiagnosticBundle` assembles a snapshot (health report, sanitized settings, version/commit,
 a bounded window of recent log lines) and `WriteDiagnosticBundle` writes it as timestamped JSON
-under `/var/lib/stratux-data/diagnostics`, pruning to a configurable retention count.
+under `/var/lib/stratux-data/diagnostics`, pruning to a configurable retention count. The write
+is atomic (temp file + rename) and the filename carries nanosecond precision, so concurrent
+requests cannot collide on a name or observe a partial file.
+
+**Integrated, on-demand, via `POST /generateDiagnostics` / `GET /getDiagnostics` /
+`GET /downloadDiagnostics`** (see `docs/http-api.md`) — nothing generates a bundle automatically;
+every bundle exists because it was explicitly requested. The log excerpt is read directly from
+`/var/log/stratux.log` at request time, bounded to the last 8 MiB read regardless of on-disk file
+size, with any line matching a credential-shaped pattern (password/passphrase/token/private
+key/`Authorization:` header/SSH key) dropped outright.
 
 **Privacy rule:** `SanitizeSettings` recursively removes any settings-map key matching a broad,
 case-insensitive pattern (`password|passphrase|secret|token|credential|private[_-]?key|
@@ -207,31 +223,43 @@ authorized[_-]?key|ssh`) at every nesting level (including inside arrays of obje
 `WiFiClientNetworks`). This is deliberately overinclusive: a new settings field whose name
 happens to contain one of those substrings is excluded by default. A falsely-excluded harmless
 field only loses a little diagnostic detail; a falsely-included secret is a credential leak.
-Log lines are **not** independently sanitized by this package — a log line is unstructured
-text, and the caller assembling `recentLogLines` is responsible for filtering anything a user
-may have pasted into a field that later got logged.
+A bundle deliberately does **not** include precise current GPS coordinates by default - only
+what `HealthReport` already exposes (fix type, satellite counts, accuracy), not a location fix
+someone could use to place the device.
 
 A failed diagnostic write returns an error to its caller and otherwise has no effect — it must
-never disrupt ADS-B/GDL90 operation.
+never disrupt ADS-B/GDL90 operation; a retention-pruning failure after a successful write is
+reported as a partial success, not a failure.
 
-## Recording foundation (`recording` package)
+## Recording foundation (`recording` package, wired via `main/recordingapi.go`)
 
-Schema and storage only — **no automatic recording is enabled**, and nothing in this package is
-wired into the running daemon. `recording.Sample` carries every field the mission's schema
-specifies; AHRS- and barometer-derived fields (`PitchDeg`, `BankDeg`, `VerticalAccelG`, `GLoad`,
+**Automatic flight recording remains disabled** — nothing here runs unless a client explicitly
+calls `POST /startRecording` (see `docs/http-api.md`). `recording.Sample` carries every field the
+mission's schema specifies, plus `TimeTrustState` (the steady-state trust level at sample time);
+AHRS- and barometer-derived fields (`PitchDeg`, `BankDeg`, `VerticalAccelG`, `GLoad`,
 `PressureAltitudeFt`) are pointers so their absence serializes as JSON `null` — a real,
-level-flight bank angle of exactly `0` must stay distinguishable from "no AHRS installed."
+level-flight bank angle of exactly `0` must stay distinguishable from "no AHRS installed," and on
+this hardware revision (no AHRS/BMP280 board installed) they are always `null`.
 `recording.Store` is an append-only, size-rotated, retention-bounded JSON-Lines store,
 independent of the existing SQLite-backed traffic/situation log (`main/datalog.go`, which serves
 a different purpose). `recording.CSVExporter` is real and tested; `GPXExporter`/`KMLExporter`
 are defined (so the `Exporter` interface shape is fixed) but return `ErrExportNotImplemented`
-rather than a silent no-op or a half-correct format.
+rather than a silent no-op or a half-correct format - `POST /exportRecording?format=gpx|kml`
+surfaces this as `501 Not Implemented`, not a fabricated file.
 
-**Prerequisite for enabling automatic recording** (future work, not part of this change):
-`TimeTrust` must be reporting `GNSS_SYNCED` (or `NETWORK_SYNCED`) — validated on real hardware,
-not simulated — and `isRecordingActive()` in `main/health.go` must be changed from its current
-hardcoded `false` to reflect real state, at which point the backward-correction guard described
-above is already wired to protect it.
+Each session gets its own subdirectory under `/var/lib/stratux-data/recordings/<id>/`; a
+background goroutine samples once per second while active, reading GPS/health/message-count state
+under those subsystems' own existing locks - it never blocks the decode or GDL90 send paths. A
+documented 100 MiB minimum-free-space threshold on the persistent partition is checked before
+starting and before every sample; falling below it transitions the session to an explicit `error`
+state (visible via `GET /getRecordingStatus`) rather than filling the partition or crashing the
+daemon. An active session is flushed and closed both on `POST /stopRecording` and on daemon
+shutdown.
+
+**Automatic** flight recording (as opposed to this on-demand, explicitly-triggered path) is still
+future work, not part of this change, and still requires `isRecordingActive()` in `main/health.go`
+(currently hardcoded `false`) to reflect real state before it could be turned on - the
+backward-correction guard described above is already wired to protect it once it is.
 
 ## Overlay vs. persistent storage — do not confuse the two
 
