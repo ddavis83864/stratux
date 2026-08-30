@@ -13,6 +13,9 @@ hardware integration). User-facing how-tos live in the
   the OTA update process.
 - **[dev-setup.md](dev-setup.md)** — setting up a development environment (remote on a Pi, or
   local Linux).
+- **[readiness-and-time-trust.md](readiness-and-time-trust.md)** — the unified component health
+  model, trusted GNSS time synchronization, persistent-storage certification, the `/getHealth`
+  API, the readiness dashboard, the diagnostic bundle, and the flight-recording foundation.
 
 ## Interfaces (for EFB / app / tool developers)
 
