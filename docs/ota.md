@@ -204,6 +204,23 @@ reused rather than duplicated, the power-loss-safe resume short-circuit (dpkg al
 package was installed on real hardware to find or fix this - it was caught entirely by the kind of
 loopback/namespace validation this mechanism was already meant to prefer over live reboot cycles.
 
+## A missing runtime dependency found while staging the first real deployment
+
+Before any package had been installed through this mechanism on real hardware, staging the first
+real update surfaced a second defect, independent of the retry-guard fix above: the bare-ext4
+install/rollback logic was written entirely around `jq`, but `jq` is not part of the base image
+and is not a declared dependency of the `stratux` package (`Depends: libncurses6, librtlsdr0` -
+no `jq`). The very first attempt to run the disable-marker-driven install would have failed
+outright with `jq: command not found`, on an environment where installing `jq` via the .deb itself
+is circular - the state-machine script must already work correctly *before* that .deb (or any
+`jq` dependency it might declare) is installed.
+
+Fixed by rewriting every `jq` call in the OTA section (`ota_json_get`/`ota_save_stage`/
+`ota_begin_install`, and the ad hoc reads in the resume and rollback blocks) to use `python3`
+instead - already present on the base image and used elsewhere on the device (e.g. writing
+network config). Re-validated identically across the same nine sandboxed scenarios with the `jq`
+stub removed entirely and every call site grepped to confirm no `jq` invocation remains.
+
 ## Known limitations
 
 - The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, since

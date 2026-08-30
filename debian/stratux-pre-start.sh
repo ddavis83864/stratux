@@ -108,14 +108,61 @@ ota_log() {
 	wLog "OTA: $1"
 }
 
+# The state file is read/written with python3, not jq: jq is not part of the
+# base image (not a dependency of this or any other package) and is not
+# guaranteed present on bare ext4 before this script's own package install
+# step has run - the exact environment this state machine must work in.
+# python3 is already a baseline dependency of the image. Discovered live,
+# before it could strand a real deployment; see docs/ota.md.
+ota_json_get() {
+	# $1: field name. $2: default value if missing/unreadable.
+	python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+v = d.get(sys.argv[2], sys.argv[3])
+print(v if v is not None else sys.argv[3])
+' "${OTA_STATE}" "$1" "$2" 2>/dev/null
+}
+
 ota_save_stage() {
 	# $1: new Stage value. $2 (optional): LastError to record.
-	if [ -n "$2" ]; then
-		jq --arg s "$1" --arg e "$2" '.Stage=$s | .LastError=$e' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
-	else
-		jq --arg s "$1" '.Stage=$s' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
-	fi
+	python3 -c '
+import json, os, sys
+path, stage, err = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    d = json.load(f)
+d["Stage"] = stage
+if err:
+    d["LastError"] = err
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, path)
+' "${OTA_STATE}" "$1" "${2:-}"
 	sync
+}
+
+ota_begin_install() {
+	# $1: backup path to record. Sets Stage=installing, BackupPath=$1,
+	# and increments Attempts - one atomic update, same as the combined
+	# jq pipeline this replaces.
+	python3 -c '
+import json, os, sys
+path, backup = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    d = json.load(f)
+d["Stage"] = "installing"
+d["BackupPath"] = backup
+d["Attempts"] = int(d.get("Attempts") or 0) + 1
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, path)
+' "${OTA_STATE}" "$1"
 }
 
 # ota_request_overlay_enable removes the persistent disable marker so the
@@ -136,10 +183,10 @@ ota_request_overlay_enable() {
 }
 
 if [ -f "${OTA_STATE}" ]; then
-	OTA_STAGE="$(jq -r .Stage "${OTA_STATE}" 2>/dev/null)"
-	OTA_PACKAGE="$(jq -r .PackagePath "${OTA_STATE}" 2>/dev/null)"
-	OTA_SHA256="$(jq -r .ExpectedSHA256 "${OTA_STATE}" 2>/dev/null)"
-	OTA_ATTEMPTS="$(jq -r '.Attempts // 0' "${OTA_STATE}" 2>/dev/null)"
+	OTA_STAGE="$(ota_json_get Stage '')"
+	OTA_PACKAGE="$(ota_json_get PackagePath '')"
+	OTA_SHA256="$(ota_json_get ExpectedSHA256 '')"
+	OTA_ATTEMPTS="$(ota_json_get Attempts 0)"
 	ota_log "state found: stage=${OTA_STAGE} package=${OTA_PACKAGE} attempts=${OTA_ATTEMPTS}"
 
 	# --- Install stage: only ever runs once bare ext4 is confirmed. ---
@@ -163,7 +210,7 @@ if [ -f "${OTA_STATE}" ]; then
 			# the stage name.
 			DPKG_STATUS="$(dpkg-query -W -f='${Status}' stratux 2>/dev/null)"
 			DPKG_VERSION="$(dpkg-query -W -f='${Version}' stratux 2>/dev/null)"
-			EXPECTED_VERSION="$(jq -r .ExpectedVersion "${OTA_STATE}" 2>/dev/null)"
+			EXPECTED_VERSION="$(ota_json_get ExpectedVersion '')"
 			if [ "${DPKG_STATUS}" = "install ok installed" ] && [ "${DPKG_VERSION}" = "${EXPECTED_VERSION}" ]; then
 				ota_log "resumed installing stage: dpkg already reports this version healthy - prior attempt actually succeeded"
 				ota_save_stage "installed"
@@ -210,7 +257,7 @@ if [ -f "${OTA_STATE}" ]; then
 				# first attempt rather than taking (and retaining) a new
 				# one per retry.
 				if $RESUMING; then
-					BACKUP_FILE="$(jq -r '.BackupPath // empty' "${OTA_STATE}" 2>/dev/null)"
+					BACKUP_FILE="$(ota_json_get BackupPath '')"
 				else
 					mkdir -p "${OTA_BACKUP_DIR}"
 					BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
@@ -218,7 +265,7 @@ if [ -f "${OTA_STATE}" ]; then
 					tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules 2>>"${STX_LOG}"
 				fi
 
-				jq --arg b "${BACKUP_FILE}" '.Stage="installing" | .BackupPath=$b | .Attempts=((.Attempts // 0)+1)' "${OTA_STATE}" > "${OTA_STATE}.tmp" && mv "${OTA_STATE}.tmp" "${OTA_STATE}"
+				ota_begin_install "${BACKUP_FILE}"
 				sync
 
 				ota_log "installing ${OTA_PACKAGE} (attempt $((OTA_ATTEMPTS+1)))"
@@ -270,14 +317,14 @@ if [ -f "${OTA_STATE}" ]; then
 				exit 0
 			fi
 		else
-			BACKUP_FILE="$(jq -r '.BackupPath // empty' "${OTA_STATE}" 2>/dev/null)"
+			BACKUP_FILE="$(ota_json_get BackupPath '')"
 			if [ -n "${BACKUP_FILE}" ] && [ -e "${BACKUP_FILE}" ]; then
 				ota_log "rolling back using ${BACKUP_FILE}"
 				tar xzf "${BACKUP_FILE}" -C / 2>>"${STX_LOG}"
 				systemctl daemon-reload 2>>"${STX_LOG}"
 				ota_log "rollback restore complete"
 			else
-				ota_log "ERROR: no usable backup found for rollback ($(jq -r '.LastError // empty' "${OTA_STATE}"))"
+				ota_log "ERROR: no usable backup found for rollback ($(ota_json_get LastError ''))"
 			fi
 			ota_save_stage "rolled_back"
 			ota_request_overlay_enable
