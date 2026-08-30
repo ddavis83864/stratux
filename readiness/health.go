@@ -169,13 +169,92 @@ func BuildGPSHealth(present bool, fixType string, deviceType string, satsSolutio
 	return h
 }
 
+// ClientObservabilityState classifies what can honestly be said about
+// whether a specific EFB application (ForeFlight, in practice - the only
+// one this project currently has reason to distinguish) is connected.
+type ClientObservabilityState string
+
+const (
+	// ClientDetected means real, application-layer evidence identified
+	// the client (e.g. a distinguishing broadcast/heartbeat the app
+	// itself sends). Reserved for when such evidence exists - see
+	// ClientUnsupported below for why nothing here reaches it today.
+	ClientDetected ClientObservabilityState = "DETECTED"
+	// ClientNotDetected means there is enough evidence to say, with
+	// reasonable confidence, that no such client is present - e.g. zero
+	// clients are associated with GDL90 output at all, so a specific app
+	// among them certainly is not.
+	ClientNotDetected ClientObservabilityState = "NOT_DETECTED"
+	// ClientUnknown means the underlying subsystem is not even active,
+	// so there is no basis to say anything about client presence.
+	ClientUnknown ClientObservabilityState = "UNKNOWN"
+	// ClientUnsupported means clients are present, but this build has no
+	// way to distinguish which application any of them are running.
+	ClientUnsupported ClientObservabilityState = "UNSUPPORTED"
+)
+
+// ClientObservability is an honest report of what can be said about a
+// specific EFB client's presence, distinct from ComponentState because
+// "no evidence either way" (UNKNOWN/UNSUPPORTED) is not the same claim as
+// "confirmed absent" (NOT_DETECTED) or "confirmed present" (DETECTED) -
+// collapsing all of these into a bare bool silently overclaims certainty.
+type ClientObservability struct {
+	State  ClientObservabilityState
+	Reason string
+
+	// DetectionBasis names what evidence (if any) this conclusion could
+	// be drawn from, independent of the specific State reached.
+	DetectionBasis string
+
+	GDL90OutputActive bool
+	ClientsAssociated bool
+	LastSeen          time.Time
+}
+
+// BuildForeFlightDetection derives whether a ForeFlight client can be said
+// to be present. Stratux's GDL90 client tracking (see main/network.go) is
+// built entirely on ICMP echo-reply/destination-unreachable liveness
+// probing - it establishes that *some* IP:port is reachable, never what
+// application is running there. No inbound, application-identifying signal
+// from any EFB client is received or parsed anywhere in this project today.
+// That means a specific app can never be positively confirmed present
+// (ClientDetected) with the current protocol implementation - only that
+// clients exist at all (ClientUnsupported, since ForeFlight could be one of
+// them, or could not) or that none do (ClientNotDetected, which needs no
+// per-app evidence to be a safe claim). If a future evidence source is
+// added (e.g. parsing a client-identifying broadcast some EFBs send),
+// ClientDetected becomes reachable without changing this function's
+// signature meaning - only its body.
+func BuildForeFlightDetection(outputActive bool, clientsAssociated bool, lastSeen time.Time) ClientObservability {
+	const basis = "network-level liveness only (ICMP echo-reply/destination-unreachable via main/network.go's client tracking); no application-layer identification of any EFB client is received or parsed by this project"
+	c := ClientObservability{
+		DetectionBasis:    basis,
+		GDL90OutputActive: outputActive,
+		ClientsAssociated: clientsAssociated,
+		LastSeen:          lastSeen,
+	}
+	switch {
+	case !outputActive:
+		c.State = ClientUnknown
+		c.Reason = "GDL90 output is not active; no basis to say anything about client presence"
+	case !clientsAssociated:
+		c.State = ClientNotDetected
+		c.Reason = "no GDL90 clients are currently associated, so ForeFlight specifically is not among them"
+	default:
+		c.State = ClientUnsupported
+		c.Reason = "one or more GDL90 clients are associated, but this build cannot distinguish ForeFlight from any other GDL90-capable client - " + basis
+	}
+	return c
+}
+
 // GDL90Health is the health record for GDL90 generation/output.
 //
-// ForeFlightClientDetected must only be set true from evidence that
-// actually identifies a ForeFlight client (e.g. a distinguishing query
-// string/heartbeat ForeFlight itself sends) - the absence of such evidence
-// means "unknown/not confirmed", not "ForeFlight is not connected", since
-// most EFB clients that consume GDL90 do not identify themselves at all.
+// ForeFlightClientDetected is retained for existing API consumers and is
+// always exactly (ForeFlightDetection.State == ClientDetected) - which,
+// given BuildForeFlightDetection's own documented limits, is always false
+// today. New code should read ForeFlightDetection instead, which honestly
+// distinguishes "confirmed absent" from "cannot tell" rather than
+// collapsing both into false.
 type GDL90Health struct {
 	State  ComponentState
 	Reason string
@@ -186,16 +265,23 @@ type GDL90Health struct {
 	RecentClientCount        int
 	LastClientActivity       time.Time
 	ForeFlightClientDetected bool
+	ForeFlightDetection      ClientObservability
 }
 
 // BuildGDL90Health derives a GDL90Health from live output signals.
+// foreFlightDetected is retained for call-site/signature stability but is
+// no longer used: ForeFlightDetection is now derived internally via
+// BuildForeFlightDetection, which is honest about what can and cannot be
+// concluded from the evidence Stratux's GDL90 client tracking provides.
 func BuildGDL90Health(generating, outputActive bool, recentClientCount int, lastClientActivity time.Time, foreFlightDetected bool) GDL90Health {
+	detection := BuildForeFlightDetection(generating && outputActive, recentClientCount > 0, lastClientActivity)
 	h := GDL90Health{
 		Generating:               generating,
 		OutputActive:             outputActive,
 		RecentClientCount:        recentClientCount,
 		LastClientActivity:       lastClientActivity,
-		ForeFlightClientDetected: foreFlightDetected,
+		ForeFlightClientDetected: detection.State == ClientDetected,
+		ForeFlightDetection:      detection,
 	}
 	switch {
 	case !generating || !outputActive:

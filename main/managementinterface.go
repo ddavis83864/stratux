@@ -1250,6 +1250,21 @@ func managementInterface() {
 	http.HandleFunc("/tiles/tilesets", handleTilesets)
 	http.HandleFunc("/tiles/", handleTile)
 
+	// Diagnostics and recording: additive control/status API - see
+	// diagnosticsapi.go/recordingapi.go. Automatic flight recording and
+	// automatic diagnostic-bundle generation remain disabled; every one of
+	// these only ever runs when explicitly requested through this API.
+	http.HandleFunc("/generateDiagnostics", handleGenerateDiagnosticsRequest)
+	http.HandleFunc("/getDiagnostics", handleListDiagnosticsRequest)
+	http.HandleFunc("/downloadDiagnostics", handleDownloadDiagnosticsRequest)
+	http.HandleFunc("/startRecording", handleStartRecordingRequest)
+	http.HandleFunc("/stopRecording", handleStopRecordingRequest)
+	http.HandleFunc("/getRecordingStatus", handleRecordingStatusRequest)
+	http.HandleFunc("/getRecordings", handleListRecordingsRequest)
+	http.HandleFunc("/exportRecording", handleExportRecordingRequest)
+	http.HandleFunc("/downloadRecording", handleDownloadRecordingRequest)
+	http.HandleFunc("/downloadExport", handleDownloadExportRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {

@@ -30,7 +30,7 @@ var ErrExportNotImplemented = errors.New("recording: export format not yet imple
 type CSVExporter struct{}
 
 var csvHeader = []string{
-	"UTC", "Latitude", "Longitude", "GPSAltitudeFt", "GPSAccuracyMeters",
+	"UTC", "TimeTrustState", "Latitude", "Longitude", "GPSAltitudeFt", "GPSAccuracyMeters",
 	"GroundspeedKt", "CourseDeg", "PressureAltitudeFt", "PitchDeg", "BankDeg",
 	"VerticalAccelG", "GLoad", "UAT978MessageRateLastMinute",
 	"ES1090MessageRateLastMinute", "FISBTowerCount",
@@ -53,6 +53,7 @@ func (CSVExporter) Export(w io.Writer, samples []Sample) error {
 	for _, s := range samples {
 		record := []string{
 			s.UTC.UTC().Format("2006-01-02T15:04:05.000Z"),
+			s.TimeTrustState,
 			fmt.Sprintf("%g", s.Latitude),
 			fmt.Sprintf("%g", s.Longitude),
 			fmt.Sprintf("%g", s.GPSAltitudeFt),

@@ -108,19 +108,34 @@ const (
 // unavailable) must never be allowed to disrupt ADS-B/GDL90 operation -
 // this function only ever returns an error for the caller to log; it does
 // not panic or otherwise affect any other subsystem.
+//
+// The write is atomic (temp file in the same directory, then os.Rename) so
+// a concurrent reader (e.g. a list/download HTTP handler) never observes a
+// partially-written bundle, and a crash mid-write never leaves a corrupt
+// file at the final name. The filename embeds nanosecond-precision time
+// specifically so two bundles requested back-to-back (e.g. by concurrent
+// HTTP requests) do not collide on the same name - second-granularity
+// timestamps are not sufficient once generation can be triggered on
+// demand rather than only from a slow periodic timer.
 func WriteDiagnosticBundle(dir string, bundle DiagnosticBundle, maxRetain int) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("could not create diagnostics directory: %w", err)
 	}
-	name := fmt.Sprintf("%s%s%s", diagnosticFilePrefix, bundle.GeneratedAt.UTC().Format("20060102T150405Z"), diagnosticFileSuffix)
+	name := fmt.Sprintf("%s%s%s", diagnosticFilePrefix, bundle.GeneratedAt.UTC().Format("20060102T150405.000000000Z"), diagnosticFileSuffix)
 	path := filepath.Join(dir, name)
 
 	data, err := json.MarshalIndent(&bundle, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("could not marshal diagnostic bundle: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		os.Remove(tmp)
 		return "", fmt.Errorf("could not write diagnostic bundle: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return "", fmt.Errorf("could not finalize diagnostic bundle: %w", err)
 	}
 
 	if err := pruneDiagnosticBundles(dir, maxRetain); err != nil {

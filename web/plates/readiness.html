@@ -122,7 +122,70 @@
 					<span class="col-xs-6"><span class="label" ng-class="FanClass">{{Health.Fan.State}}</span></span>
 					<span class="col-xs-12 small text-muted">{{Health.Fan.Reason}}</span>
 				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">EFB Client</strong>
+					<span class="col-xs-6"><span class="label" ng-class="ClientClass">{{Health.GDL90.ForeFlightDetection.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.GDL90.ForeFlightDetection.Reason}}</span>
+				</div>
 			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Diagnostics</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Generates a sanitized snapshot (version, health, storage, radio/GPS state,
+				recent log excerpt) for troubleshooting. Never includes passwords, Wi-Fi
+				secrets, SSH material, or other credential-like values.
+			</p>
+			<button class="btn btn-primary" ng-click="generateDiagnostics()" ng-disabled="Diagnostics.busy">
+				{{Diagnostics.busy ? 'Generating...' : 'Generate Diagnostic Bundle'}}
+			</button>
+			<span class="small" ng-show="Diagnostics.message">{{Diagnostics.message}}</span>
+			<table class="table table-condensed" ng-show="Diagnostics.bundles.length">
+				<tr ng-repeat="b in Diagnostics.bundles">
+					<td>{{b.name}}</td>
+					<td>{{(b.sizeBytes/1024) | number:0}} KB</td>
+					<td><a ng-click="downloadDiagnostics(b.name)" class="btn btn-hidden">Download</a></td>
+				</tr>
+			</table>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Recording</span>
+			<span class="label" ng-class="{'label-success': Recording.status.state === 'active', 'label-danger': Recording.status.state === 'error', 'label-default': Recording.status.state === 'idle'}">
+				{{Recording.status.state}}
+			</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				A controlled, on-demand recording for troubleshooting/analysis - automatic
+				flight recording remains disabled. AHRS/barometer fields stay unavailable
+				until that hardware is installed.
+			</p>
+			<button class="btn btn-primary" ng-click="startRecording()" ng-disabled="Recording.busy || Recording.status.state === 'active'">Start Recording</button>
+			<button class="btn btn-default" ng-click="stopRecording()" ng-disabled="Recording.busy || Recording.status.state !== 'active'">Stop Recording</button>
+			<span class="small" ng-show="Recording.message">{{Recording.message}}</span>
+			<p class="small text-muted" ng-show="Recording.status.state === 'active'">
+				{{Recording.status.sampleCount}} samples so far.
+			</p>
+			<p class="small text-danger" ng-show="Recording.status.state === 'error'">
+				{{Recording.status.lastError}}
+			</p>
+			<table class="table table-condensed" ng-show="Recording.sessions.length">
+				<tr ng-repeat="s in Recording.sessions">
+					<td>{{s.id}}</td>
+					<td>{{(s.sizeBytes/1024) | number:0}} KB</td>
+					<td><a ng-click="exportRecording(s.id)" class="btn btn-hidden">Export CSV</a></td>
+					<td><a ng-click="downloadRecording(s.id)" class="btn btn-hidden">Download</a></td>
+				</tr>
+			</table>
 		</div>
 	</div>
 </div>

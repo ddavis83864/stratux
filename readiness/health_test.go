@@ -262,3 +262,92 @@ func TestBuildGDL90Health_DoesNotClaimForeFlightWithoutEvidence(t *testing.T) {
 		t.Error("ForeFlightClientDetected must be false unless explicitly set from real identifying evidence")
 	}
 }
+
+func TestBuildForeFlightDetection_OutputInactiveIsUnknown(t *testing.T) {
+	// If GDL90 isn't even generating, there is no basis to say anything
+	// about client presence - this must not be conflated with "confirmed
+	// absent" (NOT_DETECTED), which is a stronger claim.
+	c := BuildForeFlightDetection(false, false, time.Time{})
+	if c.State != ClientUnknown {
+		t.Errorf("State = %q, want UNKNOWN", c.State)
+	}
+	if c.DetectionBasis == "" {
+		t.Error("DetectionBasis must always be populated, regardless of State")
+	}
+}
+
+func TestBuildForeFlightDetection_OutputInactiveIsUnknownEvenIfClientsClaimedAssociated(t *testing.T) {
+	// Output-active gates everything: if GDL90 itself isn't running, a
+	// caller-asserted "clients associated" is not trustworthy evidence of
+	// anything - stay UNKNOWN rather than NOT_DETECTED or UNSUPPORTED.
+	c := BuildForeFlightDetection(false, true, time.Time{})
+	if c.State != ClientUnknown {
+		t.Errorf("State = %q, want UNKNOWN", c.State)
+	}
+}
+
+func TestBuildForeFlightDetection_NoClientsIsConfidentlyNotDetected(t *testing.T) {
+	// Zero clients associated is real, sufficient evidence that ForeFlight
+	// specifically cannot be among them - this is the one case allowed to
+	// reach a confident negative without per-app identification.
+	c := BuildForeFlightDetection(true, false, time.Time{})
+	if c.State != ClientNotDetected {
+		t.Errorf("State = %q, want NOT_DETECTED", c.State)
+	}
+}
+
+func TestBuildForeFlightDetection_ClientsPresentIsUnsupportedNotDetected(t *testing.T) {
+	// This is the key honesty check: one or more clients being present
+	// must NOT be reported as ForeFlight being detected - the protocol
+	// gives no application-layer identification, so the correct answer is
+	// "can't tell", not a guess in either direction.
+	now := time.Now()
+	c := BuildForeFlightDetection(true, true, now)
+	if c.State != ClientUnsupported {
+		t.Errorf("State = %q, want UNSUPPORTED", c.State)
+	}
+	if c.State == ClientDetected {
+		t.Fatal("must never report DETECTED without real application-layer evidence")
+	}
+	if !c.LastSeen.Equal(now) {
+		t.Errorf("LastSeen = %v, want %v (threaded through unchanged)", c.LastSeen, now)
+	}
+}
+
+func TestBuildForeFlightDetection_NeverReachesDetectedToday(t *testing.T) {
+	// Documents the current, honest limit: with no application-layer
+	// evidence source implemented anywhere in this project, DETECTED must
+	// be unreachable from any input combination today. This test is
+	// expected to need updating (not silently pass) the day real evidence
+	// is wired in.
+	for _, outputActive := range []bool{false, true} {
+		for _, clients := range []bool{false, true} {
+			c := BuildForeFlightDetection(outputActive, clients, time.Time{})
+			if c.State == ClientDetected {
+				t.Errorf("outputActive=%v clients=%v produced ClientDetected with no evidence source implemented", outputActive, clients)
+			}
+		}
+	}
+}
+
+func TestBuildGDL90Health_ForeFlightDetectionIsPopulatedAndConsistent(t *testing.T) {
+	h := BuildGDL90Health(true, true, 2, time.Now(), false)
+	if h.ForeFlightDetection.State != ClientUnsupported {
+		t.Errorf("ForeFlightDetection.State = %q, want UNSUPPORTED with clients present", h.ForeFlightDetection.State)
+	}
+	// The legacy bool field must always agree with the new model's notion
+	// of a confirmed-positive result.
+	if h.ForeFlightClientDetected != (h.ForeFlightDetection.State == ClientDetected) {
+		t.Error("ForeFlightClientDetected must equal (ForeFlightDetection.State == ClientDetected)")
+	}
+
+	h2 := BuildGDL90Health(true, true, 0, time.Time{}, false)
+	if h2.ForeFlightDetection.State != ClientNotDetected {
+		t.Errorf("ForeFlightDetection.State = %q, want NOT_DETECTED with zero clients", h2.ForeFlightDetection.State)
+	}
+
+	h3 := BuildGDL90Health(false, false, 0, time.Time{}, false)
+	if h3.ForeFlightDetection.State != ClientUnknown {
+		t.Errorf("ForeFlightDetection.State = %q, want UNKNOWN with GDL90 inactive", h3.ForeFlightDetection.State)
+	}
+}

@@ -18,6 +18,11 @@ import "time"
 // the same way.
 type Sample struct {
 	UTC time.Time
+	// TimeTrustState is the readiness.TimeTrustState value in effect when
+	// this sample was taken (e.g. "GNSS_SYNCED", "UNSYNCED") - the
+	// steady-state trust level, distinct from TimeSourceTransition below,
+	// which only marks the samples where that state actually changed.
+	TimeTrustState string
 
 	Latitude          float64
 	Longitude         float64

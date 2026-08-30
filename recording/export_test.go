@@ -27,7 +27,7 @@ func TestCSVExporter_HeaderAndBasicRow(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected a header line plus one data line, got %d lines: %q", len(lines), out)
 	}
-	if !strings.HasPrefix(lines[0], "UTC,Latitude,Longitude") {
+	if !strings.HasPrefix(lines[0], "UTC,TimeTrustState,Latitude,Longitude") {
 		t.Errorf("unexpected header: %s", lines[0])
 	}
 	if !strings.Contains(lines[1], "2026-06-01T12:00:00.000Z") {
@@ -43,9 +43,9 @@ func TestCSVExporter_NilAHRSFieldsAreEmptyNotZero(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	fields := strings.Split(lines[1], ",")
-	// PressureAltitudeFt is the 8th column (index 7).
-	if fields[7] != "" {
-		t.Errorf("nil PressureAltitudeFt should render as an empty CSV cell, got %q", fields[7])
+	// PressureAltitudeFt is the 9th column (index 8).
+	if fields[8] != "" {
+		t.Errorf("nil PressureAltitudeFt should render as an empty CSV cell, got %q", fields[8])
 	}
 }
 
@@ -58,9 +58,22 @@ func TestCSVExporter_RealZeroValueIsNotEmpty(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	fields := strings.Split(lines[1], ",")
-	// BankDeg is the 10th column (index 9).
-	if fields[9] != "0" {
-		t.Errorf("a real zero BankDeg should render as \"0\", not empty, got %q", fields[9])
+	// BankDeg is the 11th column (index 10).
+	if fields[10] != "0" {
+		t.Errorf("a real zero BankDeg should render as \"0\", not empty, got %q", fields[10])
+	}
+}
+
+func TestCSVExporter_TimeTrustStatePreserved(t *testing.T) {
+	var buf bytes.Buffer
+	samples := []Sample{{UTC: time.Now(), TimeTrustState: "GNSS_SYNCED"}}
+	if err := (CSVExporter{}).Export(&buf, samples); err != nil {
+		t.Fatalf("Export error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	fields := strings.Split(lines[1], ",")
+	if fields[1] != "GNSS_SYNCED" {
+		t.Errorf("TimeTrustState column = %q, want GNSS_SYNCED", fields[1])
 	}
 }
 

@@ -1710,6 +1710,10 @@ func gracefulShutdown() {
 
 	pprof.StopCPUProfile()
 
+	// Flush and close any active recording session cleanly rather than
+	// leaving its last file unflushed.
+	stopRecordingForShutdown()
+
 	//TODO: Any other graceful shutdown functions.
 
 	// Turn off green ACT LED on the Pi. Path changed around kernel 6.1.21-v8
