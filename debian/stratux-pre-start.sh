@@ -461,7 +461,17 @@ if [ -f /boot/firmware/.stratux-first-boot ]; then
 		do_reboot=false
 
 		# re-apply overlay
-		if [ "$(jq -r .PersistentLogging /boot/firmware/stratux.conf)" = "true" ]; then
+		# python3, not jq: jq is not part of the base image or a
+		# declared package dependency (same reasoning as the OTA state
+		# machine above - see docs/ota.md). Prints the same lowercase
+		# "true"/"false" text jq -r would, so the comparison below is
+		# unchanged.
+		if [ "$(python3 -c 'import json
+try:
+    v = json.load(open("/boot/firmware/stratux.conf")).get("PersistentLogging", False)
+except Exception:
+    v = False
+print("true" if v is True else "false")' 2>/dev/null)" = "true" ]; then
 			/sbin/overlayctl disable
 			do_reboot=true
 			wLog "overlayctl disabled due to stratux.conf settings"
