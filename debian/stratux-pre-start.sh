@@ -46,7 +46,9 @@ if [ -e ${TEMP_SCRIPT_LOCATION} ]; then
 			rm -f "${TEMP_SCRIPT_FILE}"
 			/sbin/overlayctl disable
 			wLog "Script staged. Rebooting to apply on bare ext4..."
+			sync
 			reboot
+			exit 0
 		else
 			wLog "ERROR: Failed to stage script to ext4 lower layer. Update aborted."
 			/sbin/overlayctl lock
@@ -76,7 +78,9 @@ if [ -e ${SCRIPT_UPDATE_LOCATION} ]; then
 		fi
 		rm -f "${UPDATE_TEMP_SCRIPT}"
 		wLog "Finished. Rebooting..."
+		sync
 		reboot
+		exit 0
 	fi
 fi
 
@@ -93,7 +97,9 @@ if [ -e ${TEMP_PACKAGE_LOCATION} ]; then
 			rm -f "${TEMP_PACKAGE_FILE}"
 			/sbin/overlayctl disable
 			wLog "Package staged. Rebooting to install on bare ext4..."
+			sync
 			reboot
+			exit 0
 		else
 			wLog "ERROR: Failed to stage package to ext4 lower layer. Update aborted."
 			/sbin/overlayctl lock
@@ -124,7 +130,9 @@ if [ -e ${PACKAGE_UPDATE_LOCATION} ]; then
 		fi
 		rm -f "${UPDATE_TEMP_FILE}"
 		wLog "Finished. Rebooting..."
+		sync
 		reboot
+		exit 0
 	fi
 fi
 
@@ -150,7 +158,9 @@ if [ -f /boot/firmware/.stratux-first-boot ]; then
 			wLog "re-wrote network configuration for first-boot config import. Rebooting... Bye"
 		fi
 		if $do_reboot; then
+			sync
 			reboot
+			exit 0
 		fi
 	fi
 fi
