@@ -26,6 +26,72 @@ time discipline) surfaced two problems the existing status model did not address
    `/var/lib/stratux-data` application-data partition. A dashboard built on that field would
    report the overlay's capacity as the recorder's available space.
 
+## Corrections from the two-hour endurance test
+
+A live two-hour endurance run on the deployed baseline surfaced five defects, all rooted in the
+same underlying mistake repeated in different places: a monotonic-only or never-set
+`time.Time` value being serialized as if it were a trustworthy wall-clock instant, and — for the
+clock-correction frequency — a direct clock set with no deadband or rate limiting being invoked
+on every accepted sample instead of only when a correction was actually warranted. None of these
+were found in the two-hour test's core reception/decoding path; all are confined to the
+health/time-reporting and clock-discipline layers.
+
+1. **Receiver timestamps** (`LastFrameTime`/`LastFrameAge` reading `0001-01-01T00:00:00Z`/`0`
+   despite live reception): `main/gen_gdl90.go` already tracked `lastUATMessageTime`/
+   `lastESMessageTime` correctly on the monotonic clock; `main/health.go`'s `updateHealth()`
+   simply never read them, passing a literal `time.Time{}` into `BuildRadioHealth` for both
+   bands instead. Fixed by reading `lastMessageTime(MSGCLASS_UAT/ES)` and computing age as
+   `nowMono.Sub(lastFrameMono)` — immune to any wall-clock step in between — plus a best-effort
+   wall-clock display value via `monoToWallOptional` (see below).
+2. **Time-health fields** (`CurrentUTC`/`LastSyncTime`/event `At` all reading year-1 dates, some
+   with a real-looking time-of-day): `TimeTrust.Snapshot`/`decideAndSync` were storing the
+   *monotonic* `now` parameter into fields meant to hold wall-clock UTC (`LastSyncTime` read the
+   wrong internal field entirely; `Decision.At` was the monotonic reading; `CurrentUTC` had no
+   wall-clock input at all). Fixed by giving `Snapshot` a second, wall-clock parameter and
+   sourcing every wall-clock field from it or from the already-correct-but-unexposed
+   `lastSyncUTC`.
+3. **Clock-correction frequency** (a "slew" roughly every 100ms, 0.3–6ms offsets): every accepted
+   GNSS sample invoked a direct clock set, unconditionally, once trust was established. Fixed
+   with `TimeTrustConfig.Deadband` (50ms default — below this, no clock action and no event) and
+   `MinCorrectionInterval` (30s default — above the deadband but too soon since the last
+   correction, deferred rather than applied). `ClockActionSlew` is renamed
+   `ClockActionPeriodicCorrection`, and its doc comment explicitly disclaims genuine kernel
+   slewing — see "Known limitations."
+4. **Client timestamps** (`LastClientActivity`/`LastSeen` reading year-1 despite real clients
+   associated): `BuildGDL90Health`/`BuildForeFlightDetection` were never given a real timestamp
+   to report in the first place — the parameter existed but no caller ever passed one. Fixed by
+   (a) adding `main/network.go`'s `lastNetworkClientActivityMono()`, which aggregates
+   `LastPingResponse`/`LastPongResponse` across every tracked client, wired into
+   `GDL90Health.LastNetworkClientActivity`; and (b) making `ForeFlightDetection.LastSeen` always
+   explicitly unavailable, since no application-layer evidence identifying ForeFlight
+   specifically exists anywhere in this project — see `BuildForeFlightDetection`'s doc comment.
+   The two are deliberately named and typed so they cannot be confused: generic network liveness
+   is not evidence a specific EFB app was seen.
+5. **Storage accounting** (`df` reporting ~162 MiB/1% used while `/getHealth` reported ~1.2 GiB/
+   6% used, at the same instant): `readiness.StatfsResult.UsedBytes()` was computed from statfs's
+   `Bavail` (blocks available to an *unprivileged* process), while `df`'s Used column — confirmed
+   directly on the live device with `df -B1`/`stat -f`/`tune2fs -l` — is `Total-Bfree` (all free
+   blocks, including the ext4 root-reserved percentage). Since `stratuxrun` always runs as root,
+   `Bavail`-based accounting understated real capacity for the daemon's own writes by exactly the
+   reserved-blocks percentage (~1 GiB on the live device). Fixed by adding `FreeBytes` (`Bfree`)
+   alongside the existing `AvailableBytes` (`Bavail`) and switching `UsedBytes`/
+   `UtilizationPercent`/recording admission to the `FreeBytes`-based model — see "Persistent
+   storage certification" below.
+
+### The `OptionalTime` pattern
+
+Every wall-clock field above that can legitimately be "not yet known" (`RadioHealth.LastFrameTime`,
+`TimeHealth.CurrentUTC`/`LastSyncTime`, `GDL90Health.LastNetworkClientActivity`/
+`LastClientActivity`, `ClientObservability.LastSeen`) is now `readiness.OptionalTime`
+(`readiness/optionaltime.go`): a `{Time time.Time; Valid bool}` wrapper whose `MarshalJSON`
+emits `null` when unavailable and byte-identical RFC3339 output to a plain `time.Time` otherwise.
+This is the single mechanism behind "never serialize `0001-01-01` for an unavailable timestamp" —
+a consumer checks for `null`/`IsZero()` instead of pattern-matching a magic date. Fields that
+also need a monotonic-domain, wall-clock-step-immune duration (`LastFrameAgeSeconds`,
+`LastSyncSourceAgeSeconds`) are added as new, explicitly-named companion fields (`*float64`,
+`nil` when unavailable) alongside the pre-existing `time.Duration` fields, which are kept for
+backward compatibility rather than changed in place.
+
 ## Component health model (`readiness` package)
 
 `readiness.ComponentState` is a five-value enum used for every monitored subsystem:
@@ -111,19 +177,35 @@ Once trust is (re-)established, `TimeTrust` decides one of:
   system clock immediately. This happens **at most once per boot** per discrepancy episode; a
   second large discrepancy in the same session is reported (and logged) but not applied
   automatically.
-- **Slew** — a small forward discrepancy is corrected without the "large step" bookkeeping
-  (and may recur, unlike a step). **Known limitation:** this package only decides that a slew
-  is the right response; it does not implement true gradual sub-second clock discipline (e.g.
-  via `adjtimex`) — today's caller applies a slew the same way as a step, a direct clock set.
+- **Within the deadband — no action, no event** — an offset smaller than
+  `TimeTrustConfig.Deadband` (default 50ms, chosen above a Raspberry Pi 4's typical
+  parts-per-million oscillator drift and above ordinary GNSS fix jitter) is routine noise, not a
+  real discrepancy: no clock action is taken and, deliberately, no health event is recorded
+  either — trust state (source, `LastSyncTime`, offset) still advances silently, so `State`/
+  `RecordingAllowed` stay current without the event log filling up with noise.
+- **Periodic correction** — an offset at or above the deadband but below the large-step threshold
+  is applied as a direct clock set, honestly named `ClockActionPeriodicCorrection` rather than
+  "slew" — see "Known limitations" for why a genuine gradual slew is not implemented. Unlike the
+  once-per-boot step, this may recur, but is rate-limited: an above-deadband offset that arrives
+  less than `TimeTrustConfig.MinCorrectionInterval` (default 30s) after the last applied
+  correction is deferred (`ClockActionNone`, reason says so, **and an event is still recorded**,
+  unlike the deadband case, since it reflects a real above-threshold discrepancy an operator may
+  want visibility into if it persists) rather than applied again immediately. Together, the
+  deadband and the rate limit are what replaced a naive "correct on every accepted sample"
+  policy — which produced a direct clock set roughly every 100ms during the two-hour endurance
+  test — with at most one applied correction per `MinCorrectionInterval` for any
+  above-deadband, below-large-step discrepancy.
 - **Reject backward** — a correction that would move the clock backward, once recording has
   begun, is never applied. The discrepancy is recorded and time moves to `INVALID`, so recorded
   data can never have out-of-order timestamps silently introduced. `isRecordingActive()` (see
   `main/health.go`) is the single hook this guard reads; it currently always returns `false`
   because automatic recording is not yet enabled (see below).
 
-Every decision — applied or not — is appended to a bounded (20-entry) event log
-(`TimeHealth.RecentEvents`), each with the old/new UTC value, source, and reason, satisfying the
-"record the old time, new time, source, and reason" requirement without an unbounded log.
+Every decision that produces an event — applied, deferred, rejected, or a suppressed repeat large
+step — is appended to a bounded (20-entry) event log (`TimeHealth.RecentEvents`), each with the
+old/new UTC value (wall-clock, never the monotonic reading — see "Corrections from the two-hour
+endurance test" above), source, and reason. Within-deadband observations are the one case that
+deliberately does not add an event, by design, not by omission.
 
 ### Integration point
 
@@ -179,6 +261,39 @@ Thresholds (`readiness.StorageThresholds`, all configurable, not hardcoded):
 | Warn | 80% used | `DEGRADED` |
 | Critical | 90% used | `DEGRADED` (a stricter warning) |
 | Recording prohibited | 95% used, or read-only/unmounted/wrong-UUID/failed write test | `NOT_READY`, `RecordingAllowed = false` |
+
+### Accounting model: `Bfree` vs `Bavail` (root-reserved blocks)
+
+ext4 reserves a percentage of blocks that only a privileged (root) process may use —
+`tune2fs -l` on the live device confirms this. `statfs(2)` reports both: `Bfree` (all free
+blocks, including the reserved ones) and `Bavail` (free blocks available to an *unprivileged*
+process, i.e. `Bfree` minus the reserved percentage). `readiness.StatfsResult` captures both as
+`FreeBytes` and `AvailableBytes` respectively.
+
+**`df`'s Used column is `Total-Bfree`, not `Total-Bavail`** — verified directly against the live
+device with exact byte-level arithmetic (`df -B1`, `stat -f`, `tune2fs -l`). Because `stratuxrun`
+(and the recording process it hosts) always runs as root, the reserved-blocks percentage is
+space it can actually still write — an `Bavail`-based model understated real capacity by exactly
+that percentage (~1 GiB on the live device, the gap behind the endurance test's ~162 MiB/1%
+vs. ~1.2 GiB/6% discrepancy). This package therefore standardizes on the `FreeBytes`-based model
+everywhere it appears:
+
+- `StatfsResult.UsedBytes()` / `UtilizationPercent()` — matches `df`, not an unprivileged view.
+- `StatfsResult.AvailableForRecording()` — equals `FreeBytes`, documented as root-aware; a
+  deployment that ever ran the recording process as a non-root user would need `AvailableBytes`
+  instead, but `stratuxrun` does not.
+- `main/recordingapi.go`'s `availablePersistentBytes()` (the existing, preserved 100 MiB
+  minimum-free-space guard checked before starting a recording and before every sample) — reads
+  `StorageHealth.FreeBytes`, not `AvailableBytes`, for the same reason.
+
+Both raw numbers (`FreeBytes` and `AvailableBytes`) are still exposed on `StorageHealth` so an
+operator (or a future consumer with different privilege assumptions) can see the reserved-blocks
+split directly, rather than trusting only this package's chosen model.
+
+**The temporary overlay (tmpfs) needs no special-casing here**: tmpfs has no root-reserved-blocks
+concept at all, so the kernel reports `Bfree == Bavail` for it — the two accounting models
+coincide automatically for that mount. The persistent partition (ext4) is the only mount where
+the two numbers meaningfully differ.
 
 ## Health API
 
@@ -315,8 +430,17 @@ matching UTC too, not a prerequisite for correct stored data.
 
 ## Known limitations
 
-- Clock "slewing" is not a true gradual adjustment (see above) — it is applied as a direct
-  clock set, the same mechanism as a hard step, just without the once-per-boot restriction.
+- **No genuine kernel-level clock slewing.** `ClockActionPeriodicCorrection` is a direct clock
+  set (`date -s`), the same mechanism as a hard step, just without the once-per-boot restriction,
+  gated by a deadband and rate-limited (see "Clock correction policy"). This is a deliberate
+  choice, not an oversight: implementing true gradual discipline (e.g. `adjtimex`) would add an
+  untested, low-level syscall interface to a live flight-adjacent system, cannot be exercised
+  deterministically in unit tests without touching the host clock, and the deadband/rate-limit
+  combination already eliminates the problem that motivated looking at slewing in the first place
+  (correction *frequency*, not the mechanism of any individual correction). If a real slew is
+  ever implemented, `ClockActionPeriodicCorrection`'s doc comment is where that would need to
+  change first — the name and comment exist specifically so this package never claims a
+  capability it does not have.
 - GPX/KML export are interface-only; only CSV export is implemented.
 - Automatic flight recording is not enabled by this change.
 - Discovery pins on the *first* structurally-valid ext4 mount found at `PersistentDataPath` if
