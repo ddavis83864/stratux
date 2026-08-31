@@ -21,7 +21,10 @@
 					<span class="col-xs-12 small text-muted">{{Health.UAT978.Reason}}</span>
 					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TotalFrames">
 						{{Health.UAT978.TotalFrames}} frames total, {{Health.UAT978.MessageRateLastMinute}}/min,
-						last {{LastFrameAgeUAT}}s ago
+						{{LastFrameTextUAT}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="!Health.UAT978.TotalFrames">
+						{{LastFrameTextUAT}}
 					</span>
 					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TowerCount">
 						{{Health.UAT978.TowerCount}} FIS-B tower(s) seen
@@ -34,7 +37,10 @@
 					<span class="col-xs-12 small text-muted">{{Health.ES1090.Reason}}</span>
 					<span class="col-xs-12 small text-muted" ng-show="Health.ES1090.TotalFrames">
 						{{Health.ES1090.TotalFrames}} frames total, {{Health.ES1090.MessageRateLastMinute}}/min,
-						last {{LastFrameAgeES}}s ago
+						{{LastFrameTextES}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="!Health.ES1090.TotalFrames">
+						{{LastFrameTextES}}
 					</span>
 				</div>
 
@@ -52,7 +58,10 @@
 					<strong class="col-xs-6">Time</strong>
 					<span class="col-xs-6"><span class="label" ng-class="TimeClass">{{Health.Time.State}}</span></span>
 					<span class="col-xs-12 small text-muted">
-						Source: {{Health.Time.Source || 'none'}}<span ng-show="TimeSourceAge !== null">, synced {{TimeSourceAge}}s ago</span>
+						Source: {{Health.Time.Source || 'none'}}<span ng-show="TimeSyncedAgoText">, synced {{TimeSyncedAgoText}}</span>
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Time.CurrentUTC">
+						{{Health.Time.CurrentUTC}} UTC
 					</span>
 					<span class="col-xs-12 small text-muted" ng-show="Health.Time.LastSyncError">
 						{{Health.Time.LastSyncError}}
@@ -68,6 +77,9 @@
 					<span class="col-xs-12 small text-muted">{{Health.GDL90.Reason}}</span>
 					<span class="col-xs-12 small text-muted">
 						{{Health.GDL90.RecentClientCount}} recent client(s)
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="HasNetworkClientActivity">
+						last network client activity: {{Health.GDL90.LastNetworkClientActivity}}
 					</span>
 				</div>
 

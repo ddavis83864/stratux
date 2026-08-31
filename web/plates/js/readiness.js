@@ -31,6 +31,40 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 		return Math.round(nanoseconds / 1e9);
 	}
 
+	// formatDuration renders a whole number of seconds as "12s" or "2m 5s" -
+	// the shared building block for every "since last X" display on this
+	// dashboard, so the same units/thresholds are used everywhere.
+	function formatDuration(ageSeconds) {
+		var secs = Math.max(0, Math.round(ageSeconds));
+		var mins = Math.floor(secs / 60);
+		var rem = secs % 60;
+		return mins > 0 ? (mins + 'm ' + rem + 's') : (secs + 's');
+	}
+
+	// formatFrameAge renders a receiver's last-frame age for display.
+	// ageSeconds is h.<band>.LastFrameAgeSeconds, which the backend leaves
+	// null exactly when no frame has ever been received this daemon
+	// lifetime (readiness.RadioHealth) - never a fabricated zero from an
+	// unset timestamp, and never negative or jumped by a wall-clock
+	// correction, since it is computed on the monotonic clock. This must
+	// never render "last s ago" - a null age always maps to one of the two
+	// explicit sentences below instead of interpolating a missing number.
+	function formatFrameAge(ageSeconds, totalFrames) {
+		if (ageSeconds === null || ageSeconds === undefined) {
+			return totalFrames ? 'last reception unavailable' : 'no frames received since startup';
+		}
+		return 'last ' + formatDuration(ageSeconds) + ' ago';
+	}
+
+	// formatAgoOrNull renders a generic "synced/seen X ago" suffix, or null
+	// (render nothing) when the backend has never had a value to report -
+	// used wherever a null OptionalTime-derived age must not fall back to
+	// displaying an empty/zero duration.
+	function formatAgoOrNull(ageSeconds) {
+		if (ageSeconds === null || ageSeconds === undefined) return null;
+		return formatDuration(ageSeconds) + ' ago';
+	}
+
 	// clientClass maps the honest, evidence-scoped ClientObservabilityState
 	// enum (DETECTED/NOT_DETECTED/UNKNOWN/UNSUPPORTED) onto the same color
 	// rule - UNSUPPORTED and UNKNOWN both render as neutral gray, since
@@ -64,10 +98,15 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 			$scope.FanClass = tileClass(h.Fan.State);
 			$scope.ClientClass = clientClass(h.GDL90.ForeFlightDetection.State);
 
-			$scope.LastFrameAgeUAT = durationSeconds(h.UAT978.LastFrameAge);
-			$scope.LastFrameAgeES = durationSeconds(h.ES1090.LastFrameAge);
-			$scope.TimeSourceAge = durationSeconds(h.Time.LastSyncSourceAge);
+			$scope.LastFrameTextUAT = formatFrameAge(h.UAT978.LastFrameAgeSeconds, h.UAT978.TotalFrames);
+			$scope.LastFrameTextES = formatFrameAge(h.ES1090.LastFrameAgeSeconds, h.ES1090.TotalFrames);
+			$scope.TimeSyncedAgoText = formatAgoOrNull(h.Time.LastSyncSourceAgeSeconds);
 			$scope.GPSUpdateAge = durationSeconds(h.GPS.LastUpdateAge);
+			// LastNetworkClientActivity is a nullable RFC3339 wall-clock
+			// timestamp (readiness.OptionalTime) - shown as an absolute
+			// time, not a computed "X ago", so this never depends on
+			// reconciling the browser's own clock against the device's.
+			$scope.HasNetworkClientActivity = !!h.GDL90.LastNetworkClientActivity;
 
 			$scope.ConnectState = 'Connected';
 		}, function () {
