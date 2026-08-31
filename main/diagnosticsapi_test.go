@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stratux/stratux/readiness"
 )
 
 func writeTempLog(t *testing.T, lines []string) string {
@@ -121,16 +124,45 @@ func TestRecentSanitizedLogLines_EmptyFile(t *testing.T) {
 func TestDiagnosticBundleNamePattern_RejectsPathTraversalShapes(t *testing.T) {
 	for _, bad := range []string{
 		"../../etc/passwd",
-		"diagnostic-20260101T000000000Z.json/../../etc/passwd",
+		"diagnostic-20260101T000000.000000000Z.json/../../etc/passwd",
 		"diagnostic-invalid.json",
 		"",
-		"diagnostic-20260101T000000000Z.txt",
+		"diagnostic-20260101T000000.000000000Z.txt",
+		"diagnostic-20260101T000000000Z.json", // the old (wrong) no-dot shape must not match either
 	} {
 		if diagnosticBundleNamePattern.MatchString(bad) {
 			t.Errorf("pattern incorrectly matched malformed/traversal name: %q", bad)
 		}
 	}
-	if !diagnosticBundleNamePattern.MatchString("diagnostic-20260101T000000000Z.json") {
-		t.Error("pattern should match a well-formed bundle name")
+	// This must match the exact shape readiness.WriteDiagnosticBundle
+	// actually produces: bundle.GeneratedAt.UTC().Format("20060102T150405.000000000Z")
+	// - a literal dot between the seconds and nanosecond fields. A prior
+	// version of both this pattern and this test agreed on a subtly wrong
+	// (no-dot) shape and both "passed" without ever matching a real
+	// generated file - caught only by live deployment, not by this test
+	// suite alone. See the mismatch this left live: /getDiagnostics
+	// returned an empty list for a bundle that genuinely existed on disk.
+	if !diagnosticBundleNamePattern.MatchString("diagnostic-20260101T000000.000000000Z.json") {
+		t.Error("pattern should match the real bundle-name shape readiness.WriteDiagnosticBundle produces")
+	}
+}
+
+// TestDiagnosticBundleNamePattern_MatchesRealWriter is the drift guard the
+// previous test's hand-typed literal could not be: it calls the actual
+// readiness.WriteDiagnosticBundle and requires diagnosticBundleNamePattern
+// to match whatever it really produces, so a future format change in
+// either place that the other doesn't follow fails a test immediately
+// instead of only showing up as an empty /getDiagnostics list on a real
+// device.
+func TestDiagnosticBundleNamePattern_MatchesRealWriter(t *testing.T) {
+	dir := t.TempDir()
+	bundle := readiness.BuildDiagnosticBundle(time.Now(), "v", "c", readiness.HealthReport{}, nil, nil)
+	path, err := readiness.WriteDiagnosticBundle(dir, bundle, 10)
+	if err != nil {
+		t.Fatalf("WriteDiagnosticBundle error: %v", err)
+	}
+	name := filepath.Base(path)
+	if !diagnosticBundleNamePattern.MatchString(name) {
+		t.Errorf("diagnosticBundleNamePattern does not match a real generated bundle name: %q", name)
 	}
 }

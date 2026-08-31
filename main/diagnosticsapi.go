@@ -60,7 +60,7 @@ var sensitiveLogLinePattern = regexp.MustCompile(`(?i)(passphrase|password|secre
 // diagnosticBundleNamePattern is the exact shape readiness.WriteDiagnosticBundle
 // produces - used only to reject obviously-malformed names fast, before the
 // real safety check (exact match against a fresh directory listing).
-var diagnosticBundleNamePattern = regexp.MustCompile(`^diagnostic-[0-9]{8}T[0-9]{9}Z\.json$`)
+var diagnosticBundleNamePattern = regexp.MustCompile(`^diagnostic-[0-9]{8}T[0-9]{6}\.[0-9]{9}Z\.json$`)
 
 // recentSanitizedLogLines returns up to maxLines of the tail of path, with
 // any line matching sensitiveLogLinePattern dropped. Missing file, unreadable
