@@ -36,31 +36,74 @@ func DefaultPersistentStorageThresholds() StorageThresholds {
 // storage health needs. It exists so EvaluateStorage can be exercised with
 // synthetic values in tests without touching a real filesystem, while
 // StatPath (below) is the thin wrapper that fills one in for real.
+//
+// ext4 (the persistent data partition's filesystem) reserves a percentage
+// of blocks that only a privileged (root) process may use - `tune2fs -l`
+// on the live device confirmed this. That split shows up here as two
+// distinct free-space quantities:
+//
+//   - FreeBytes is statfs's Bfree: every free block, including the
+//     root-reserved ones. This is what `df` subtracts from Total to get
+//     its "Used" column - confirmed against the live device with exact
+//     byte-level arithmetic (`df -B1`, `stat -f`, `tune2fs -l`) - and it is
+//     also what stratuxrun, which always runs as root, can actually still
+//     write: root is not restricted by the reserved-blocks percentage.
+//   - AvailableBytes is statfs's Bavail: free blocks minus the
+//     root-reserved percentage, i.e. what an unprivileged process could
+//     still write. Kept as a raw, informational field (mission
+//     requirement to expose the raw numbers) so an operator can see the
+//     reserved-blocks gap directly, but it is not what this package bases
+//     "Used"/"available for recording" on, because the recording process
+//     is not unprivileged.
+//
+// The one model this package uses everywhere - UsedBytes,
+// UtilizationPercent, and recording admission - is the FreeBytes-based
+// one, precisely so `/getHealth` agrees with `df` instead of appearing to
+// disagree by the size of the reserved-blocks percentage (the discrepancy
+// this field split exists to resolve; see
+// docs/readiness-and-time-trust.md for the measured evidence).
+//
+// On tmpfs (the temporary overlay), there is no root-reserved-blocks
+// concept at all, so the kernel reports FreeBytes == AvailableBytes there
+// - the two models coincide automatically for that mount, without any
+// special-casing in this package.
 type StatfsResult struct {
 	TotalBytes     uint64
-	AvailableBytes uint64 // bytes an unprivileged process could still write (statfs Bavail, not Bfree)
+	FreeBytes      uint64 // statfs Bfree: all free blocks, including root-reserved ones - what df's Used and this package's admission model use
+	AvailableBytes uint64 // statfs Bavail: free blocks available to an unprivileged process - raw/informational only, see type doc
 	TotalInodes    uint64
 	FreeInodes     uint64
 }
 
-// UsedBytes returns TotalBytes-AvailableBytes. Using Bavail (rather than
-// Bfree) for both the available and used calculations keeps the two
-// numbers consistent with each other and with what `df` reports.
+// UsedBytes returns TotalBytes-FreeBytes, matching what `df` reports as
+// Used (see the type doc for why FreeBytes, not AvailableBytes, is the
+// basis for this).
 func (r StatfsResult) UsedBytes() uint64 {
-	if r.AvailableBytes >= r.TotalBytes {
+	if r.FreeBytes >= r.TotalBytes {
 		return 0
 	}
-	return r.TotalBytes - r.AvailableBytes
+	return r.TotalBytes - r.FreeBytes
 }
 
-// UtilizationPercent returns used/total as a 0-100 percentage. A
-// zero-total filesystem (never expected on a real mount, but possible from
-// a zero-value StatfsResult) reports 0, not NaN or a divide-by-zero panic.
+// UtilizationPercent returns used/total as a 0-100 percentage, on the same
+// FreeBytes-based model as UsedBytes. A zero-total filesystem (never
+// expected on a real mount, but possible from a zero-value StatfsResult)
+// reports 0, not NaN or a divide-by-zero panic.
 func (r StatfsResult) UtilizationPercent() float64 {
 	if r.TotalBytes == 0 {
 		return 0
 	}
 	return float64(r.UsedBytes()) / float64(r.TotalBytes) * 100
+}
+
+// AvailableForRecording returns the bytes actually available to the
+// recording process, which runs as root and can therefore use the
+// ext4 reserved-blocks percentage the same as any other root-owned write
+// - so this is FreeBytes, not AvailableBytes. A deployment that ever runs
+// the recording process as a non-root user would need AvailableBytes
+// instead; stratuxrun does not.
+func (r StatfsResult) AvailableForRecording() uint64 {
+	return r.FreeBytes
 }
 
 // InodeUtilizationPercent returns used-inodes/total-inodes as a 0-100
@@ -91,9 +134,15 @@ type StorageHealth struct {
 	ExpectedUUID   string // empty means "not checked"
 	UUIDMatches    bool
 
-	TotalBytes              uint64
-	UsedBytes               uint64
-	AvailableBytes          uint64
+	TotalBytes uint64
+	UsedBytes  uint64 // TotalBytes-FreeBytes; matches `df`'s Used column - see StatfsResult's doc comment
+	// FreeBytes and AvailableBytes are both raw statfs numbers, exposed
+	// alongside the derived UsedBytes/UtilizationPercent/RecordingAllowed
+	// so an operator (or a future consumer with different privilege
+	// assumptions) can see the reserved-blocks split for themselves rather
+	// than trusting only this package's chosen model.
+	FreeBytes               uint64 // statfs Bfree: all free blocks, including root-reserved ones
+	AvailableBytes          uint64 // statfs Bavail: free blocks available to an unprivileged process
 	UtilizationPercent      float64
 	InodeUtilizationPercent float64
 
@@ -128,6 +177,7 @@ func EvaluateStorage(
 		ExpectedUUID:            expectedUUID,
 		TotalBytes:              stat.TotalBytes,
 		UsedBytes:               stat.UsedBytes(),
+		FreeBytes:               stat.FreeBytes,
 		AvailableBytes:          stat.AvailableBytes,
 		UtilizationPercent:      stat.UtilizationPercent(),
 		InodeUtilizationPercent: stat.InodeUtilizationPercent(),

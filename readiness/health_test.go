@@ -1,6 +1,8 @@
 package readiness
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,9 +62,10 @@ func healthyTime() (TimeHealth, TimeState) {
 	utc := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < cfg().RequiredConsecutive; i++ {
 		sampleNow := now.Add(time.Duration(i) * time.Second)
-		tt.ObserveGNSS(goodSample(utc.Add(time.Duration(i)*time.Second), sampleNow), sampleNow, utc, false)
+		wall := utc.Add(time.Duration(i) * time.Second)
+		tt.ObserveGNSS(goodSample(utc.Add(time.Duration(i)*time.Second), sampleNow), sampleNow, wall, false)
 	}
-	return tt.Snapshot(now), tt.State()
+	return tt.Snapshot(now, utc.Add(time.Duration(cfg().RequiredConsecutive)*time.Second)), tt.State()
 }
 
 func noHardwareFixtures() (ahrs, baro, fan FutureHardwareHealth) {
@@ -73,10 +76,10 @@ func noHardwareFixtures() (ahrs, baro, fan FutureHardwareHealth) {
 
 func TestFixture_HealthyDualBand(t *testing.T) {
 	now := time.Now()
-	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, 3, map[string]int{"METAR": 40, "TAF": 5})
-	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, 0, nil)
+	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, SomeTime(now), 3, map[string]int{"METAR": 40, "TAF": 5})
+	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, SomeTime(now), 0, nil)
 	gps := healthyGPS(now)
-	gdl90 := BuildGDL90Health(true, true, 1, now, false)
+	gdl90 := BuildGDL90Health(true, true, 1, SomeTime(now))
 	system := BuildSystemHealth("2.0-pre5", "d3ac9396", time.Hour, 55.0, false, false, nil)
 	storage := healthyStorage()
 	overlay := EvaluateStorage(true, true, false, "tmpfs", "", "", statOfPercent(30), now, true, nil, DefaultPersistentStorageThresholds())
@@ -103,8 +106,8 @@ func TestFixture_NoSignalIsNotAFailure(t *testing.T) {
 	// must never render red or amber. This is the dashboard's most
 	// important color-rule requirement.
 	now := time.Now()
-	uat := BuildRadioHealth(noSignalBand("978", 0), 0, 0, 0, time.Time{}, now, 0, nil)
-	es := BuildRadioHealth(noSignalBand("1090", 1), 0, 0, 0, time.Time{}, now, 0, nil)
+	uat := BuildRadioHealth(noSignalBand("978", 0), 0, 0, 0, time.Time{}, now, NoTime(), 0, nil)
+	es := BuildRadioHealth(noSignalBand("1090", 1), 0, 0, 0, time.Time{}, now, NoTime(), 0, nil)
 
 	if uat.State != StateReady {
 		t.Errorf("no-signal UAT State = %q (color %s), want READY/green - absence of traffic must never read as a failure",
@@ -113,9 +116,15 @@ func TestFixture_NoSignalIsNotAFailure(t *testing.T) {
 	if es.State != StateReady {
 		t.Errorf("no-signal ES State = %q (color %s), want READY/green", es.State, es.State.Color())
 	}
+	if uat.LastFrameAgeSeconds != nil {
+		t.Error("a band with no frame ever received must have a nil LastFrameAgeSeconds, not a fabricated age")
+	}
+	if !uat.LastFrameTime.IsZero() {
+		t.Error("a band with no frame ever received must have an unavailable LastFrameTime")
+	}
 
 	gps := healthyGPS(now)
-	gdl90 := BuildGDL90Health(true, true, 0, time.Time{}, false)
+	gdl90 := BuildGDL90Health(true, true, 0, NoTime())
 	system := BuildSystemHealth("2.0-pre5", "d3ac9396", time.Hour, 50.0, false, false, nil)
 	storage := healthyStorage()
 	overlay := healthyStorage()
@@ -129,10 +138,10 @@ func TestFixture_NoSignalIsNotAFailure(t *testing.T) {
 
 func TestFixture_Degraded(t *testing.T) {
 	now := time.Now()
-	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, 3, nil)
-	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, 0, nil)
+	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, SomeTime(now), 3, nil)
+	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, SomeTime(now), 0, nil)
 	gps := healthyGPS(now)
-	gdl90 := BuildGDL90Health(true, true, 1, now, false)
+	gdl90 := BuildGDL90Health(true, true, 1, SomeTime(now))
 	system := BuildSystemHealth("2.0-pre5", "d3ac9396", time.Hour, 55.0, false, false, nil)
 	// Storage at 92% used - above critical (90%) but below the
 	// recording-prohibited line (95%): DEGRADED, not NOT_READY.
@@ -156,10 +165,10 @@ func TestFixture_Degraded(t *testing.T) {
 
 func TestFixture_MissingHardwareDoesNotFailOrExposeFields(t *testing.T) {
 	now := time.Now()
-	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, 3, nil)
-	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, 0, nil)
+	uat := BuildRadioHealth(healthyBand("978", 0), 500, 12, 20, now, now, SomeTime(now), 3, nil)
+	es := BuildRadioHealth(healthyBand("1090", 1), 900, 30, 45, now, now, SomeTime(now), 0, nil)
 	gps := healthyGPS(now)
-	gdl90 := BuildGDL90Health(true, true, 1, now, false)
+	gdl90 := BuildGDL90Health(true, true, 1, SomeTime(now))
 	system := BuildSystemHealth("2.0-pre5", "d3ac9396", time.Hour, 55.0, false, false, nil)
 	storage := healthyStorage()
 	overlay := healthyStorage()
@@ -183,7 +192,7 @@ func TestFixture_MissingHardwareDoesNotFailOrExposeFields(t *testing.T) {
 
 func TestBuildRadioHealth_DisabledBandIsNotInstalledNotFailed(t *testing.T) {
 	disabled := sdrassign.BandStatus{Enabled: false, Reason: "978 UAT disabled by configuration."}
-	h := BuildRadioHealth(disabled, 0, 0, 0, time.Time{}, time.Now(), 0, nil)
+	h := BuildRadioHealth(disabled, 0, 0, 0, time.Time{}, time.Now(), NoTime(), 0, nil)
 	if h.State != StateNotInstalled {
 		t.Errorf("a user-disabled band should read NOT_INSTALLED (gray), not a failure, got %q", h.State)
 	}
@@ -201,7 +210,8 @@ func TestBuildRadioHealth_ExternallySatisfiedUnassignedBandIsReady(t *testing.T)
 		AssignmentSource:    "external",
 		Reason:              "978 UAT served by an external low-power radio.",
 	}
-	h := BuildRadioHealth(external, 1200, 40, 60, time.Now(), time.Now(), 2, map[string]int{"METAR": 10})
+	now := time.Now()
+	h := BuildRadioHealth(external, 1200, 40, 60, now, now, SomeTime(now), 2, map[string]int{"METAR": 10})
 	if h.State != StateReady {
 		t.Errorf("an externally-satisfied, SDR-unassigned band must read READY, got %q (color %s)", h.State, h.State.Color())
 	}
@@ -218,7 +228,7 @@ func TestBuildRadioHealth_ExternallySatisfiedOverridesConflict(t *testing.T) {
 
 func TestBuildRadioHealth_ConflictIsNotReady(t *testing.T) {
 	conflict := sdrassign.BandStatus{Enabled: true, Assigned: true, Conflict: true, Reason: "duplicate tag conflict"}
-	h := BuildRadioHealth(conflict, 0, 0, 0, time.Time{}, time.Now(), 0, nil)
+	h := BuildRadioHealth(conflict, 0, 0, 0, time.Time{}, time.Now(), NoTime(), 0, nil)
 	if h.State != StateNotReady {
 		t.Errorf("a conflicted band must read NOT_READY, got %q", h.State)
 	}
@@ -226,9 +236,89 @@ func TestBuildRadioHealth_ConflictIsNotReady(t *testing.T) {
 
 func TestBuildRadioHealth_MissingReceiverIsNotReady(t *testing.T) {
 	missing := sdrassign.BandStatus{Enabled: true, Assigned: false, Reason: "978 UAT enabled but no receiver assigned"}
-	h := BuildRadioHealth(missing, 0, 0, 0, time.Time{}, time.Now(), 0, nil)
+	h := BuildRadioHealth(missing, 0, 0, 0, time.Time{}, time.Now(), NoTime(), 0, nil)
 	if h.State != StateNotReady {
 		t.Errorf("an enabled-but-unassigned band (missing radio) must read NOT_READY, got %q", h.State)
+	}
+}
+
+// --- Receiver last-frame timestamp/age semantics ---
+
+func TestBuildRadioHealth_NeverReceivedIsUnavailableNotZeroAge(t *testing.T) {
+	now := time.Now()
+	h := BuildRadioHealth(healthyBand("978", 0), 0, 0, 0, time.Time{}, now, NoTime(), 0, nil)
+	if h.LastFrameAgeSeconds != nil {
+		t.Error("LastFrameAgeSeconds must be nil (unavailable), not a fabricated 0, when no frame has ever been received")
+	}
+	if !h.LastFrameTime.IsZero() {
+		t.Error("LastFrameTime must be unavailable when no frame has ever been received")
+	}
+}
+
+func TestBuildRadioHealth_FirstFrameSetsAgeNearZero(t *testing.T) {
+	mono := time.Now()
+	wall := time.Date(2026, 8, 31, 3, 0, 0, 0, time.UTC)
+	h := BuildRadioHealth(healthyBand("978", 0), 1, 5, 5, mono, mono, SomeTime(wall), 0, nil)
+	if h.LastFrameAgeSeconds == nil {
+		t.Fatal("LastFrameAgeSeconds must be populated once a frame has been received")
+	}
+	if *h.LastFrameAgeSeconds != 0 {
+		t.Errorf("age immediately after the frame = %v, want 0", *h.LastFrameAgeSeconds)
+	}
+	if h.LastFrameTime.IsZero() || !h.LastFrameTime.Time.Equal(wall) {
+		t.Errorf("LastFrameTime = %v, want %v", h.LastFrameTime, wall)
+	}
+}
+
+func TestBuildRadioHealth_AgeGrowsWithMonotonicElapsed(t *testing.T) {
+	mono := time.Now()
+	later := mono.Add(30 * time.Second)
+	h := BuildRadioHealth(healthyBand("978", 0), 1, 0, 5, mono, later, SomeTime(mono), 0, nil)
+	if h.LastFrameAgeSeconds == nil || *h.LastFrameAgeSeconds != 30 {
+		t.Errorf("age = %v, want 30s", h.LastFrameAgeSeconds)
+	}
+}
+
+func TestBuildRadioHealth_WallClockStepDoesNotAffectAge(t *testing.T) {
+	// The whole point of computing age on the monotonic clock: a wall-clock
+	// correction between the frame and "now" must not perturb the age at
+	// all, since BuildRadioHealth is never even given the wall-clock
+	// values for this calculation - only lastFrameMono/nowMono.
+	mono := time.Now()
+	laterMono := mono.Add(10 * time.Second)
+	// lastFrameWall is deliberately a wildly different, even backward,
+	// wall-clock value - it must have zero effect on the age.
+	backwardWall := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	h := BuildRadioHealth(healthyBand("978", 0), 1, 0, 5, mono, laterMono, SomeTime(backwardWall), 0, nil)
+	if h.LastFrameAgeSeconds == nil || *h.LastFrameAgeSeconds != 10 {
+		t.Errorf("age = %v, want 10s regardless of the wall-clock display value", h.LastFrameAgeSeconds)
+	}
+}
+
+func TestBuildRadioHealth_ExternalUATNeverReceivedIsStillReadyNotFailed(t *testing.T) {
+	// Mission-critical distinction: external 978 with zero rate/no frame
+	// ever received must still be READY (externally satisfied), never
+	// downgraded merely for lacking a last-frame timestamp.
+	external := sdrassign.BandStatus{
+		Enabled:             true,
+		ExternallySatisfied: true,
+		AssignmentSource:    "external",
+		Reason:              "978 UAT served by an external low-power radio.",
+	}
+	h := BuildRadioHealth(external, 0, 0, 0, time.Time{}, time.Now(), NoTime(), 0, nil)
+	if h.State != StateReady {
+		t.Errorf("external UAT with no frame yet received must still be READY, got %q", h.State)
+	}
+}
+
+func TestBuildRadioHealth_JSONNeverContainsYearOne(t *testing.T) {
+	h := BuildRadioHealth(healthyBand("978", 0), 0, 0, 0, time.Time{}, time.Now(), NoTime(), 0, nil)
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "0001-01-01") {
+		t.Errorf("RadioHealth JSON must never contain a year-1 timestamp for an unavailable LastFrameTime: %s", b)
 	}
 }
 
@@ -250,16 +340,48 @@ func TestBuildGPSHealth_MissingDeviceIsNotReady(t *testing.T) {
 func TestBuildGDL90Health_NoClientIsStillReady(t *testing.T) {
 	// GDL90 generating and available with zero clients connected (e.g. on
 	// the bench, no EFB open) must not read as a failure.
-	h := BuildGDL90Health(true, true, 0, time.Time{}, false)
+	h := BuildGDL90Health(true, true, 0, NoTime())
 	if h.State != StateReady {
 		t.Errorf("GDL90 active with no client State = %q, want READY", h.State)
 	}
 }
 
 func TestBuildGDL90Health_DoesNotClaimForeFlightWithoutEvidence(t *testing.T) {
-	h := BuildGDL90Health(true, true, 1, time.Now(), false)
+	h := BuildGDL90Health(true, true, 1, SomeTime(time.Now()))
 	if h.ForeFlightClientDetected {
 		t.Error("ForeFlightClientDetected must be false unless explicitly set from real identifying evidence")
+	}
+}
+
+func TestBuildGDL90Health_LastNetworkClientActivityUnavailableWhenNeverSeen(t *testing.T) {
+	h := BuildGDL90Health(true, true, 0, NoTime())
+	if !h.LastNetworkClientActivity.IsZero() {
+		t.Error("LastNetworkClientActivity must be unavailable when no client activity has ever been observed")
+	}
+	if !h.LastClientActivity.IsZero() {
+		t.Error("the legacy LastClientActivity field must agree with LastNetworkClientActivity")
+	}
+}
+
+func TestBuildGDL90Health_LastNetworkClientActivityPopulatedWhenSeen(t *testing.T) {
+	now := time.Now()
+	h := BuildGDL90Health(true, true, 2, SomeTime(now))
+	if h.LastNetworkClientActivity.IsZero() || !h.LastNetworkClientActivity.Time.Equal(now) {
+		t.Errorf("LastNetworkClientActivity = %v, want %v", h.LastNetworkClientActivity, now)
+	}
+	if h.LastClientActivity.IsZero() || !h.LastClientActivity.Time.Equal(now) {
+		t.Error("legacy LastClientActivity must equal LastNetworkClientActivity")
+	}
+}
+
+func TestBuildGDL90Health_JSONNeverContainsYearOne(t *testing.T) {
+	h := BuildGDL90Health(true, true, 0, NoTime())
+	b, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "0001-01-01") {
+		t.Errorf("GDL90Health JSON must never contain a year-1 timestamp: %s", b)
 	}
 }
 
@@ -267,7 +389,7 @@ func TestBuildForeFlightDetection_OutputInactiveIsUnknown(t *testing.T) {
 	// If GDL90 isn't even generating, there is no basis to say anything
 	// about client presence - this must not be conflated with "confirmed
 	// absent" (NOT_DETECTED), which is a stronger claim.
-	c := BuildForeFlightDetection(false, false, time.Time{})
+	c := BuildForeFlightDetection(false, false)
 	if c.State != ClientUnknown {
 		t.Errorf("State = %q, want UNKNOWN", c.State)
 	}
@@ -280,7 +402,7 @@ func TestBuildForeFlightDetection_OutputInactiveIsUnknownEvenIfClientsClaimedAss
 	// Output-active gates everything: if GDL90 itself isn't running, a
 	// caller-asserted "clients associated" is not trustworthy evidence of
 	// anything - stay UNKNOWN rather than NOT_DETECTED or UNSUPPORTED.
-	c := BuildForeFlightDetection(false, true, time.Time{})
+	c := BuildForeFlightDetection(false, true)
 	if c.State != ClientUnknown {
 		t.Errorf("State = %q, want UNKNOWN", c.State)
 	}
@@ -290,7 +412,7 @@ func TestBuildForeFlightDetection_NoClientsIsConfidentlyNotDetected(t *testing.T
 	// Zero clients associated is real, sufficient evidence that ForeFlight
 	// specifically cannot be among them - this is the one case allowed to
 	// reach a confident negative without per-app identification.
-	c := BuildForeFlightDetection(true, false, time.Time{})
+	c := BuildForeFlightDetection(true, false)
 	if c.State != ClientNotDetected {
 		t.Errorf("State = %q, want NOT_DETECTED", c.State)
 	}
@@ -301,16 +423,28 @@ func TestBuildForeFlightDetection_ClientsPresentIsUnsupportedNotDetected(t *test
 	// must NOT be reported as ForeFlight being detected - the protocol
 	// gives no application-layer identification, so the correct answer is
 	// "can't tell", not a guess in either direction.
-	now := time.Now()
-	c := BuildForeFlightDetection(true, true, now)
+	c := BuildForeFlightDetection(true, true)
 	if c.State != ClientUnsupported {
 		t.Errorf("State = %q, want UNSUPPORTED", c.State)
 	}
 	if c.State == ClientDetected {
 		t.Fatal("must never report DETECTED without real application-layer evidence")
 	}
-	if !c.LastSeen.Equal(now) {
-		t.Errorf("LastSeen = %v, want %v (threaded through unchanged)", c.LastSeen, now)
+}
+
+func TestBuildForeFlightDetection_LastSeenAlwaysUnavailable(t *testing.T) {
+	// ForeFlight-specific LastSeen must never be populated: no application-
+	// layer evidence identifying ForeFlight exists anywhere in this
+	// project, in any input combination, so there is never a real instant
+	// to report - conflating generic network activity with "ForeFlight was
+	// seen" is exactly the overclaim this model exists to avoid.
+	for _, outputActive := range []bool{false, true} {
+		for _, clients := range []bool{false, true} {
+			c := BuildForeFlightDetection(outputActive, clients)
+			if !c.LastSeen.IsZero() {
+				t.Errorf("outputActive=%v clients=%v: LastSeen must be unavailable, got %v", outputActive, clients, c.LastSeen)
+			}
+		}
 	}
 }
 
@@ -322,7 +456,7 @@ func TestBuildForeFlightDetection_NeverReachesDetectedToday(t *testing.T) {
 	// is wired in.
 	for _, outputActive := range []bool{false, true} {
 		for _, clients := range []bool{false, true} {
-			c := BuildForeFlightDetection(outputActive, clients, time.Time{})
+			c := BuildForeFlightDetection(outputActive, clients)
 			if c.State == ClientDetected {
 				t.Errorf("outputActive=%v clients=%v produced ClientDetected with no evidence source implemented", outputActive, clients)
 			}
@@ -330,8 +464,19 @@ func TestBuildForeFlightDetection_NeverReachesDetectedToday(t *testing.T) {
 	}
 }
 
+func TestBuildForeFlightDetection_JSONNeverContainsYearOne(t *testing.T) {
+	c := BuildForeFlightDetection(true, true)
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "0001-01-01") {
+		t.Errorf("ClientObservability JSON must never contain a year-1 timestamp: %s", b)
+	}
+}
+
 func TestBuildGDL90Health_ForeFlightDetectionIsPopulatedAndConsistent(t *testing.T) {
-	h := BuildGDL90Health(true, true, 2, time.Now(), false)
+	h := BuildGDL90Health(true, true, 2, SomeTime(time.Now()))
 	if h.ForeFlightDetection.State != ClientUnsupported {
 		t.Errorf("ForeFlightDetection.State = %q, want UNSUPPORTED with clients present", h.ForeFlightDetection.State)
 	}
@@ -341,12 +486,12 @@ func TestBuildGDL90Health_ForeFlightDetectionIsPopulatedAndConsistent(t *testing
 		t.Error("ForeFlightClientDetected must equal (ForeFlightDetection.State == ClientDetected)")
 	}
 
-	h2 := BuildGDL90Health(true, true, 0, time.Time{}, false)
+	h2 := BuildGDL90Health(true, true, 0, NoTime())
 	if h2.ForeFlightDetection.State != ClientNotDetected {
 		t.Errorf("ForeFlightDetection.State = %q, want NOT_DETECTED with zero clients", h2.ForeFlightDetection.State)
 	}
 
-	h3 := BuildGDL90Health(false, false, 0, time.Time{}, false)
+	h3 := BuildGDL90Health(false, false, 0, NoTime())
 	if h3.ForeFlightDetection.State != ClientUnknown {
 		t.Errorf("ForeFlightDetection.State = %q, want UNKNOWN with GDL90 inactive", h3.ForeFlightDetection.State)
 	}

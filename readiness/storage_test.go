@@ -13,9 +13,15 @@ func thresholds() StorageThresholds {
 func statOfPercent(usedPercent float64) StatfsResult {
 	const total = uint64(1_000_000_000) // 1 GB, round numbers for readable test math
 	used := uint64(float64(total) * usedPercent / 100)
+	free := total - used
 	return StatfsResult{
-		TotalBytes:     total,
-		AvailableBytes: total - used,
+		TotalBytes: total,
+		FreeBytes:  free, // basis for UsedBytes/UtilizationPercent/admission - see StatfsResult's doc comment
+		// AvailableBytes simulates a 5%-reserved-blocks filesystem (like
+		// the live device's ext4 partition) - deliberately different from
+		// FreeBytes so a test that accidentally used the wrong field would
+		// fail instead of passing by coincidence.
+		AvailableBytes: uint64(float64(free) * 0.95),
 		TotalInodes:    1000,
 		FreeInodes:     900,
 	}
@@ -141,6 +147,49 @@ func TestEvaluateStorage_TemporaryOverlayHasNoUUIDCheck(t *testing.T) {
 	}
 	if h.State != StateReady {
 		t.Errorf("overlay with no UUID check should still read READY when healthy, got %q: %s", h.State, h.Reason)
+	}
+}
+
+// --- Reserved-blocks accounting model (root vs unprivileged) ---
+
+func TestStatfsResult_UsedBytesMatchesDfNotUnprivilegedAvailable(t *testing.T) {
+	// Modeled on the live-device evidence: ~1GB of ext4 reserved blocks
+	// made AvailableBytes-based accounting report ~1.2GiB/6% used while df
+	// (and this package, post-fix) reported ~162MiB/1% used.
+	const total = uint64(20_000_000_000) // 20 GB, close to the live device's data partition
+	const reserved = uint64(1_073_741_824) // ~1 GiB reserved-blocks percentage
+	const trulyUsed = uint64(162 * 1 << 20) // ~162 MiB actually used
+	r := StatfsResult{
+		TotalBytes:     total,
+		FreeBytes:      total - trulyUsed,
+		AvailableBytes: total - trulyUsed - reserved,
+	}
+	if got := r.UsedBytes(); got != trulyUsed {
+		t.Errorf("UsedBytes() = %d, want %d (the df-matching, FreeBytes-based figure)", got, trulyUsed)
+	}
+	if pct := r.UtilizationPercent(); pct > 2 {
+		t.Errorf("UtilizationPercent() = %.2f, want close to df's ~1%%, not the ~6%% an AvailableBytes-based model would report", pct)
+	}
+}
+
+func TestStatfsResult_AvailableForRecordingUsesFreeBytesNotAvailableBytes(t *testing.T) {
+	r := StatfsResult{TotalBytes: 1000, FreeBytes: 500, AvailableBytes: 300}
+	if got := r.AvailableForRecording(); got != 500 {
+		t.Errorf("AvailableForRecording() = %d, want FreeBytes (500) since the recording process runs as root", got)
+	}
+}
+
+func TestEvaluateStorage_ExposesRawFreeAndAvailableBytes(t *testing.T) {
+	stat := StatfsResult{TotalBytes: 1000, FreeBytes: 500, AvailableBytes: 300}
+	h := EvaluateStorage(true, true, false, "/dev/mmcblk0p3", "u", "u", stat, time.Now(), true, nil, thresholds())
+	if h.FreeBytes != 500 {
+		t.Errorf("StorageHealth.FreeBytes = %d, want the raw statfs Bfree-derived value (500)", h.FreeBytes)
+	}
+	if h.AvailableBytes != 300 {
+		t.Errorf("StorageHealth.AvailableBytes = %d, want the raw statfs Bavail-derived value (300)", h.AvailableBytes)
+	}
+	if h.UsedBytes != 500 {
+		t.Errorf("StorageHealth.UsedBytes = %d, want the FreeBytes-based figure (500)", h.UsedBytes)
 	}
 }
 

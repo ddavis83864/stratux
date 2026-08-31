@@ -47,8 +47,28 @@ type RadioHealth struct {
 	TotalFrames           uint64
 	MessageRateLastMinute float64
 	MessageRatePeak       float64
-	LastFrameTime         time.Time
-	LastFrameAge          time.Duration
+
+	// LastFrameTime is the best-effort wall-clock UTC instant of the most
+	// recent accepted frame this daemon lifetime - unavailable (JSON
+	// null) if no frame has been received yet, or if a wall-clock
+	// equivalent cannot yet be derived from the monotonic reading (see
+	// BuildRadioHealth).
+	LastFrameTime OptionalTime
+
+	// LastFrameAgeSeconds is elapsed time since the last accepted frame,
+	// in seconds, computed on the monotonic clock so a wall-clock
+	// correction cannot make it negative or jump - unavailable (JSON
+	// null) if no frame has been received yet.
+	LastFrameAgeSeconds *float64
+
+	// LastFrameAge is the same quantity as LastFrameAgeSeconds, retained
+	// as a time.Duration (nanoseconds when marshaled) for existing
+	// consumers. New code should prefer LastFrameAgeSeconds, which names
+	// its unit explicitly. Zero both when no frame has ever been
+	// received and immediately after one just was - see
+	// LastFrameAgeSeconds (non-nil) or LastFrameTime (non-null) to tell
+	// those two cases apart.
+	LastFrameAge time.Duration
 
 	// UAT-only counters; left at zero for the 1090 ES band.
 	TowerCount           int
@@ -90,7 +110,16 @@ func StateFromBandStatus(b sdrassign.BandStatus) ComponentState {
 
 // BuildRadioHealth derives a RadioHealth from a band's existing status plus
 // the counters BandStatus itself does not track.
-func BuildRadioHealth(b sdrassign.BandStatus, totalFrames uint64, rateLastMinute, ratePeak float64, lastFrameTime, now time.Time, towerCount int, weatherProducts map[string]int) RadioHealth {
+//
+// lastFrameMono and nowMono must be on the same monotonic clock domain
+// (e.g. both stratuxClock.Time in main/) - age is computed as
+// nowMono.Sub(lastFrameMono), which is immune to a wall-clock step/slew
+// happening in between, unlike subtracting two wall-clock readings.
+// lastFrameWall is the best-effort wall-clock UTC equivalent of the same
+// instant, for display only - pass readiness.NoTime() if none can be
+// derived yet (e.g. before the system clock has any trusted reference),
+// even if lastFrameMono itself is non-zero.
+func BuildRadioHealth(b sdrassign.BandStatus, totalFrames uint64, rateLastMinute, ratePeak float64, lastFrameMono, nowMono time.Time, lastFrameWall OptionalTime, towerCount int, weatherProducts map[string]int) RadioHealth {
 	h := RadioHealth{
 		State:                 StateFromBandStatus(b),
 		Reason:                b.Reason,
@@ -98,12 +127,14 @@ func BuildRadioHealth(b sdrassign.BandStatus, totalFrames uint64, rateLastMinute
 		TotalFrames:           totalFrames,
 		MessageRateLastMinute: rateLastMinute,
 		MessageRatePeak:       ratePeak,
-		LastFrameTime:         lastFrameTime,
+		LastFrameTime:         lastFrameWall,
 		TowerCount:            towerCount,
 		WeatherProductCounts:  weatherProducts,
 	}
-	if !lastFrameTime.IsZero() {
-		h.LastFrameAge = now.Sub(lastFrameTime)
+	if !lastFrameMono.IsZero() {
+		age := nowMono.Sub(lastFrameMono).Seconds()
+		h.LastFrameAgeSeconds = &age
+		h.LastFrameAge = nowMono.Sub(lastFrameMono)
 	}
 	return h
 }
@@ -208,7 +239,17 @@ type ClientObservability struct {
 
 	GDL90OutputActive bool
 	ClientsAssociated bool
-	LastSeen          time.Time
+
+	// LastSeen is when *ForeFlight specifically* was last identified -
+	// always unavailable (JSON null) today, since no application-layer
+	// evidence identifying any specific EFB client exists anywhere in
+	// this project (see DetectionBasis). It is a distinct question from
+	// "was any GDL90 client active recently," which
+	// GDL90Health.LastNetworkClientActivity answers generically - do not
+	// conflate the two: representing generic network liveness as if it
+	// meant ForeFlight was seen would overclaim exactly what this type
+	// exists to avoid overclaiming.
+	LastSeen OptionalTime
 }
 
 // BuildForeFlightDetection derives whether a ForeFlight client can be said
@@ -224,14 +265,16 @@ type ClientObservability struct {
 // per-app evidence to be a safe claim). If a future evidence source is
 // added (e.g. parsing a client-identifying broadcast some EFBs send),
 // ClientDetected becomes reachable without changing this function's
-// signature meaning - only its body.
-func BuildForeFlightDetection(outputActive bool, clientsAssociated bool, lastSeen time.Time) ClientObservability {
+// signature meaning - only its body. LastSeen is always NoTime() today -
+// there is no parameter for it, deliberately, since no caller has a real
+// ForeFlight-specific timestamp to supply.
+func BuildForeFlightDetection(outputActive bool, clientsAssociated bool) ClientObservability {
 	const basis = "network-level liveness only (ICMP echo-reply/destination-unreachable via main/network.go's client tracking); no application-layer identification of any EFB client is received or parsed by this project"
 	c := ClientObservability{
 		DetectionBasis:    basis,
 		GDL90OutputActive: outputActive,
 		ClientsAssociated: clientsAssociated,
-		LastSeen:          lastSeen,
+		LastSeen:          NoTime(),
 	}
 	switch {
 	case !outputActive:
@@ -262,26 +305,39 @@ type GDL90Health struct {
 	Generating   bool
 	OutputActive bool
 
-	RecentClientCount        int
-	LastClientActivity       time.Time
+	RecentClientCount int
+
+	// LastNetworkClientActivity is the most recent generic network-level
+	// activity (ICMP liveness) from any GDL90 client - unavailable (JSON
+	// null) if none has ever been observed this daemon lifetime. This is
+	// explicitly NOT a ForeFlight-specific observation - see
+	// ForeFlightDetection.LastSeen for that distinct (always-unavailable
+	// today) question.
+	LastNetworkClientActivity OptionalTime
+
+	// LastClientActivity is retained for existing consumers and is
+	// always exactly LastNetworkClientActivity. Prefer the new name,
+	// which does not read as ForeFlight-specific.
+	LastClientActivity OptionalTime
+
 	ForeFlightClientDetected bool
 	ForeFlightDetection      ClientObservability
 }
 
 // BuildGDL90Health derives a GDL90Health from live output signals.
-// foreFlightDetected is retained for call-site/signature stability but is
-// no longer used: ForeFlightDetection is now derived internally via
-// BuildForeFlightDetection, which is honest about what can and cannot be
-// concluded from the evidence Stratux's GDL90 client tracking provides.
-func BuildGDL90Health(generating, outputActive bool, recentClientCount int, lastClientActivity time.Time, foreFlightDetected bool) GDL90Health {
-	detection := BuildForeFlightDetection(generating && outputActive, recentClientCount > 0, lastClientActivity)
+// lastNetworkClientActivity is the most recent generic (not
+// application-specific) network-level client activity - see
+// GDL90Health.LastNetworkClientActivity.
+func BuildGDL90Health(generating, outputActive bool, recentClientCount int, lastNetworkClientActivity OptionalTime) GDL90Health {
+	detection := BuildForeFlightDetection(generating && outputActive, recentClientCount > 0)
 	h := GDL90Health{
-		Generating:               generating,
-		OutputActive:             outputActive,
-		RecentClientCount:        recentClientCount,
-		LastClientActivity:       lastClientActivity,
-		ForeFlightClientDetected: detection.State == ClientDetected,
-		ForeFlightDetection:      detection,
+		Generating:                generating,
+		OutputActive:              outputActive,
+		RecentClientCount:         recentClientCount,
+		LastNetworkClientActivity: lastNetworkClientActivity,
+		LastClientActivity:        lastNetworkClientActivity,
+		ForeFlightClientDetected:  detection.State == ClientDetected,
+		ForeFlightDetection:       detection,
 	}
 	switch {
 	case !generating || !outputActive:

@@ -30,7 +30,9 @@ const (
 	// would-be backward correction after recording began) that was not
 	// applied. The last trusted value is still the best available
 	// estimate, with growing uncertainty, but new data cannot currently be
-	// trusted without review.
+	// trusted without review. This is also this package's holdover
+	// representation: a source that has gone quiet does not lose its last
+	// trusted value, it grows LastSyncSourceAge against it instead.
 	TimeDegraded TimeState = "DEGRADED"
 
 	// TimeInvalid means current time tracking has concrete evidence of
@@ -58,27 +60,54 @@ type GNSSTimeSample struct {
 // TimeTrustConfig controls how strictly GNSS time samples are trusted and
 // how the system clock is corrected. All fields are configurable per the
 // mission requirement that thresholds not be hardcoded.
+//
+// Rationale for the defaults (DefaultTimeTrustConfig): a Raspberry Pi 4 has
+// no RTC but a reasonably stable crystal oscillator - typical drift is a
+// few parts-per-million, i.e. single-digit milliseconds even over
+// MinCorrectionInterval's full 30s window. Deadband (50ms) is chosen well
+// above that expected drift and above ordinary GNSS fix jitter, so routine
+// noise never triggers a clock operation at all, while MinCorrectionInterval
+// (30s) independently bounds how often this package will ever act on the
+// clock even for a persistent, above-deadband discrepancy - together they
+// are what stop the every-~100ms correction churn a naive
+// "correct on every accepted sample" policy produces.
 type TimeTrustConfig struct {
 	MaxSampleAge        time.Duration // a sample older than this cannot be used ("data is fresh")
 	RequiredConsecutive int           // consecutive agreeing accepted samples required before first trust
 	AgreementTolerance  time.Duration // max allowed disagreement between consecutive samples (after accounting for elapsed time) to count as "agreeing"
 	MinPlausibleUTC     time.Time     // samples before this are rejected as implausible
 	MaxPlausibleUTC     time.Time     // samples after this are rejected as implausible
-	LargeStepThreshold  time.Duration // a correction at/above this magnitude is a hard step; below it, a slew is preferred
-	StaleAfter          time.Duration // a previously-synced source not refreshed within this window degrades to TimeDegraded
+	LargeStepThreshold  time.Duration // a correction at/above this magnitude is a hard, once-per-boot step
+	StaleAfter          time.Duration // a previously-synced source not refreshed within this window degrades to TimeDegraded (this package's holdover policy)
+
+	// Deadband is the offset magnitude below which, once synced, no clock
+	// operation is performed at all and no health event is recorded -
+	// routine GNSS/oscillator noise, not a real discrepancy worth acting
+	// on. See the type doc for the reasoning behind the default.
+	Deadband time.Duration
+
+	// MinCorrectionInterval is the minimum monotonic time between any two
+	// non-step clock corrections. An accepted sample whose offset exceeds
+	// Deadband but arrives before this interval has elapsed since the
+	// last correction is deferred (ClockActionNone, with a reason saying
+	// why) rather than acted on immediately - this is what bounds
+	// correction frequency independent of how often samples arrive.
+	MinCorrectionInterval time.Duration
 }
 
 // DefaultTimeTrustConfig returns reasonable initial thresholds. All of
 // them are meant to be tuned by the deployment, not treated as final.
 func DefaultTimeTrustConfig() TimeTrustConfig {
 	return TimeTrustConfig{
-		MaxSampleAge:        5 * time.Second,
-		RequiredConsecutive: 3,
-		AgreementTolerance:  2 * time.Second,
-		MinPlausibleUTC:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		MaxPlausibleUTC:     time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC),
-		LargeStepThreshold:  5 * time.Second,
-		StaleAfter:          15 * time.Second,
+		MaxSampleAge:          5 * time.Second,
+		RequiredConsecutive:   3,
+		AgreementTolerance:    2 * time.Second,
+		MinPlausibleUTC:       time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		MaxPlausibleUTC:       time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC),
+		LargeStepThreshold:    5 * time.Second,
+		StaleAfter:            15 * time.Second,
+		Deadband:              50 * time.Millisecond,
+		MinCorrectionInterval: 30 * time.Second,
 	}
 }
 
@@ -129,9 +158,10 @@ func EvaluateSample(s GNSSTimeSample, now time.Time, cfg TimeTrustConfig) Sample
 type ClockAction string
 
 const (
-	// ClockActionNone means take no clock action (e.g. the current source
-	// is not yet trusted, or its value already agrees with the system
-	// clock closely enough that a correction is not worth applying).
+	// ClockActionNone means take no clock action - the source is not yet
+	// trusted, its offset is within the deadband, a correction was
+	// deferred by rate limiting, or a repeat large step was suppressed.
+	// Reason always says which.
 	ClockActionNone ClockAction = "none"
 
 	// ClockActionStepOnce means immediately set the system clock to NewUTC.
@@ -141,17 +171,15 @@ const (
 	// explaining that a repeat step was suppressed, not applied silently.
 	ClockActionStepOnce ClockAction = "step_once"
 
-	// ClockActionSlew means apply a small, forward-only correction toward
-	// NewUTC. Unlike ClockActionStepOnce, this may recur - small ongoing
-	// discipline is not the disruptive event a hard step is.
-	//
-	// Note: this package only decides that a slew is the right response;
-	// it deliberately does not implement gradual sub-second clock
-	// discipline (e.g. via adjtimex) itself. Today's caller applies a
-	// ClockActionSlew the same way as a step (a direct clock set), which
-	// is simple and safe but not a true gradual slew - see the time-trust
-	// documentation for this known limitation.
-	ClockActionSlew ClockAction = "slew"
+	// ClockActionPeriodicCorrection means apply a small, forward-only
+	// direct clock set toward NewUTC. This is deliberately NOT called
+	// "slew": this package does not implement a genuine gradual
+	// kernel-level clock discipline (e.g. adjtimex) - the caller applies
+	// this the same way as ClockActionStepOnce, a direct set, just for a
+	// smaller offset and, unlike the once-per-boot step, allowed to recur
+	// - bounded by Deadband (small offsets never reach here at all) and
+	// MinCorrectionInterval (rate-limited even when they do).
+	ClockActionPeriodicCorrection ClockAction = "periodic_correction"
 
 	// ClockActionRejectBackward means NewUTC is behind the current system
 	// clock and recording has already begun, so it was deliberately not
@@ -167,7 +195,7 @@ type Decision struct {
 	NewUTC time.Time
 	Source string // "gnss" or "network"
 	Reason string
-	At     time.Time // when this decision was made (wall clock, for the event log)
+	At     time.Time // wall-clock instant this decision was made, for the event log
 }
 
 // SyncEvent is a durable record of one trusted-time decision, suitable for
@@ -179,15 +207,42 @@ type SyncEvent struct {
 
 // TimeHealth is the JSON shape exposed by the health API's Time field.
 type TimeHealth struct {
-	State             TimeState
-	Source            string
-	CurrentUTC        time.Time
-	LastSyncTime      time.Time
+	State  TimeState
+	Source string
+
+	// CurrentUTC is this package's best current estimate of wall-clock
+	// UTC, populated only while actively synced (State is GNSS_SYNCED or
+	// NETWORK_SYNCED, the same condition RecordingAllowed uses) -
+	// unavailable (JSON null) otherwise, since an untrusted system clock
+	// reading is not a value this package can vouch for.
+	CurrentUTC OptionalTime
+
+	// LastSyncTime is the wall-clock UTC instant of the last accepted
+	// synchronization - unavailable (JSON null) if no sync has ever
+	// happened this daemon lifetime.
+	LastSyncTime OptionalTime
+
+	// LastSyncSourceAgeSeconds is time elapsed, in seconds, since
+	// LastSyncTime, computed on the monotonic clock - unavailable (JSON
+	// null) if no sync has ever happened.
+	LastSyncSourceAgeSeconds *float64
+	// LastSyncSourceAge is the same quantity as a time.Duration
+	// (nanoseconds when marshaled), retained for existing consumers.
+	// Prefer LastSyncSourceAgeSeconds, which names its unit explicitly.
 	LastSyncSourceAge time.Duration
-	EstimatedOffset   time.Duration
-	RecordingAllowed  bool
-	LastSyncError     string
-	RecentEvents      []SyncEvent
+
+	// EstimatedOffsetMilliseconds is the most recent source-vs-system
+	// offset actually applied (step or periodic correction), in
+	// milliseconds. 0 before any correction has ever been applied.
+	EstimatedOffsetMilliseconds float64
+	// EstimatedOffset is the same quantity as a time.Duration
+	// (nanoseconds when marshaled), retained for existing consumers.
+	// Prefer EstimatedOffsetMilliseconds.
+	EstimatedOffset time.Duration
+
+	RecordingAllowed bool
+	LastSyncError    string
+	RecentEvents     []SyncEvent
 }
 
 // maxRetainedEvents bounds the in-memory sync-event log so a
@@ -206,8 +261,8 @@ type TimeTrust struct {
 
 	state         TimeState
 	source        string
-	lastSyncAt    time.Time // monotonic-ish "now" at last accepted sync
-	lastSyncUTC   time.Time
+	lastSyncAt    time.Time // monotonic "now" at last accepted sync - for age arithmetic only, never serialized as a wall-clock value
+	lastSyncUTC   time.Time // wall-clock UTC at last accepted sync - what LastSyncTime reports
 	lastSyncError string
 	offset        time.Duration
 
@@ -215,8 +270,9 @@ type TimeTrust struct {
 	lastGoodUTC     time.Time
 	lastGoodAt      time.Time
 
-	steppedOnce bool
-	events      []SyncEvent
+	steppedOnce      bool
+	lastCorrectionAt time.Time // monotonic "now" at the last applied (non-deadband) correction, zero if none yet
+	events           []SyncEvent
 }
 
 // NewTimeTrust creates a tracker starting in TimeUnsynchronized.
@@ -229,9 +285,10 @@ func NewTimeTrust(cfg TimeTrustConfig) *TimeTrust {
 // what clock action (if any) the caller should take, given the system
 // clock's current reading and whether recording has already started.
 //
-// now is the caller's monotonic clock (for sample freshness and the
-// consecutive-sample-agreement window); systemClockUTC is the wall clock's
-// current reading (what a correction would be relative to).
+// now is the caller's monotonic clock (for sample freshness, the
+// consecutive-sample-agreement window, and rate-limiting arithmetic);
+// systemClockUTC is the wall clock's current reading (what a correction
+// would be relative to, and what is recorded as this Decision's At).
 func (t *TimeTrust) ObserveGNSS(s GNSSTimeSample, now, systemClockUTC time.Time, recordingStarted bool) Decision {
 	verdict := EvaluateSample(s, now, t.cfg)
 	if !verdict.Accepted {
@@ -240,7 +297,7 @@ func (t *TimeTrust) ObserveGNSS(s GNSSTimeSample, now, systemClockUTC time.Time,
 			t.degrade("gnss", "GNSS time source lost: "+verdict.Reason, false)
 		}
 		t.lastSyncError = verdict.Reason
-		return Decision{Action: ClockActionNone, Reason: verdict.Reason, At: now}
+		return Decision{Action: ClockActionNone, Reason: verdict.Reason, At: systemClockUTC}
 	}
 
 	if t.consecutiveGood > 0 && !t.lastGoodAt.IsZero() {
@@ -264,7 +321,7 @@ func (t *TimeTrust) ObserveGNSS(s GNSSTimeSample, now, systemClockUTC time.Time,
 
 	if t.consecutiveGood < t.cfg.RequiredConsecutive {
 		reason := fmt.Sprintf("gnss sample accepted (%d/%d consecutive needed before trust)", t.consecutiveGood, t.cfg.RequiredConsecutive)
-		return Decision{Action: ClockActionNone, Reason: reason, At: now}
+		return Decision{Action: ClockActionNone, Reason: reason, At: systemClockUTC}
 	}
 
 	return t.decideAndSync("gnss", s.UTC, now, systemClockUTC, recordingStarted)
@@ -272,15 +329,15 @@ func (t *TimeTrust) ObserveGNSS(s GNSSTimeSample, now, systemClockUTC time.Time,
 
 // ObserveNetwork processes a network (NTP) time observation. Network time
 // has no consecutive-sample gate - NTP already applies its own internal
-// validation - but is otherwise subject to the same step/slew/backward-
-// rejection rules as GNSS, and is explicitly not required for correct
-// operation (only GNSS is the mandated offline fallback).
+// validation - but is otherwise subject to the same step/correction/
+// backward-rejection rules as GNSS, and is explicitly not required for
+// correct operation (only GNSS is the mandated offline fallback).
 func (t *TimeTrust) ObserveNetwork(ntpUTC, now, systemClockUTC time.Time, valid bool, recordingStarted bool) Decision {
 	if !valid {
 		if t.state == TimeNetworkSynced {
 			t.degrade("network", "network time source lost", false)
 		}
-		return Decision{Action: ClockActionNone, Reason: "network time not currently valid", At: now}
+		return Decision{Action: ClockActionNone, Reason: "network time not currently valid", At: systemClockUTC}
 	}
 	return t.decideAndSync("network", ntpUTC, now, systemClockUTC, recordingStarted)
 }
@@ -293,7 +350,7 @@ func (t *TimeTrust) decideAndSync(source string, sourceUTC, now, systemClockUTC 
 		magnitude = -magnitude
 	}
 
-	d := Decision{OldUTC: systemClockUTC, NewUTC: sourceUTC, Source: source, At: now}
+	d := Decision{OldUTC: systemClockUTC, NewUTC: sourceUTC, Source: source, At: systemClockUTC}
 
 	switch {
 	case backward && recordingStarted:
@@ -313,26 +370,51 @@ func (t *TimeTrust) decideAndSync(source string, sourceUTC, now, systemClockUTC 
 		d.Action = ClockActionStepOnce
 		d.Reason = fmt.Sprintf("stepping system clock by %s from trusted %s time (one-time correction)", magnitude, source)
 		t.steppedOnce = true
+		t.lastCorrectionAt = now
 		t.applySync(source, sourceUTC, now, diff, d)
 		return d
 
-	case magnitude == 0:
+	case magnitude < t.cfg.Deadband:
+		// Routine noise, not a real discrepancy - update trust state
+		// silently (no event, no clock action): the mission requires not
+		// generating a health event for every ignored sub-threshold
+		// sample, and this is precisely that case.
 		d.Action = ClockActionNone
-		d.Reason = fmt.Sprintf("system clock already agrees with trusted %s time", source)
-		t.applySync(source, sourceUTC, now, diff, d)
+		d.Reason = fmt.Sprintf("offset %s is within the %s deadband; no correction applied", magnitude, t.cfg.Deadband)
+		t.applySyncQuiet(source, sourceUTC, now, diff)
 		return d
 
-	default: // small forward (or already-negligible-and-not-caught-above) correction
-		d.Action = ClockActionSlew
-		d.Reason = fmt.Sprintf("slewing system clock by %s toward trusted %s time", diff, source)
+	case !t.lastCorrectionAt.IsZero() && now.Sub(t.lastCorrectionAt) < t.cfg.MinCorrectionInterval:
+		// Above deadband, but a correction happened too recently - defer
+		// rather than act on every sample. Still update trust state
+		// silently so LastSyncTime/State stay current; this deferral
+		// itself IS recorded (unlike the deadband case) since it reflects
+		// a real, above-threshold discrepancy the operator may want
+		// visibility into if it persists.
+		d.Action = ClockActionNone
+		d.Reason = fmt.Sprintf("deferred correction of %s: only %s since the last correction (minimum %s)", magnitude, now.Sub(t.lastCorrectionAt), t.cfg.MinCorrectionInterval)
+		t.applySyncQuiet(source, sourceUTC, now, diff)
+		t.record(d)
+		return d
+
+	default:
+		// Above deadband, rate limit has elapsed (or this is the first
+		// correction ever): a direct clock set, honestly labeled - see
+		// ClockActionPeriodicCorrection's doc comment for why this is not
+		// called "slew".
+		d.Action = ClockActionPeriodicCorrection
+		d.Reason = fmt.Sprintf("correcting system clock by %s toward trusted %s time (direct set, not a gradual slew)", diff, source)
+		t.lastCorrectionAt = now
 		t.applySync(source, sourceUTC, now, diff, d)
 		return d
 	}
 }
 
-// applySync records a successful trust/sync and moves state to the
-// synced state for source.
-func (t *TimeTrust) applySync(source string, sourceUTC, now time.Time, offset time.Duration, d Decision) {
+// applySyncQuiet updates trust state (source, last-sync time/UTC, offset)
+// without recording a health event - used for in-deadband and deferred
+// observations, which are real trusted samples but not events worth
+// surfacing individually.
+func (t *TimeTrust) applySyncQuiet(source string, sourceUTC, now time.Time, offset time.Duration) {
 	t.lastSyncAt = now
 	t.lastSyncUTC = sourceUTC
 	t.lastSyncError = ""
@@ -343,6 +425,12 @@ func (t *TimeTrust) applySync(source string, sourceUTC, now time.Time, offset ti
 		t.state = TimeNetworkSynced
 	}
 	t.source = source
+}
+
+// applySync records a successful trust/sync and moves state to the
+// synced state for source.
+func (t *TimeTrust) applySync(source string, sourceUTC, now time.Time, offset time.Duration, d Decision) {
+	t.applySyncQuiet(source, sourceUTC, now, offset)
 	t.record(d)
 }
 
@@ -351,7 +439,9 @@ func (t *TimeTrust) applySync(source string, sourceUTC, now time.Time, offset ti
 // backward correction, not simply a lost/stale source). It records why
 // without discarding the last trusted value: Snapshot still reports it,
 // with growing LastSyncSourceAge, so a consumer can judge how much to
-// trust it rather than losing the information entirely.
+// trust it rather than losing the information entirely. This is this
+// package's holdover policy: the last trusted value is held, with visibly
+// growing age, rather than discarded or silently re-trusted.
 func (t *TimeTrust) degrade(source, reason string, invalid bool) {
 	switch {
 	case invalid:
@@ -393,21 +483,34 @@ func (t *TimeTrust) CheckStale(now time.Time) {
 	}
 }
 
-// Snapshot returns the current health-API view of trusted time. currentUTC
-// is the caller's present idea of wall-clock UTC (used only to compute
-// RecordingAllowed's implicit freshness relative to Now for display; it is
-// not otherwise trusted or validated by this method).
-func (t *TimeTrust) Snapshot(now time.Time) TimeHealth {
+// Snapshot returns the current health-API view of trusted time.
+//
+// nowMono is the caller's monotonic clock (stratuxClock.Time domain),
+// used only for computing LastSyncSourceAge against lastSyncAt - both on
+// the same monotonic domain, so a wall-clock step in between cannot
+// perturb it.
+//
+// nowWall is the caller's current wall-clock UTC reading (e.g.
+// time.Now().UTC()), used only to populate CurrentUTC, and only while
+// actively synced - this method does not otherwise trust or validate it.
+func (t *TimeTrust) Snapshot(nowMono, nowWall time.Time) TimeHealth {
 	h := TimeHealth{
-		State:            t.state,
-		Source:           t.source,
-		LastSyncTime:     t.lastSyncAt,
-		EstimatedOffset:  t.offset,
-		LastSyncError:    t.lastSyncError,
-		RecordingAllowed: t.state == TimeGNSSSynced || t.state == TimeNetworkSynced,
+		State:                       t.state,
+		Source:                      t.source,
+		LastSyncTime:                SomeTime(t.lastSyncUTC),
+		EstimatedOffsetMilliseconds: float64(t.offset) / float64(time.Millisecond),
+		EstimatedOffset:             t.offset,
+		LastSyncError:               t.lastSyncError,
+		RecordingAllowed:            t.state == TimeGNSSSynced || t.state == TimeNetworkSynced,
+	}
+	if h.RecordingAllowed {
+		h.CurrentUTC = SomeTime(nowWall)
 	}
 	if !t.lastSyncAt.IsZero() {
-		h.LastSyncSourceAge = now.Sub(t.lastSyncAt)
+		age := nowMono.Sub(t.lastSyncAt)
+		ageSeconds := age.Seconds()
+		h.LastSyncSourceAgeSeconds = &ageSeconds
+		h.LastSyncSourceAge = age
 	}
 	events := make([]SyncEvent, len(t.events))
 	copy(events, t.events)

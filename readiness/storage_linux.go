@@ -8,11 +8,14 @@ import "syscall"
 // syscall directly (not the du package main/ uses elsewhere) so inode
 // counts are available alongside byte counts.
 //
-// Bavail (blocks available to an unprivileged user), not Bfree (blocks
-// free including those reserved for root), is used for AvailableBytes:
-// stratuxrun runs as root today (see debian/stratux.service), but
-// Bavail is what `df` reports and what an operator comparing the
-// dashboard against `df -h` on the device expects to see.
+// Both Bfree (all free blocks, including those reserved for root) and
+// Bavail (blocks free to an unprivileged process) are captured - see
+// StatfsResult's doc comment for which one each derived quantity uses and
+// why. A prior version of this comment claimed Bavail was "what df
+// reports" for its Used column; that was checked against a live device
+// and found wrong (df's Used matches Total-Bfree, not Total-Bavail) -
+// see docs/readiness-and-time-trust.md's storage-accounting section for
+// the measured evidence.
 func statPath(path string) (StatfsResult, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
@@ -21,6 +24,7 @@ func statPath(path string) (StatfsResult, error) {
 	bsize := uint64(st.Bsize)
 	return StatfsResult{
 		TotalBytes:     st.Blocks * bsize,
+		FreeBytes:      uint64(st.Bfree) * bsize,
 		AvailableBytes: uint64(st.Bavail) * bsize,
 		TotalInodes:    st.Files,
 		FreeInodes:     st.Ffree,

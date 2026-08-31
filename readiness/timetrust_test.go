@@ -1,6 +1,7 @@
 package readiness
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -217,21 +218,24 @@ func TestObserveGNSS_ForwardCorrectionAllowedEvenAfterRecordingStarted(t *testin
 	}
 }
 
-// --- Large forward step vs small slew ---
+// --- Large forward step vs small periodic correction ---
 
-func TestObserveGNSS_SmallForwardCorrectionSlews(t *testing.T) {
+func TestObserveGNSS_SmallForwardCorrectionAboveDeadbandCorrects(t *testing.T) {
 	tt := NewTimeTrust(cfg())
 	now := time.Now()
 	systemClock := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
-	slightlyAhead := systemClock.Add(2 * time.Second) // below LargeStepThreshold (5s)
+	slightlyAhead := systemClock.Add(2 * time.Second) // below LargeStepThreshold (5s), above Deadband (50ms)
 
 	var last Decision
 	for i := 0; i < cfg().RequiredConsecutive; i++ {
 		sampleNow := now.Add(time.Duration(i) * time.Second)
 		last = tt.ObserveGNSS(goodSample(slightlyAhead, sampleNow), sampleNow, systemClock, false)
 	}
-	if last.Action != ClockActionSlew {
-		t.Errorf("a small forward correction should slew, got %s: %s", last.Action, last.Reason)
+	if last.Action != ClockActionPeriodicCorrection {
+		t.Errorf("a small forward correction above the deadband should correct, got %s: %s", last.Action, last.Reason)
+	}
+	if string(last.Action) == "slew" {
+		t.Errorf("the action name must never be the bare word 'slew' for a direct clock set: %q", last.Action)
 	}
 }
 
@@ -329,7 +333,7 @@ func TestNetworkToGNSSFallback(t *testing.T) {
 func TestSnapshot_RecordingAllowedOnlyWhenSynced(t *testing.T) {
 	tt := NewTimeTrust(cfg())
 	now := time.Now()
-	if tt.Snapshot(now).RecordingAllowed {
+	if tt.Snapshot(now, now).RecordingAllowed {
 		t.Error("recording must not be allowed before any sync")
 	}
 	utc := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -337,8 +341,15 @@ func TestSnapshot_RecordingAllowedOnlyWhenSynced(t *testing.T) {
 		sampleNow := now.Add(time.Duration(i) * time.Second)
 		tt.ObserveGNSS(goodSample(utc.Add(time.Duration(i)*time.Second), sampleNow), sampleNow, utc, false)
 	}
-	if !tt.Snapshot(now).RecordingAllowed {
+	snap := tt.Snapshot(now, utc.Add(time.Duration(cfg().RequiredConsecutive-1)*time.Second))
+	if !snap.RecordingAllowed {
 		t.Error("recording should be allowed once GNSS_SYNCED")
+	}
+	if snap.CurrentUTC.IsZero() {
+		t.Error("CurrentUTC must be populated once recording is allowed")
+	}
+	if snap.LastSyncTime.IsZero() {
+		t.Error("LastSyncTime must be populated once GNSS_SYNCED")
 	}
 }
 
@@ -358,7 +369,118 @@ func TestSnapshot_EventsAreBounded(t *testing.T) {
 		sampleNow := now.Add(time.Duration(i+100) * time.Second)
 		tt.ObserveGNSS(goodSample(utc.Add(time.Hour), sampleNow), sampleNow, utc, false)
 	}
-	if got := len(tt.Snapshot(now).RecentEvents); got > maxRetainedEvents {
+	if got := len(tt.Snapshot(now, utc).RecentEvents); got > maxRetainedEvents {
 		t.Errorf("event log grew to %d, want capped at %d", got, maxRetainedEvents)
+	}
+}
+
+// --- Deadband: sub-threshold offsets neither correct the clock nor log an event ---
+
+func TestObserveGNSS_WithinDeadbandDoesNotCorrectOrLog(t *testing.T) {
+	c := cfg()
+	tt := NewTimeTrust(c)
+	now := time.Now()
+	systemClock := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	tinyOffset := systemClock.Add(c.Deadband / 2) // well within the deadband
+
+	var last Decision
+	for i := 0; i < c.RequiredConsecutive; i++ {
+		sampleNow := now.Add(time.Duration(i) * time.Second)
+		last = tt.ObserveGNSS(goodSample(tinyOffset, sampleNow), sampleNow, systemClock, false)
+	}
+	if last.Action != ClockActionNone {
+		t.Errorf("an offset within the deadband must not correct the clock, got %s: %s", last.Action, last.Reason)
+	}
+	if tt.State() != TimeGNSSSynced {
+		t.Errorf("trust state must still advance to GNSS_SYNCED even when the offset is within the deadband, got %s", tt.State())
+	}
+	finalNow := now.Add(time.Duration(c.RequiredConsecutive-1) * time.Second)
+	snap := tt.Snapshot(finalNow, tinyOffset)
+	if len(snap.RecentEvents) != 0 {
+		t.Errorf("a within-deadband correction must not add a health event, got %d events", len(snap.RecentEvents))
+	}
+}
+
+// --- Rate limiting: a second above-deadband correction inside MinCorrectionInterval is deferred, not applied ---
+
+func TestObserveGNSS_SecondCorrectionWithinMinIntervalIsDeferred(t *testing.T) {
+	c := cfg()
+	tt := NewTimeTrust(c)
+	now := time.Now()
+	systemClock := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	offset := systemClock.Add(2 * time.Second) // above deadband, below LargeStepThreshold
+
+	var last Decision
+	for i := 0; i < c.RequiredConsecutive; i++ {
+		sampleNow := now.Add(time.Duration(i) * time.Second)
+		last = tt.ObserveGNSS(goodSample(offset, sampleNow), sampleNow, systemClock, false)
+	}
+	if last.Action != ClockActionPeriodicCorrection {
+		t.Fatalf("setup: expected the first above-deadband correction to apply, got %s: %s", last.Action, last.Reason)
+	}
+
+	// A second sample with a fresh above-deadband offset arrives almost
+	// immediately afterward - well inside MinCorrectionInterval - and must
+	// be deferred rather than applied again.
+	soonNow := now.Add(time.Duration(c.RequiredConsecutive)*time.Second + time.Second)
+	soonOffset := offset.Add(1 * time.Second) // still above deadband, kept below LargeStepThreshold
+	again := tt.ObserveGNSS(goodSample(soonOffset, soonNow), soonNow, systemClock, false)
+	if again.Action != ClockActionNone {
+		t.Errorf("a correction within MinCorrectionInterval of the last one must be deferred, got %s: %s", again.Action, again.Reason)
+	}
+	if !strings.Contains(strings.ToLower(again.Reason), "defer") {
+		t.Errorf("a rate-limited correction's reason should say it was deferred, got %q", again.Reason)
+	}
+}
+
+// --- Decision.At and TimeHealth fields must be wall-clock, never the Go zero value ---
+
+func TestObserveGNSS_DecisionAtIsWallClockNotZero(t *testing.T) {
+	tt := NewTimeTrust(cfg())
+	now := time.Now()
+	utc := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var last Decision
+	for i := 0; i < cfg().RequiredConsecutive; i++ {
+		sampleNow := now.Add(time.Duration(i) * time.Second)
+		last = tt.ObserveGNSS(goodSample(utc.Add(time.Duration(i)*time.Second), sampleNow), sampleNow, utc, false)
+	}
+	if last.At.Year() <= 1 {
+		t.Errorf("Decision.At must be a real wall-clock instant, got %v", last.At)
+	}
+}
+
+func TestSnapshot_NeverYearOneWhenSynced(t *testing.T) {
+	tt := NewTimeTrust(cfg())
+	now := time.Now()
+	utc := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < cfg().RequiredConsecutive; i++ {
+		sampleNow := now.Add(time.Duration(i) * time.Second)
+		tt.ObserveGNSS(goodSample(utc.Add(time.Duration(i)*time.Second), sampleNow), sampleNow, utc, false)
+	}
+	finalUTC := utc.Add(time.Duration(cfg().RequiredConsecutive-1) * time.Second)
+	finalNow := now.Add(time.Duration(cfg().RequiredConsecutive-1) * time.Second)
+	snap := tt.Snapshot(finalNow, finalUTC)
+	if snap.CurrentUTC.IsZero() || snap.CurrentUTC.Time.Year() <= 1 {
+		t.Errorf("CurrentUTC must never be year-1 once synced, got %+v", snap.CurrentUTC)
+	}
+	if snap.LastSyncTime.IsZero() || snap.LastSyncTime.Time.Year() <= 1 {
+		t.Errorf("LastSyncTime must never be year-1 once synced, got %+v", snap.LastSyncTime)
+	}
+	for _, e := range snap.RecentEvents {
+		if e.At.Year() <= 1 {
+			t.Errorf("event At must never be year-1, got %+v", e)
+		}
+	}
+}
+
+func TestSnapshot_UnsyncedFieldsAreUnavailableNotZero(t *testing.T) {
+	tt := NewTimeTrust(cfg())
+	now := time.Now()
+	snap := tt.Snapshot(now, now)
+	if !snap.CurrentUTC.IsZero() {
+		t.Errorf("CurrentUTC must be unavailable before any sync, got %+v", snap.CurrentUTC)
+	}
+	if !snap.LastSyncTime.IsZero() {
+		t.Errorf("LastSyncTime must be unavailable before any sync, got %+v", snap.LastSyncTime)
 	}
 }
