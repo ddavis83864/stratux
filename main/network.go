@@ -269,6 +269,33 @@ func handleNmeaInConnection(c net.Conn) {
 	globalStatus.GPS_NetworkRemoteIp = ""
 }
 
+// lastNetworkClientActivityMono returns the most recent LastPingResponse/
+// LastPongResponse across every currently-tracked network client, on the
+// stratuxClock monotonic domain - the zero time.Time if no client has ever
+// responded. This is generic network-level liveness (see
+// readiness.GDL90Health.LastNetworkClientActivity), not evidence of any
+// specific application; main/health.go is responsible for converting the
+// result to a wall-clock display value.
+func lastNetworkClientActivityMono() time.Time {
+	netMutex.Lock()
+	defer netMutex.Unlock()
+
+	var latest time.Time
+	for _, conn := range clientConnections {
+		netconn, ok := conn.(*networkConnection)
+		if !ok || netconn == nil {
+			continue
+		}
+		if netconn.LastPingResponse.After(latest) {
+			latest = netconn.LastPingResponse
+		}
+		if netconn.LastPongResponse.After(latest) {
+			latest = netconn.LastPongResponse
+		}
+	}
+	return latest
+}
+
 // Returns the number of DHCP leases and prints queue lengths.
 func getNetworkStats() {
 	timer := time.NewTicker(15 * time.Second)

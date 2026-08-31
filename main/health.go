@@ -111,6 +111,20 @@ func ensurePersistentDataUUID() {
 	log.Printf("readiness: pinned persistent-data filesystem UUID %s at %s (first successful discovery, no UUID was previously configured)\n", mnt.UUID, PersistentDataPath)
 }
 
+// monoToWallOptional converts a stratuxClock-domain (monotonic) timestamp
+// to a best-effort wall-clock equivalent, given a (mono, wall) reading pair
+// taken at the same instant - the same technique already used for
+// gpsLastUpdateWall below. Returns readiness.NoTime() when monoT is the Go
+// zero value (nothing has ever happened yet): converting a zero monotonic
+// reading would otherwise silently produce a real-looking wall-clock
+// value instead of correctly reporting "never".
+func monoToWallOptional(monoT, mono, wallNow time.Time) readiness.OptionalTime {
+	if monoT.IsZero() {
+		return readiness.NoTime()
+	}
+	return readiness.SomeTime(wallNow.Add(-mono.Sub(monoT)))
+}
+
 // updateHealth rebuilds globalHealth from current live signals. It is
 // called periodically (see healthUpdateLoop) and is safe to call from
 // tests/dev builds where vcgencmd/systemctl/findmnt may be unavailable -
@@ -146,8 +160,10 @@ func updateHealth() {
 	ADSBTowerMutex.Lock()
 	towerCount := len(ADSBTowers)
 	ADSBTowerMutex.Unlock()
-	uat := readiness.BuildRadioHealth(uatBand, globalStatus.UAT_messages_total, float64(globalStatus.UAT_messages_last_minute), float64(globalStatus.UAT_messages_max), time.Time{}, now, towerCount, weatherProducts)
-	es := readiness.BuildRadioHealth(esBand, globalStatus.ES_messages_total, float64(globalStatus.ES_messages_last_minute), float64(globalStatus.ES_messages_max), time.Time{}, now, 0, nil)
+	uatLastFrameMono := lastMessageTime(MSGCLASS_UAT)
+	esLastFrameMono := lastMessageTime(MSGCLASS_ES)
+	uat := readiness.BuildRadioHealth(uatBand, globalStatus.UAT_messages_total, float64(globalStatus.UAT_messages_last_minute), float64(globalStatus.UAT_messages_max), uatLastFrameMono, mono, monoToWallOptional(uatLastFrameMono, mono, now), towerCount, weatherProducts)
+	es := readiness.BuildRadioHealth(esBand, globalStatus.ES_messages_total, float64(globalStatus.ES_messages_last_minute), float64(globalStatus.ES_messages_max), esLastFrameMono, mono, monoToWallOptional(esLastFrameMono, mono, now), 0, nil)
 
 	mySituation.muGPS.Lock()
 	gpsPresent := globalStatus.GPS_detected_type != 0 || globalStatus.GPS_connected
@@ -167,9 +183,10 @@ func updateHealth() {
 	)
 
 	timeTrust.CheckStale(mono)
-	timeHealth := timeTrust.Snapshot(mono)
+	timeHealth := timeTrust.Snapshot(mono, now)
 
-	gdl90 := readiness.BuildGDL90Health(true, globalStatus.NetworkDataMessagesSentLastSec > 0 || globalStatus.Connected_Users > 0, int(globalStatus.Connected_Users), time.Time{}, false)
+	lastClientMono := lastNetworkClientActivityMono()
+	gdl90 := readiness.BuildGDL90Health(true, globalStatus.NetworkDataMessagesSentLastSec > 0 || globalStatus.Connected_Users > 0, int(globalStatus.Connected_Users), monoToWallOptional(lastClientMono, mono, now))
 
 	failedUnits, _ := readiness.ListFailedUnits() // nil+nil on non-systemd dev builds; treated as "no failed units known", not an error
 	throttle, _ := readiness.GetThrottled()       // zero-value (not throttled) on non-Pi dev builds

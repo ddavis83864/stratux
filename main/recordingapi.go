@@ -126,6 +126,15 @@ func recordingStatusLocked() recordingStatusSnapshot {
 // availablePersistentBytes reports current free space on the persistent
 // partition, reusing the same certification logic /getHealth's Storage
 // tile is built from rather than a second, parallel df-equivalent.
+//
+// This deliberately uses FreeBytes, not AvailableBytes: stratuxrun (and
+// therefore this recording process) always runs as root, so the
+// ext4 reserved-blocks percentage that AvailableBytes excludes is space
+// this process can actually still write. Gating the minimum-free-space
+// guard on AvailableBytes would refuse recording (or stop one already
+// running) while `df` and this same process's own writes still had real
+// room to spare - see readiness.StatfsResult's doc comment for the
+// measured evidence this is based on.
 func availablePersistentBytes() (uint64, error) {
 	storage := readiness.CertifyPersistentStorage(PersistentDataPath, globalSettings.PersistentDataUUID, readiness.DefaultPersistentStorageThresholds())
 	if !storage.Mounted {
@@ -134,7 +143,7 @@ func availablePersistentBytes() (uint64, error) {
 	if storage.ReadOnly {
 		return 0, fmt.Errorf("persistent storage is read-only")
 	}
-	return uint64(storage.AvailableBytes), nil
+	return storage.FreeBytes, nil
 }
 
 // handleStartRecordingRequest serves POST /startRecording.

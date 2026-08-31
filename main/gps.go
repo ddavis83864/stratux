@@ -1353,7 +1353,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				}
 				decision := timeTrust.ObserveGNSS(sample, stratuxClock.Time, time.Now().UTC(), isRecordingActive())
 				switch decision.Action {
-				case readiness.ClockActionStepOnce, readiness.ClockActionSlew:
+				case readiness.ClockActionStepOnce, readiness.ClockActionPeriodicCorrection:
 					setStr := decision.NewUTC.Format("20060102 15:04:05.000") + " UTC"
 					log.Printf("trusted-time %s: %s (setting system time from %s to '%s')\n", decision.Action, decision.Reason, time.Now().Format("20060102 15:04:05.000"), setStr)
 					if common.IsRunningAsRoot() {
