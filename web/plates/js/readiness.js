@@ -98,6 +98,17 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 			$scope.FanClass = tileClass(h.Fan.State);
 			$scope.ClientClass = clientClass(h.GDL90.ForeFlightDetection.State);
 
+			// AHRS/Baro LastMeasurementAgeSeconds is null exactly when no
+			// valid measurement has ever been produced (readiness.AHRSHealth/
+			// BaroHealth) - same null-means-unavailable convention as the
+			// radio tiles' LastFrameAgeSeconds, so this must render one of
+			// the two explicit sentences below, never an interpolated
+			// "last s ago".
+			$scope.AHRSAgeText = h.AHRS.LastMeasurementAgeSeconds === null || h.AHRS.LastMeasurementAgeSeconds === undefined
+				? 'no attitude solution yet' : 'last update ' + formatDuration(h.AHRS.LastMeasurementAgeSeconds) + ' ago';
+			$scope.BaroAgeText = h.Baro.LastMeasurementAgeSeconds === null || h.Baro.LastMeasurementAgeSeconds === undefined
+				? 'no measurement yet' : 'last update ' + formatDuration(h.Baro.LastMeasurementAgeSeconds) + ' ago';
+
 			$scope.LastFrameTextUAT = formatFrameAge(h.UAT978.LastFrameAgeSeconds, h.UAT978.TotalFrames);
 			$scope.LastFrameTextES = formatFrameAge(h.ES1090.LastFrameAgeSeconds, h.ES1090.TotalFrames);
 			$scope.TimeSyncedAgoText = formatAgoOrNull(h.Time.LastSyncSourceAgeSeconds);

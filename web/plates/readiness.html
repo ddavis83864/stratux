@@ -121,18 +121,43 @@
 					<strong class="col-xs-6">AHRS</strong>
 					<span class="col-xs-6"><span class="label" ng-class="AHRSClass">{{Health.AHRS.State}}</span></span>
 					<span class="col-xs-12 small text-muted">{{Health.AHRS.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						connected, {{AHRSAgeText}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						pitch {{Health.AHRS.PitchAvailable ? (Health.AHRS.PitchDeg | number:1) + '&deg;' : 'unavailable'}},
+						roll {{Health.AHRS.RollAvailable ? (Health.AHRS.RollDeg | number:1) + '&deg;' : 'unavailable'}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						{{Health.AHRS.LevelCalibrated ? 'level reference set' : 'no level reference set (use Set Level)'}}
+					</span>
 				</div>
 
 				<div class="col-sm-6 col-md-4 label_adj">
 					<strong class="col-xs-6">Barometer</strong>
 					<span class="col-xs-6"><span class="label" ng-class="BaroClass">{{Health.Baro.State}}</span></span>
 					<span class="col-xs-12 small text-muted">{{Health.Baro.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Baro.Connected">
+						{{Health.Baro.PressureAltitudeFt !== null ? (Health.Baro.PressureAltitudeFt | number:0) + ' ft' : 'altitude unavailable'}},
+						{{Health.Baro.VerticalSpeedFPM !== null ? (Health.Baro.VerticalSpeedFPM | number:0) + ' fpm' : 'VSI unavailable'}},
+						{{Health.Baro.TemperatureC !== null ? (Health.Baro.TemperatureC | number:1) + '&deg;C' : ''}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Baro.Connected">
+						{{BaroAgeText}}
+					</span>
 				</div>
 
 				<div class="col-sm-6 col-md-4 label_adj">
 					<strong class="col-xs-6">Fan Controller</strong>
 					<span class="col-xs-6"><span class="label" ng-class="FanClass">{{Health.Fan.State}}</span></span>
 					<span class="col-xs-12 small text-muted">{{Health.Fan.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Fan.ServiceActive">
+						{{Health.Fan.CPUTempC !== null ? (Health.Fan.CPUTempC | number:1) + '&deg;C CPU' : ''}}
+						<span ng-show="Health.Fan.RequestedDutyPercent !== null">&middot; requested duty {{Health.Fan.RequestedDutyPercent}}%</span>
+					</span>
+					<span class="col-xs-12 small text-muted">
+						Rotation feedback unavailable - no tachometer is installed; PWM commands cannot confirm the fan is physically spinning.
+					</span>
 				</div>
 
 				<div class="col-sm-6 col-md-4 label_adj">
@@ -178,8 +203,9 @@
 		<div class="panel-body">
 			<p class="small text-muted">
 				A controlled, on-demand recording for troubleshooting/analysis - automatic
-				flight recording remains disabled. AHRS/barometer fields stay unavailable
-				until that hardware is installed.
+				flight recording remains disabled. AHRS/barometer fields are recorded live
+				when that hardware is connected and producing valid readings, and stay
+				unavailable (null) otherwise - never a fabricated zero.
 			</p>
 			<button class="btn btn-primary" ng-click="startRecording()" ng-disabled="Recording.busy || Recording.status.state === 'active'">Start Recording</button>
 			<button class="btn btn-default" ng-click="stopRecording()" ng-disabled="Recording.busy || Recording.status.state !== 'active'">Stop Recording</button>
