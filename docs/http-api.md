@@ -24,11 +24,13 @@ this API) should treat the band as unknown, not as disabled.
 #### `GET /getHealth`
 Returns a unified component-readiness report as JSON: one `ComponentState`
 (`READY`/`DEGRADED`/`NOT_READY`/`NOT_INSTALLED`/`UNKNOWN`) per monitored subsystem (978, 1090,
-GPS, GDL90, System, persistent Storage, temporary Overlay, trusted Time, and the not-yet-installed
-AHRS/Barometer/Fan controller), plus an overall rollup. Recomputed on its own 5-second interval,
-independent of `/getStatus`. This is purely additive — no existing `/getStatus` field changed.
-See [readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model and the color
-rules the dashboard applies to each state.
+GPS, GDL90, System, persistent Storage, temporary Overlay, trusted Time, AHRS, Barometer, and Fan
+controller), plus an overall rollup. Recomputed on its own 5-second interval, independent of
+`/getStatus`. This is purely additive — no existing `/getStatus` field changed. See
+[readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model and the color rules
+the dashboard applies to each state, and
+[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the AHRS/Barometer/Fan-controller field
+definitions specifically.
 
 #### `GET /getSituation`
 Returns the current GPS/AHRS situation: position, altitude, track, speed, vertical speed, and attitude (pitch/roll/slip-skid) if AHRS is connected.
@@ -162,7 +164,8 @@ Downloads one bundle. `name` must exactly match an entry from `/getDiagnostics` 
 An on-demand, explicitly-controlled recording for troubleshooting/analysis. Automatic flight
 recording remains disabled regardless of this API's existence - nothing here runs unless
 requested. See `docs/readiness-and-time-trust.md` for the sample schema and known limitations
-(no AHRS/barometer hardware yet, GPX/KML still return "not implemented").
+(GPX/KML still return "not implemented") and `docs/ahrs-baro-fan-health.md` for the live
+AHRS/barometer sample fields and CSV columns.
 
 #### `POST /startRecording`
 Starts a new session (`/var/lib/stratux-data/recordings/<id>/`, `id` server-generated as
