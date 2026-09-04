@@ -196,9 +196,9 @@ func updateHealth() {
 	storage := readiness.CertifyPersistentStorage(PersistentDataPath, globalSettings.PersistentDataUUID, readiness.DefaultPersistentStorageThresholds())
 	overlay := readiness.CertifyPersistentStorage("/", "", readiness.DefaultPersistentStorageThresholds())
 
-	ahrs := readiness.NotInstalled("AHRS board not yet installed; expected in a future hardware revision")
-	baro := readiness.NotInstalled("barometer not yet installed")
-	fan := readiness.NotInstalled("fan-controller integration not yet implemented in the health model")
+	ahrs := buildAHRSHealth(mono, now)
+	baro := buildBaroHealth(mono, now)
+	fan := buildFanHealth(now)
 
 	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan)
 
