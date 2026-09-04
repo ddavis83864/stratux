@@ -65,20 +65,6 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 		return formatDuration(ageSeconds) + ' ago';
 	}
 
-	// clientClass maps the honest, evidence-scoped ClientObservabilityState
-	// enum (DETECTED/NOT_DETECTED/UNKNOWN/UNSUPPORTED) onto the same color
-	// rule - UNSUPPORTED and UNKNOWN both render as neutral gray, since
-	// neither is a claim of failure, just "cannot tell".
-	function clientClass(state) {
-		switch (state) {
-			case 'DETECTED': return 'label-success';
-			case 'NOT_DETECTED': return 'label-default';
-			case 'UNKNOWN':
-			case 'UNSUPPORTED':
-			default: return 'label-default';
-		}
-	}
-
 	function refresh() {
 		$http.get(URL_HEALTH_GET).then(function (response) {
 			var h = response.data;
@@ -96,7 +82,6 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 			$scope.AHRSClass = tileClass(h.AHRS.State);
 			$scope.BaroClass = tileClass(h.Baro.State);
 			$scope.FanClass = tileClass(h.Fan.State);
-			$scope.ClientClass = clientClass(h.GDL90.ForeFlightDetection.State);
 
 			// AHRS/Baro LastMeasurementAgeSeconds is null exactly when no
 			// valid measurement has ever been produced (readiness.AHRSHealth/

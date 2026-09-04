@@ -81,6 +81,9 @@
 					<span class="col-xs-12 small text-muted" ng-show="HasNetworkClientActivity">
 						last network client activity: {{Health.GDL90.LastNetworkClientActivity}}
 					</span>
+					<span class="col-xs-12 small text-muted">
+						Connected applications cannot be individually identified.
+					</span>
 				</div>
 
 				<div class="col-sm-6 col-md-4 label_adj">
@@ -158,12 +161,6 @@
 					<span class="col-xs-12 small text-muted">
 						Rotation feedback unavailable - no tachometer is installed; PWM commands cannot confirm the fan is physically spinning.
 					</span>
-				</div>
-
-				<div class="col-sm-6 col-md-4 label_adj">
-					<strong class="col-xs-6">EFB Client</strong>
-					<span class="col-xs-6"><span class="label" ng-class="ClientClass">{{Health.GDL90.ForeFlightDetection.State}}</span></span>
-					<span class="col-xs-12 small text-muted">{{Health.GDL90.ForeFlightDetection.Reason}}</span>
 				</div>
 			</div>
 		</div>
