@@ -24,12 +24,13 @@ type HealthReport struct {
 	TemporaryOverlay StorageHealth // the protected RAM-backed root overlay - NOT the recording capacity
 	Time             TimeHealth
 
-	// Future hardware: always StateNotInstalled until the physical board
-	// exists. Never StateNotReady/StateDegraded for absent hardware - see
-	// readiness.FutureHardware.
-	AHRS FutureHardwareHealth
-	Baro FutureHardwareHealth
-	Fan  FutureHardwareHealth
+	// AHRS/Baro/Fan report the live ICM-20948 AHRS, BMP280 barometer, and
+	// dual-fan PWM controller boards - see readiness.AHRSHealth,
+	// readiness.BaroHealth, readiness.FanHealth. All non-certified,
+	// supplemental information (see docs/readiness-and-time-trust.md).
+	AHRS AHRSHealth
+	Baro BaroHealth
+	Fan  FanHealth
 }
 
 // RadioHealth is the health record for one receiver band (978 UAT or 1090
@@ -396,28 +397,11 @@ func BuildSystemHealth(version, commit string, uptime time.Duration, cpuTempC fl
 	return h
 }
 
-// FutureHardwareHealth is the health record for a component whose physical
-// hardware does not yet exist in this build (AHRS, barometer, fan
-// controller integration). It is always StateNotInstalled - never
-// StateNotReady/StateDegraded, which would misrepresent planned-but-absent
-// hardware as a failure - so the interface can be replaced with a real
-// health record once the hardware exists without any caller needing to
-// change how it interprets the State field.
-type FutureHardwareHealth struct {
-	State  ComponentState
-	Reason string
-}
-
-// NotInstalled builds a FutureHardwareHealth with the given explanation.
-func NotInstalled(reason string) FutureHardwareHealth {
-	return FutureHardwareHealth{State: StateNotInstalled, Reason: reason}
-}
-
 // BuildHealthReport assembles the full report and computes Overall via
 // Rollup, so the aggregate always reflects the mission's color rules
 // (StateNotInstalled/StateUnknown components never drag down an otherwise-
 // healthy Overall; any real StateNotReady always shows).
-func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs, baro, fan FutureHardwareHealth) HealthReport {
+func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs AHRSHealth, baro BaroHealth, fan FanHealth) HealthReport {
 	r := HealthReport{
 		GeneratedAt:      now,
 		UAT978:           uat978,
