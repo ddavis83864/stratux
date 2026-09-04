@@ -32,7 +32,9 @@ type CSVExporter struct{}
 var csvHeader = []string{
 	"UTC", "TimeTrustState", "Latitude", "Longitude", "GPSAltitudeFt", "GPSAccuracyMeters",
 	"GroundspeedKt", "CourseDeg", "PressureAltitudeFt", "PitchDeg", "BankDeg",
-	"VerticalAccelG", "GLoad", "UAT978MessageRateLastMinute",
+	"VerticalAccelG", "GLoad", "GLoadMin", "GLoadMax", "BaroVerticalSpeedFPM",
+	"AHRSStatus", "AHRSCalibrationState", "AHRSMeasurementAgeSeconds",
+	"UAT978MessageRateLastMinute",
 	"ES1090MessageRateLastMinute", "FISBTowerCount",
 	"SystemHealthTransition", "TimeSourceTransition",
 }
@@ -42,6 +44,20 @@ func optionalFloat(f *float64) string {
 		return ""
 	}
 	return fmt.Sprintf("%g", *f)
+}
+
+func optionalUint8(u *uint8) string {
+	if u == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *u)
+}
+
+func optionalString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // Export writes samples as CSV to w.
@@ -65,6 +81,12 @@ func (CSVExporter) Export(w io.Writer, samples []Sample) error {
 			optionalFloat(s.BankDeg),
 			optionalFloat(s.VerticalAccelG),
 			optionalFloat(s.GLoad),
+			optionalFloat(s.GLoadMin),
+			optionalFloat(s.GLoadMax),
+			optionalFloat(s.BaroVerticalSpeedFPM),
+			optionalUint8(s.AHRSStatus),
+			optionalString(s.AHRSCalibrationState),
+			optionalFloat(s.AHRSMeasurementAgeSeconds),
 			fmt.Sprintf("%g", s.UAT978MessageRateLastMinute),
 			fmt.Sprintf("%g", s.ES1090MessageRateLastMinute),
 			fmt.Sprintf("%d", s.FISBTowerCount),

@@ -134,9 +134,13 @@ Per-component records live in `readiness/health.go`:
   `readiness/vcgencmd.go`), and failed systemd units (`readiness.ListFailedUnits`).
 - **`StorageHealth`** — see below.
 - **`TimeHealth`** — see below.
-- **`FutureHardwareHealth`** (AHRS, barometer, fan-controller integration) always reports
-  `NOT_INSTALLED` and carries **no sensor fields at all** — there is nothing for a UI to
-  misread as operational data, by construction, not by convention.
+- **`AHRSHealth`/`BaroHealth`/`FanHealth`** (the ICM-20948 AHRS, BMP280 barometer, and
+  dual-fan PWM controller) report live connection state, measurement/status age,
+  calibration state, and (for the fan) controller state — see
+  [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the full field list and state
+  rules. All three still read `NOT_INSTALLED` (gray) when disabled by configuration
+  (AHRS/baro) or when the fan-controller systemd unit was never installed on this
+  platform/build — never a failure.
 
 `readiness.BuildHealthReport` assembles all of the above into one `HealthReport` and computes
 `Overall` via `Rollup`. The temporary overlay's `StorageHealth` is deliberately **excluded**
@@ -351,10 +355,13 @@ reported as a partial success, not a failure.
 **Automatic flight recording remains disabled** — nothing here runs unless a client explicitly
 calls `POST /startRecording` (see `docs/http-api.md`). `recording.Sample` carries every field the
 mission's schema specifies, plus `TimeTrustState` (the steady-state trust level at sample time);
-AHRS- and barometer-derived fields (`PitchDeg`, `BankDeg`, `VerticalAccelG`, `GLoad`,
-`PressureAltitudeFt`) are pointers so their absence serializes as JSON `null` — a real,
-level-flight bank angle of exactly `0` must stay distinguishable from "no AHRS installed," and on
-this hardware revision (no AHRS/BMP280 board installed) they are always `null`.
+AHRS- and barometer-derived fields (`PitchDeg`, `BankDeg`, `VerticalAccelG`, `GLoad`, `GLoadMin`,
+`GLoadMax`, `PressureAltitudeFt`, `BaroVerticalSpeedFPM`, `AHRSStatus`, `AHRSCalibrationState`,
+`AHRSMeasurementAgeSeconds`) are pointers so their absence serializes as JSON `null` — a real,
+level-flight bank angle of exactly `0` must stay distinguishable from "no valid AHRS measurement."
+With the AHRS/BMP280 board now installed and enabled, these populate live from
+`readiness.AHRSHealth`/`BaroHealth` each sample; see
+[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the full field list and CSV column order.
 `recording.Store` is an append-only, size-rotated, retention-bounded JSON-Lines store,
 independent of the existing SQLite-backed traffic/situation log (`main/datalog.go`, which serves
 a different purpose). `recording.CSVExporter` is real and tested; `GPXExporter`/`KMLExporter`
@@ -418,8 +425,10 @@ matching UTC too, not a prerequisite for correct stored data.
       resulting step is logged exactly once (`RecentEvents`).
 - [ ] A live GNSS signal loss after sync moves `Time` to `DEGRADED`, not silently back to a
       falsely-trusted state.
-- [ ] `AHRS`/`Baro`/`Fan` all read `NOT_INSTALLED` with no numeric fields present, until the
-      corresponding hardware exists.
+- [ ] `AHRS`/`Baro`/`Fan` read `NOT_INSTALLED` (gray) when disabled/not installed, and
+      `READY` with live pitch/roll/altitude/duty data once connected and producing valid
+      readings — see [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the full
+      hardware-validation checklist for these three components.
 - [ ] The dashboard never shows red solely because there is no current aircraft/tower in range.
 - [ ] An external (non-SDR) low-power 978 UAT receiver reads `READY`, not missing/`NOT_READY`,
       even though legacy `/getStatus`'s `UAT_Assigned` is `false` for it (it was never

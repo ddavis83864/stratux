@@ -43,6 +43,47 @@ func TestSample_AHRSPresentFieldsSerializeAsNumbers(t *testing.T) {
 	}
 }
 
+func TestSample_NewAHRSFieldsAbsentSerializeAsNull(t *testing.T) {
+	s := Sample{UTC: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)}
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	out := string(data)
+	for _, field := range []string{"BaroVerticalSpeedFPM", "GLoadMin", "GLoadMax", "AHRSStatus", "AHRSCalibrationState", "AHRSMeasurementAgeSeconds"} {
+		if !strings.Contains(out, `"`+field+`":null`) {
+			t.Errorf("expected %q to serialize as null when unavailable, got: %s", field, out)
+		}
+	}
+}
+
+func TestSample_NewAHRSFieldsPresentSerializeAsValues(t *testing.T) {
+	vs := -150.0
+	gMin, gMax := 0.9, 1.4
+	status := uint8(0x1F)
+	calState := "READY"
+	age := 0.05
+	s := Sample{
+		BaroVerticalSpeedFPM:      &vs,
+		GLoadMin:                  &gMin,
+		GLoadMax:                  &gMax,
+		AHRSStatus:                &status,
+		AHRSCalibrationState:      &calState,
+		AHRSMeasurementAgeSeconds: &age,
+	}
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	out := string(data)
+	if strings.Contains(out, `"AHRSCalibrationState":null`) {
+		t.Error("AHRSCalibrationState should not serialize as null once set")
+	}
+	if !strings.Contains(out, `"AHRSStatus":31`) {
+		t.Errorf("expected AHRSStatus to serialize as its numeric value, got: %s", out)
+	}
+}
+
 func TestSample_ZeroBankAngleIsNotConfusedWithAbsent(t *testing.T) {
 	// A real, level-flight bank angle of exactly 0 must remain
 	// distinguishable from "no AHRS installed" (nil).

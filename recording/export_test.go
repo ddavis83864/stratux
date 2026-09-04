@@ -77,6 +77,79 @@ func TestCSVExporter_TimeTrustStatePreserved(t *testing.T) {
 	}
 }
 
+func TestCSVExporter_NewAHRSColumnsPresent(t *testing.T) {
+	var buf bytes.Buffer
+	vs := -300.0
+	gMin, gMax := 0.85, 1.6
+	status := uint8(0x1F)
+	calState := "READY"
+	age := 0.1
+	samples := []Sample{{
+		UTC:                       time.Now(),
+		BaroVerticalSpeedFPM:      &vs,
+		GLoadMin:                  &gMin,
+		GLoadMax:                  &gMax,
+		AHRSStatus:                &status,
+		AHRSCalibrationState:      &calState,
+		AHRSMeasurementAgeSeconds: &age,
+	}}
+	if err := (CSVExporter{}).Export(&buf, samples); err != nil {
+		t.Fatalf("Export error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	header := strings.Split(lines[0], ",")
+	fields := strings.Split(lines[1], ",")
+	want := map[string]string{
+		"GLoadMin":                  "0.85",
+		"GLoadMax":                  "1.6",
+		"BaroVerticalSpeedFPM":      "-300",
+		"AHRSStatus":                "31",
+		"AHRSCalibrationState":      "READY",
+		"AHRSMeasurementAgeSeconds": "0.1",
+	}
+	for col, wantVal := range want {
+		idx := -1
+		for i, h := range header {
+			if h == col {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			t.Fatalf("column %q not found in header %v", col, header)
+		}
+		if fields[idx] != wantVal {
+			t.Errorf("column %q = %q, want %q", col, fields[idx], wantVal)
+		}
+	}
+}
+
+func TestCSVExporter_NewAHRSColumnsEmptyWhenAbsent(t *testing.T) {
+	var buf bytes.Buffer
+	samples := []Sample{{UTC: time.Now()}}
+	if err := (CSVExporter{}).Export(&buf, samples); err != nil {
+		t.Fatalf("Export error: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	header := strings.Split(lines[0], ",")
+	fields := strings.Split(lines[1], ",")
+	for _, col := range []string{"GLoadMin", "GLoadMax", "BaroVerticalSpeedFPM", "AHRSStatus", "AHRSCalibrationState", "AHRSMeasurementAgeSeconds"} {
+		idx := -1
+		for i, h := range header {
+			if h == col {
+				idx = i
+				break
+			}
+		}
+		if idx == -1 {
+			t.Fatalf("column %q not found in header %v", col, header)
+		}
+		if fields[idx] != "" {
+			t.Errorf("column %q should be an empty cell when unavailable, got %q", col, fields[idx])
+		}
+	}
+}
+
 func TestGPXExporter_NotYetImplemented(t *testing.T) {
 	var buf bytes.Buffer
 	err := (GPXExporter{}).Export(&buf, nil)

@@ -31,3 +31,34 @@ func ListFailedUnits() ([]string, error) {
 	}
 	return ParseFailedUnits(string(out)), nil
 }
+
+// ParseUnitActiveState trims the raw stdout of `systemctl is-active <unit>`
+// into its state string (e.g. "active", "inactive", "failed",
+// "activating"). It performs no I/O and is exercised directly by tests.
+func ParseUnitActiveState(output string) string {
+	return strings.TrimSpace(output)
+}
+
+// UnitActiveState runs `systemctl is-active <unit>` and returns its parsed
+// state string. systemctl exits non-zero for every state except "active",
+// so the error return is deliberately discarded here - only the parsed
+// state string is meaningful, including "unknown" or "" for a unit that
+// has never been loaded (not installed on this platform/build).
+func UnitActiveState(unit string) string {
+	out, _ := exec.Command("systemctl", "is-active", unit).Output()
+	return ParseUnitActiveState(string(out))
+}
+
+// UnitInstalled reports whether state (as returned by UnitActiveState)
+// indicates the unit is loaded at all, as opposed to never having existed
+// on this system - "inactive"/"failed"/"activating"/"active" all mean the
+// unit is loaded (installed), even if not currently running; "unknown" and
+// "" mean systemctl has no record of it.
+func UnitInstalled(state string) bool {
+	switch state {
+	case "", "unknown":
+		return false
+	default:
+		return true
+	}
+}

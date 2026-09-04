@@ -68,10 +68,11 @@ func healthyTime() (TimeHealth, TimeState) {
 	return tt.Snapshot(now, utc.Add(time.Duration(cfg().RequiredConsecutive)*time.Second)), tt.State()
 }
 
-func noHardwareFixtures() (ahrs, baro, fan FutureHardwareHealth) {
-	return NotInstalled("AHRS board not yet installed"),
-		NotInstalled("barometer not yet installed"),
-		NotInstalled("fan-controller integration not yet implemented")
+func noHardwareFixtures() (ahrs AHRSHealth, baro BaroHealth, fan FanHealth) {
+	ahrs = BuildAHRSHealth(false, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second)
+	baro = BuildBaroHealth(false, false, nil, nil, nil, "none", time.Time{}, time.Now(), NoTime(), 15*time.Second)
+	fan = BuildFanHealth(false, false, false, false, "", "", nil, nil, nil, nil, nil, time.Time{}, time.Now(), 10*time.Second)
+	return
 }
 
 func TestFixture_HealthyDualBand(t *testing.T) {
@@ -177,12 +178,12 @@ func TestFixture_MissingHardwareDoesNotFailOrExposeFields(t *testing.T) {
 
 	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan)
 
-	for name, h := range map[string]FutureHardwareHealth{"AHRS": r.AHRS, "Baro": r.Baro, "Fan": r.Fan} {
-		if h.State != StateNotInstalled {
-			t.Errorf("%s State = %q, want NOT_INSTALLED", name, h.State)
+	for name, s := range map[string]ComponentState{"AHRS": r.AHRS.State, "Baro": r.Baro.State, "Fan": r.Fan.State} {
+		if s != StateNotInstalled {
+			t.Errorf("%s State = %q, want NOT_INSTALLED", name, s)
 		}
-		if h.State.Color() != "gray" {
-			t.Errorf("%s should render gray, not %s", name, h.State.Color())
+		if s.Color() != "gray" {
+			t.Errorf("%s should render gray, not %s", name, s.Color())
 		}
 	}
 	if r.Overall != StateReady {
