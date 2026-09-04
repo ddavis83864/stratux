@@ -265,6 +265,39 @@ func appendRecordingSample(s *recordingSession) error {
 	health := globalHealth
 	globalHealthMutex.Unlock()
 
+	// AHRS/barometer fields are gathered fresh every sample (not read back
+	// from the cached globalHealth above, which only recomputes every
+	// healthUpdateInterval) via the same buildAHRSHealth/buildBaroHealth
+	// glue main/health.go itself uses - one mutex-protected read of
+	// mySituation, immediately released, matching the nonblocking pattern
+	// already used for GPS/tower-count above. A nil pointer here means
+	// exactly what it means on the readiness dashboard: disabled,
+	// disconnected, or not yet a valid measurement - never a fabricated 0.
+	now := time.Now().UTC()
+	mono := stratuxClock.Time
+	ahrsHealth := buildAHRSHealth(mono, now)
+	baroHealth := buildBaroHealth(mono, now)
+
+	mySituation.muAttitude.Lock()
+	gLoadMinRaw := mySituation.AHRSGLoadMin
+	gLoadMaxRaw := mySituation.AHRSGLoadMax
+	mySituation.muAttitude.Unlock()
+	var gLoadMin, gLoadMax *float64
+	if !isAHRSInvalidValue(gLoadMinRaw) {
+		gLoadMin = &gLoadMinRaw
+	}
+	if !isAHRSInvalidValue(gLoadMaxRaw) {
+		gLoadMax = &gLoadMaxRaw
+	}
+	var ahrsStatus *uint8
+	var ahrsCalState *string
+	if ahrsHealth.Connected {
+		st := ahrsHealth.RawStatus
+		ahrsStatus = &st
+		cs := string(ahrsHealth.State)
+		ahrsCalState = &cs
+	}
+
 	healthTransition := ""
 	if string(health.Overall) != s.lastHealthState {
 		healthTransition = fmt.Sprintf("%s -> %s", s.lastHealthState, health.Overall)
@@ -278,7 +311,7 @@ func appendRecordingSample(s *recordingSession) error {
 	}
 
 	sample := recording.Sample{
-		UTC:                         time.Now().UTC(),
+		UTC:                         now,
 		TimeTrustState:              timeState,
 		Latitude:                    lat,
 		Longitude:                   lon,
@@ -286,6 +319,16 @@ func appendRecordingSample(s *recordingSession) error {
 		GPSAccuracyMeters:           acc,
 		GroundspeedKt:               gs,
 		CourseDeg:                   course,
+		PressureAltitudeFt:          baroHealth.PressureAltitudeFt,
+		PitchDeg:                    ahrsHealth.PitchDeg,
+		BankDeg:                     ahrsHealth.RollDeg,
+		GLoad:                       ahrsHealth.GLoad,
+		GLoadMin:                    gLoadMin,
+		GLoadMax:                    gLoadMax,
+		BaroVerticalSpeedFPM:        baroHealth.VerticalSpeedFPM,
+		AHRSStatus:                  ahrsStatus,
+		AHRSCalibrationState:        ahrsCalState,
+		AHRSMeasurementAgeSeconds:   ahrsHealth.LastMeasurementAgeSeconds,
 		UAT978MessageRateLastMinute: float64(globalStatus.UAT_messages_last_minute),
 		ES1090MessageRateLastMinute: float64(globalStatus.ES_messages_last_minute),
 		FISBTowerCount:              towerCount,
@@ -300,9 +343,10 @@ func appendRecordingSample(s *recordingSession) error {
 		},
 		SystemHealthTransition: healthTransition,
 		TimeSourceTransition:   timeTransition,
-		// AHRS/pressure-altitude fields are intentionally left nil: no
-		// AHRS/barometer board exists on this hardware revision. They
-		// must never be synthesized as zero.
+		// VerticalAccelG has no source anywhere in this codebase (only
+		// GLoad, the total accel magnitude, is computed - see
+		// main/sensors.go's s.GLoad()) and is intentionally left nil
+		// rather than approximated.
 	}
 	if err := s.store.Append(sample); err != nil {
 		return err

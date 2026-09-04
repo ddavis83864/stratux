@@ -11,11 +11,12 @@ package recording
 import "time"
 
 // Sample is one recorded data point. Every field the mission's schema
-// requires is present; fields that depend on hardware not yet installed
-// (AHRS, barometer) are pointers so their absence serializes as JSON null,
-// not a misleading zero value - a bank angle of exactly 0 is a real,
-// meaningful reading, so "no AHRS installed" must never be represented
-// the same way.
+// requires is present; fields that depend on the AHRS/barometer board
+// being installed, enabled, connected, and currently producing a valid
+// reading are pointers so their absence serializes as JSON null, not a
+// misleading zero value - a bank angle of exactly 0 is a real, meaningful
+// reading, so "no valid AHRS measurement right now" must never be
+// represented the same way.
 type Sample struct {
 	UTC time.Time
 	// TimeTrustState is the readiness.TimeTrustState value in effect when
@@ -31,13 +32,40 @@ type Sample struct {
 	GroundspeedKt     float64
 	CourseDeg         float64
 
-	// Unavailable (nil) until the AHRS board is installed and validated.
-	// No UI or export may render these as zero/operational while nil.
+	// Unavailable (nil) whenever the AHRS/barometer board is disabled,
+	// disconnected, or has not yet produced a valid reading - see
+	// main/recordingapi.go's appendRecordingSample, which nils these out
+	// under exactly the same conditions readiness.AHRSHealth/BaroHealth
+	// itself would report DEGRADED/NOT_READY for. No UI or export may
+	// render these as zero/operational while nil.
 	PressureAltitudeFt *float64
 	PitchDeg           *float64
 	BankDeg            *float64
 	VerticalAccelG     *float64
 	GLoad              *float64
+	// BaroVerticalSpeedFPM is the barometric vertical speed, feet per
+	// minute (mySituation.BaroVerticalSpeed is already in ft/min - see
+	// main/sensors.go's tempAndPressureSender).
+	BaroVerticalSpeedFPM *float64
+	// GLoadMin/GLoadMax are the running min/max g-load since the AHRS
+	// last reset (main/sensors.go's mySituation.AHRSGLoadMin/Max) -
+	// distinct from GLoad, the instantaneous reading at sample time.
+	GLoadMin *float64
+	GLoadMax *float64
+	// AHRSStatus is mySituation.AHRSStatus, the raw bitfield
+	// main/sensors.go's updateAHRSStatus computes (see
+	// docs/readiness-and-time-trust.md for the bit meanings).
+	AHRSStatus *uint8
+	// AHRSCalibrationState is the readiness.AHRSHealth.State in effect at
+	// sample time (e.g. "READY", "DEGRADED") - the calibration/readiness
+	// judgment, distinct from the raw AHRSStatus bitfield above.
+	AHRSCalibrationState *string
+	// AHRSMeasurementAgeSeconds is how old the AHRS attitude solution
+	// backing this sample's Pitch/Bank/GLoad fields was at sample time,
+	// mirroring readiness.AHRSHealth.LastMeasurementAgeSeconds - nil
+	// under the same "never produced a solution" condition that field is
+	// nil for.
+	AHRSMeasurementAgeSeconds *float64
 
 	UAT978MessageRateLastMinute float64
 	ES1090MessageRateLastMinute float64
