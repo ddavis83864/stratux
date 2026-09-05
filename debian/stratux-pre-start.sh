@@ -18,13 +18,10 @@ SCRIPT_MASK="update*stratux*v*.sh"
 TEMP_SCRIPT_LOCATION="$TEMP_DIRECTORY/$SCRIPT_MASK"
 SCRIPT_UPDATE_LOCATION="/root/$SCRIPT_MASK"
 
-######################
-# package based update
-PACKAGE_MASK="stratux*.deb"
-# packages are placed here after download, before movement to PACKAGE_UPDATE_LOCATION
-TEMP_PACKAGE_LOCATION="$TEMP_DIRECTORY/$PACKAGE_MASK"
-# packages are placed here for update
-PACKAGE_UPDATE_LOCATION="/root/$PACKAGE_MASK"
+# Package-based (.deb) updates are handled below by the deterministic OTA
+# state machine (OTA_DIR et al.), staged under the persistent data
+# partition rather than this legacy TEMP_DIRECTORY - see that section for
+# details.
 
 # Detect whether the overlay filesystem is currently active.
 # /overlay/robase is always present (used by overlayctl for management), so we
@@ -46,7 +43,9 @@ if [ -e ${TEMP_SCRIPT_LOCATION} ]; then
 			rm -f "${TEMP_SCRIPT_FILE}"
 			/sbin/overlayctl disable
 			wLog "Script staged. Rebooting to apply on bare ext4..."
+			sync
 			reboot
+			exit 0
 		else
 			wLog "ERROR: Failed to stage script to ext4 lower layer. Update aborted."
 			/sbin/overlayctl lock
@@ -76,55 +75,380 @@ if [ -e ${SCRIPT_UPDATE_LOCATION} ]; then
 		fi
 		rm -f "${UPDATE_TEMP_SCRIPT}"
 		wLog "Finished. Rebooting..."
+		sync
 		reboot
+		exit 0
 	fi
 fi
 
 ##############
-# Stage 1 (overlay active): deb in SD card download location.
-# Copy it directly to the lower ext4 layer so it survives the reboot,
-# then disable overlay so the next boot runs dpkg on bare ext4.
-if [ -e ${TEMP_PACKAGE_LOCATION} ]; then
-	TEMP_PACKAGE_FILE=`ls -1t ${TEMP_PACKAGE_LOCATION} | head -1`
-	wLog "Found update package $TEMP_PACKAGE_FILE"
-	if overlay_is_active; then
-		wLog "Overlay active — staging package to ext4 lower layer and disabling overlay..."
-		if /sbin/overlayctl unlock && cp "${TEMP_PACKAGE_FILE}" /overlay/robase/root/; then
-			rm -f "${TEMP_PACKAGE_FILE}"
-			/sbin/overlayctl disable
-			wLog "Package staged. Rebooting to install on bare ext4..."
-			reboot
-		else
-			wLog "ERROR: Failed to stage package to ext4 lower layer. Update aborted."
-			/sbin/overlayctl lock
-		fi
-	else
-		# Overlay already inactive — copy to /root/ for next section to pick up
-		cp "${TEMP_PACKAGE_FILE}" /root/
-		rm -f "${TEMP_PACKAGE_FILE}"
-	fi
-fi
+# Deterministic, resumable package-update (.deb) state machine.
+#
+# State lives in a single JSON file on the persistent data partition (not
+# /boot/firmware, not the overlay), written by both this script and the Go
+# daemon (main/ota.go) - see the `ota` package for the canonical stage/
+# action definitions this shell logic re-derives.
+#
+# The one persistent marker location - proven on real hardware by
+# device-number identity, not assumed - is /overlay/robase/overlay/disable
+# while the overlay is active: it shares its device number with the real
+# mounted ext4 lower root. A lookalike path,
+# /overlay/pivot/overlay/disable, is a tmpfs shadow left mounted there by
+# init-overlay's own mount choreography (the original top-level /overlay
+# tmpfs mount is never explicitly relocated when its named children are
+# moved into the pivoted root) and does NOT survive a reboot. Writing the
+# marker therefore always follows the same narrow sequence: remount
+# /overlay/robase read-write, write, sync, remount /overlay/robase
+# read-only. See docs/ota.md for the full evidence.
+OTA_DIR="/var/lib/stratux-data/updates"
+OTA_STATE="${OTA_DIR}/state.json"
+OTA_BACKUP_DIR="${OTA_DIR}/backup"
 
-# Stage 2 (overlay inactive): install the deb from /root/ and re-enable overlay
-if [ -e ${PACKAGE_UPDATE_LOCATION} ]; then
-	UPDATE_PACKAGE_FILE=`ls -1t ${PACKAGE_UPDATE_LOCATION} | head -1`
-	if [ -n "${UPDATE_PACKAGE_FILE}" ]; then
-		wLog "Installing update package ${UPDATE_PACKAGE_FILE}..."
-		# Move the deb to /tmp and re-enable overlay BEFORE calling dpkg.
-		# The dpkg postinst runs 'systemctl daemon-reload && systemctl start stratux'
-		# which will kill this ExecStartPre process via daemon-reload. By cleaning up
-		# first the system is in a consistent state even if dpkg kills this script.
-		UPDATE_TEMP_FILE="/tmp/$(basename "${UPDATE_PACKAGE_FILE}")"
-		mv "${UPDATE_PACKAGE_FILE}" "${UPDATE_TEMP_FILE}"
-		/sbin/overlayctl enable
-		if dpkg -i --force-depends "${UPDATE_TEMP_FILE}"; then
-			wLog "Package installed successfully."
-		else
-			wLog "ERROR: dpkg failed to install ${UPDATE_TEMP_FILE}."
+ota_log() {
+	wLog "OTA: $1"
+}
+
+# The state file is read/written with python3, not jq: jq is not part of the
+# base image (not a dependency of this or any other package) and is not
+# guaranteed present on bare ext4 before this script's own package install
+# step has run - the exact environment this state machine must work in.
+# python3 is already a baseline dependency of the image. Discovered live,
+# before it could strand a real deployment; see docs/ota.md.
+ota_json_get() {
+	# $1: field name. $2: default value if missing/unreadable.
+	python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+v = d.get(sys.argv[2], sys.argv[3])
+print(v if v is not None else sys.argv[3])
+' "${OTA_STATE}" "$1" "$2" 2>/dev/null
+}
+
+ota_save_stage() {
+	# $1: new Stage value. $2 (optional): LastError to record.
+	python3 -c '
+import json, os, sys
+path, stage, err = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    d = json.load(f)
+d["Stage"] = stage
+if err:
+    d["LastError"] = err
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, path)
+' "${OTA_STATE}" "$1" "${2:-}"
+	sync
+}
+
+# ota_dpkg_meta_backup captures the minimum dpkg-database state needed to
+# reconcile `dpkg -s stratux` on rollback: the package's own stanza in
+# /var/lib/dpkg/status (every other package's stanza is left completely
+# untouched - this never reads or writes the rest of that file) and its
+# per-package control files under /var/lib/dpkg/info/stratux.*. This is
+# deliberately narrow: never a copy of the whole /var/lib/dpkg hierarchy.
+# $1: destination directory (created fresh). Mirrors ota.ExtractStanza in
+# the `ota` Go package, which carries the tested specification of the
+# splice; see docs/ota.md for why the algorithm lives in both places.
+ota_dpkg_meta_backup() {
+	local dest="$1"
+	rm -rf "${dest}"
+	mkdir -p "${dest}/info"
+	python3 -c '
+import sys
+path, dest = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as f:
+        status = f.read()
+except FileNotFoundError:
+    status = b""
+for s in [s for s in status.strip(b"\n").split(b"\n\n") if s.strip()]:
+    for line in s.split(b"\n"):
+        if line.startswith(b"Package:") and line.split(b":", 1)[1].strip() == b"stratux":
+            with open(dest, "wb") as out:
+                out.write(s.strip(b"\n") + b"\n")
+            sys.exit(0)
+sys.exit(1)
+' /var/lib/dpkg/status "${dest}/status-stanza.txt" || rm -f "${dest}/status-stanza.txt"
+	cp -a /var/lib/dpkg/info/stratux.* "${dest}/info/" 2>/dev/null || true
+}
+
+# ota_dpkg_meta_restore reconciles dpkg's own database from a directory
+# produced by ota_dpkg_meta_backup - the exact inverse splice. Missing or
+# corrupt metadata (an older backup taken before this fix existed, or one
+# that never completed) degrades to a logged warning rather than aborting -
+# the file-level restore that already ran is not undone by this failing.
+# $1: source directory (may not exist).
+#
+# Written atomically (temp file + fsync + rename, then fsync the containing
+# directory) so a power loss during rollback itself leaves /var/lib/dpkg/
+# status either fully the old content or fully the new content, never torn.
+# Safe to invoke repeatedly: replacing a stanza with identical content is a
+# no-op, and re-copying the same info/ files is a no-op.
+ota_dpkg_meta_restore() {
+	local src="$1"
+	if [ ! -d "${src}" ]; then
+		ota_log "WARNING: no dpkg metadata found in backup (${src}) - dpkg's own database was not reconciled; files were still restored"
+		return 1
+	fi
+	python3 -c '
+import os, sys
+status_path, stanza_file = sys.argv[1], sys.argv[2]
+def split_stanzas(data):
+    data = data.strip(b"\n")
+    return [s for s in data.split(b"\n\n") if s.strip()] if data else []
+def stanza_pkg(s):
+    for line in s.split(b"\n"):
+        if line.startswith(b"Package:"):
+            return line.split(b":", 1)[1].strip()
+    return None
+with open(status_path, "rb") as f:
+    status = f.read()
+new_stanza = None
+if os.path.exists(stanza_file):
+    with open(stanza_file, "rb") as f:
+        new_stanza = f.read().strip(b"\n")
+out, replaced = [], False
+for s in split_stanzas(status):
+    if stanza_pkg(s) == b"stratux":
+        replaced = True
+        if new_stanza is not None:
+            out.append(new_stanza)
+        continue
+    out.append(s)
+if not replaced and new_stanza is not None:
+    out.append(new_stanza)
+result = b"\n\n".join(out)
+if result:
+    result += b"\n"
+tmp = status_path + ".ota-tmp"
+with open(tmp, "wb") as f:
+    f.write(result)
+    f.flush()
+    os.fsync(f.fileno())
+os.replace(tmp, status_path)
+dirfd = os.open(os.path.dirname(status_path), os.O_RDONLY)
+try:
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+' /var/lib/dpkg/status "${src}/status-stanza.txt"
+	rm -f /var/lib/dpkg/info/stratux.*
+	if [ -d "${src}/info" ]; then
+		cp -a "${src}/info/." /var/lib/dpkg/info/ 2>/dev/null || true
+	fi
+	sync
+}
+
+ota_begin_install() {
+	# $1: backup path to record. Sets Stage=installing, BackupPath=$1,
+	# and increments Attempts - one atomic update, same as the combined
+	# jq pipeline this replaces.
+	python3 -c '
+import json, os, sys
+path, backup = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    d = json.load(f)
+d["Stage"] = "installing"
+d["BackupPath"] = backup
+d["Attempts"] = int(d.get("Attempts") or 0) + 1
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(d, f)
+os.replace(tmp, path)
+' "${OTA_STATE}" "$1"
+}
+
+# ota_request_overlay_enable removes the persistent disable marker so the
+# *next* boot returns to the protected overlay. Safe to call whether the
+# overlay is currently active (narrow remount-rw/write/sync/relock-ro) or
+# already inactive (bare ext4 root is directly writable - no remount
+# dance needed).
+ota_request_overlay_enable() {
+	if overlay_is_active; then
+		/sbin/overlayctl unlock || return 1
+		rm -f /overlay/robase/overlay/disable
+		sync
+		/sbin/overlayctl lock
+	else
+		rm -f /overlay/disable
+		sync
+	fi
+}
+
+if [ -f "${OTA_STATE}" ]; then
+	OTA_STAGE="$(ota_json_get Stage '')"
+	OTA_PACKAGE="$(ota_json_get PackagePath '')"
+	OTA_SHA256="$(ota_json_get ExpectedSHA256 '')"
+	OTA_ATTEMPTS="$(ota_json_get Attempts 0)"
+	ota_log "state found: stage=${OTA_STAGE} package=${OTA_PACKAGE} attempts=${OTA_ATTEMPTS}"
+
+	# --- Install stage: only ever runs once bare ext4 is confirmed. ---
+	# Must trigger on both the first attempt (Stage == disable_requested)
+	# and any resumed attempt after a retry reboot or an interrupted
+	# install / power loss (Stage == installing). A guard that only
+	# matched disable_requested would wedge the device forever after the
+	# first failed dpkg -i: Stage advances to "installing" before the
+	# retry reboot, so this block would never run again - Attempts frozen,
+	# overlay never re-enabled. Caught by dry-run test before this fix
+	# landed; see docs/ota.md.
+	if { [ "${OTA_STAGE}" = "disable_requested" ] || [ "${OTA_STAGE}" = "installing" ]; } && ! overlay_is_active; then
+		RESUMING=false
+		[ "${OTA_STAGE}" = "installing" ] && RESUMING=true
+
+		if $RESUMING; then
+			# A previous dpkg -i may have actually completed just before
+			# a reboot or power loss cut this script off before it could
+			# record "installed" - re-derive success from dpkg's own
+			# status rather than blindly retrying or blindly trusting
+			# the stage name.
+			DPKG_STATUS="$(dpkg-query -W -f='${Status}' stratux 2>/dev/null)"
+			DPKG_VERSION="$(dpkg-query -W -f='${Version}' stratux 2>/dev/null)"
+			EXPECTED_VERSION="$(ota_json_get ExpectedVersion '')"
+			if [ "${DPKG_STATUS}" = "install ok installed" ] && [ "${DPKG_VERSION}" = "${EXPECTED_VERSION}" ]; then
+				ota_log "resumed installing stage: dpkg already reports this version healthy - prior attempt actually succeeded"
+				ota_save_stage "installed"
+				ota_request_overlay_enable
+				ota_log "re-enabled overlay for next boot; rebooting"
+				sync
+				reboot
+				exit 0
+			fi
+			if [ "${OTA_ATTEMPTS}" -ge 3 ]; then
+				ota_log "exhausted install attempts on resume; marking failed for rollback"
+				ota_save_stage "failed" "dpkg -i did not succeed after ${OTA_ATTEMPTS} attempts"
+				ota_request_overlay_enable
+				sync
+				reboot
+				exit 0
+			fi
 		fi
-		rm -f "${UPDATE_TEMP_FILE}"
-		wLog "Finished. Rebooting..."
-		reboot
+
+		if [ ! -e "${OTA_PACKAGE}" ]; then
+			ota_log "ERROR: staged package missing on bare root (${OTA_PACKAGE})"
+			ota_save_stage "failed" "staged package missing on bare root"
+			if $RESUMING; then
+				ota_request_overlay_enable
+				sync
+				reboot
+				exit 0
+			fi
+		else
+			ACTUAL_SHA256="$(sha256sum "${OTA_PACKAGE}" | cut -d' ' -f1)"
+			if [ "${ACTUAL_SHA256}" != "${OTA_SHA256}" ]; then
+				ota_log "ERROR: hash mismatch on bare root (got ${ACTUAL_SHA256}, expected ${OTA_SHA256})"
+				ota_save_stage "failed" "hash mismatch on bare root"
+				if $RESUMING; then
+					ota_request_overlay_enable
+					sync
+					reboot
+					exit 0
+				fi
+			else
+				# Bare ext4 root is directly writable - no remount dance
+				# needed for the backup or for dpkg itself. On a resumed
+				# attempt, reuse the backup already taken before the
+				# first attempt rather than taking (and retaining) a new
+				# one per retry.
+				if $RESUMING; then
+					BACKUP_FILE="$(ota_json_get BackupPath '')"
+				else
+					mkdir -p "${OTA_BACKUP_DIR}"
+					BACKUP_FILE="${OTA_BACKUP_DIR}/pre-install-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+					BACKUP_STAGE="$(mktemp -d)"
+					ota_dpkg_meta_backup "${BACKUP_STAGE}/ota-dpkg-meta"
+					ota_log "backing up current install (files + dpkg metadata) to ${BACKUP_FILE} before installing"
+					tar czf "${BACKUP_FILE}" -C / opt/stratux lib/systemd/system/stratux.service lib/systemd/system/stratux_fancontrol.service etc/udev/rules.d/10-stratux.rules -C "${BACKUP_STAGE}" ota-dpkg-meta 2>>"${STX_LOG}"
+					rm -rf "${BACKUP_STAGE}"
+				fi
+
+				ota_begin_install "${BACKUP_FILE}"
+				sync
+
+				ota_log "installing ${OTA_PACKAGE} (attempt $((OTA_ATTEMPTS+1)))"
+				# STRATUX_OTA_INSTALL tells the package's own maintainer
+				# scripts to skip starting/stopping the service - this
+				# dpkg -i runs from stratux.service's own ExecStartPre,
+				# and a systemctl start/stop from postinst/preinst/prerm
+				# here would recurse into that same unit's ExecStartPre
+				# while this dpkg -i still holds dpkg's lock. Found on
+				# real hardware - see docs/ota.md.
+				DPKG_OUTPUT="$(STRATUX_OTA_INSTALL=1 dpkg -i --force-depends "${OTA_PACKAGE}" 2>&1)"
+				DPKG_RC=$?
+				echo "${DPKG_OUTPUT}" >> "${STX_LOG}"
+
+				if [ ${DPKG_RC} -eq 0 ]; then
+					ota_log "dpkg install succeeded"
+					ota_save_stage "installed"
+					ota_request_overlay_enable
+					ota_log "re-enabled overlay for next boot; rebooting"
+					sync
+					reboot
+					exit 0
+				else
+					ota_log "ERROR: dpkg -i failed (rc=${DPKG_RC}, attempt $((OTA_ATTEMPTS+1)))"
+					if [ "$((OTA_ATTEMPTS+1))" -ge 3 ]; then
+						ota_log "exhausted install attempts; marking failed for rollback"
+						ota_save_stage "failed" "dpkg -i failed after 3 attempts: ${DPKG_OUTPUT}"
+						ota_request_overlay_enable
+						sync
+						reboot
+						exit 0
+					fi
+					# Still have attempts left - stay on bare ext4 and
+					# reboot to retry. Stage remains "installing", and
+					# the top-level guard above now matches that stage
+					# too, so the next boot re-enters this same block.
+					sync
+					reboot
+					exit 0
+				fi
+			fi
+		fi
+	fi
+
+	# --- Failure/rollback: restore the pre-install backup and always
+	#     re-enable the overlay before returning to normal operation. ---
+	if [ "${OTA_STAGE}" = "failed" ]; then
+		if overlay_is_active; then
+			ota_log "ERROR: failed state found while overlay is active - unexpected; requesting disable to run rollback on bare root"
+			if /sbin/overlayctl unlock; then
+				echo 1 > /overlay/robase/overlay/disable
+				sync
+				/sbin/overlayctl lock
+				sync
+				reboot
+				exit 0
+			fi
+		else
+			BACKUP_FILE="$(ota_json_get BackupPath '')"
+			if [ -n "${BACKUP_FILE}" ] && [ -e "${BACKUP_FILE}" ]; then
+				ota_log "rolling back using ${BACKUP_FILE}"
+				tar xzf "${BACKUP_FILE}" -C / --exclude='ota-dpkg-meta' 2>>"${STX_LOG}"
+				DPKG_META_TMP="$(mktemp -d)"
+				if tar xzf "${BACKUP_FILE}" -C "${DPKG_META_TMP}" ota-dpkg-meta 2>>"${STX_LOG}"; then
+					ota_dpkg_meta_restore "${DPKG_META_TMP}/ota-dpkg-meta"
+				else
+					ota_log "WARNING: backup ${BACKUP_FILE} has no dpkg metadata (older backup format) - dpkg's own database was not reconciled; files were still restored"
+				fi
+				rm -rf "${DPKG_META_TMP}"
+				systemctl daemon-reload 2>>"${STX_LOG}"
+				ota_log "rollback restore complete (files and dpkg database reconciled)"
+			else
+				ota_log "ERROR: no usable backup found for rollback ($(ota_json_get LastError ''))"
+			fi
+			ota_save_stage "rolled_back"
+			ota_request_overlay_enable
+			ota_log "re-enabled overlay for next boot; rebooting"
+			sync
+			reboot
+			exit 0
+		fi
 	fi
 fi
 
@@ -137,7 +461,17 @@ if [ -f /boot/firmware/.stratux-first-boot ]; then
 		do_reboot=false
 
 		# re-apply overlay
-		if [ "$(jq -r .PersistentLogging /boot/firmware/stratux.conf)" = "true" ]; then
+		# python3, not jq: jq is not part of the base image or a
+		# declared package dependency (same reasoning as the OTA state
+		# machine above - see docs/ota.md). Prints the same lowercase
+		# "true"/"false" text jq -r would, so the comparison below is
+		# unchanged.
+		if [ "$(python3 -c 'import json
+try:
+    v = json.load(open("/boot/firmware/stratux.conf")).get("PersistentLogging", False)
+except Exception:
+    v = False
+print("true" if v is True else "false")' 2>/dev/null)" = "true" ]; then
 			/sbin/overlayctl disable
 			do_reboot=true
 			wLog "overlayctl disabled due to stratux.conf settings"
@@ -150,8 +484,39 @@ if [ -f /boot/firmware/.stratux-first-boot ]; then
 			wLog "re-wrote network configuration for first-boot config import. Rebooting... Bye"
 		fi
 		if $do_reboot; then
+			sync
 			reboot
+			exit 0
 		fi
+	fi
+fi
+
+###############
+# Standardize the appliance on UTC. Stored timestamps (health events, and
+# future recording data) are UTC regardless of system timezone, but the
+# system timezone itself has shipped as a stale build-time default
+# (Europe/London) on some images. This runs on every boot, is a no-op
+# once corrected, and uses the overlay unlock/lock pattern already used
+# elsewhere in this script so the fix persists through the protected
+# read-only root exactly like a real image rebuild would - an
+# already-flashed card gets the correct, persistent timezone without
+# needing to be reflashed.
+CURRENT_TZ="$(cat /etc/timezone 2>/dev/null)"
+if [ "$CURRENT_TZ" != "UTC" ]; then
+	wLog "System timezone is '${CURRENT_TZ}', correcting to UTC..."
+	if overlay_is_active; then
+		if /sbin/overlayctl unlock; then
+			echo "UTC" > /overlay/robase/etc/timezone
+			ln -sf /usr/share/zoneinfo/UTC /overlay/robase/etc/localtime
+			/sbin/overlayctl lock
+			wLog "Timezone corrected to UTC (persisted through the overlay's lower layer)."
+		else
+			wLog "ERROR: could not unlock overlay to correct timezone; will retry next boot."
+		fi
+	else
+		echo "UTC" > /etc/timezone
+		ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+		wLog "Timezone corrected to UTC (overlay inactive, wrote directly)."
 	fi
 fi
 

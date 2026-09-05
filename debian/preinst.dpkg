@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# STRATUX_OTA_INSTALL is set by the OTA install mechanism
+# (debian/stratux-pre-start.sh) when it runs dpkg -i itself. That script
+# always reboots once dpkg -i returns (success, retry, or rollback), so the
+# service does not need starting/stopping here - and it must not be: this
+# dpkg -i is invoked from stratux.service's own ExecStartPre, and this
+# script's normal systemctl stop/start calls would recurse into that same
+# unit's ExecStartPre while the outer dpkg -i still holds dpkg's lock,
+# corrupting the install. Found on real hardware; see docs/ota.md.
+if [ -n "${STRATUX_OTA_INSTALL:-}" ]; then
+	exit 0
+fi
+
 echo "Running pre-installation script and stopping the stratux service"
 # Raspberry Pi's have the config.txt so this is one way to determine if its a raspberry pi
 arch=$(uname -m)

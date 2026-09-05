@@ -219,6 +219,13 @@ type msg struct {
 var msgLog []msg
 var msgLogMutex sync.Mutex
 
+// lastUATMessageTime / lastESMessageTime record when the most recent
+// message of each class was logged, guarded by msgLogMutex alongside
+// msgLog itself. Used by updateSDRRadioStatus() (via sdrassign.IsReceiving)
+// to determine whether a band is currently receiving without scanning the
+// whole log every second.
+var lastUATMessageTime, lastESMessageTime time.Time
+
 // Time stratuxrun was started.
 var timeStarted time.Time
 
@@ -860,6 +867,24 @@ func msgLogAppend(m msg) {
 	msgLogMutex.Lock()
 	defer msgLogMutex.Unlock()
 	msgLog = append(msgLog, m)
+	switch m.MessageClass {
+	case MSGCLASS_UAT:
+		lastUATMessageTime = m.TimeReceived
+	case MSGCLASS_ES:
+		lastESMessageTime = m.TimeReceived
+	}
+}
+
+// lastMessageTime returns the time the most recent message of the given
+// class (MSGCLASS_UAT or MSGCLASS_ES) was logged, or the zero Time if none
+// has been logged yet.
+func lastMessageTime(class int) time.Time {
+	msgLogMutex.Lock()
+	defer msgLogMutex.Unlock()
+	if class == MSGCLASS_UAT {
+		return lastUATMessageTime
+	}
+	return lastESMessageTime
 }
 
 func updateMessageStats() {
@@ -976,6 +1001,8 @@ func updateStatus() {
 		globalStatus.GPS_solution = "Disconnected"
 		globalStatus.GPS_connected = false
 	}
+
+	updateSDRRadioStatus()
 
 	globalStatus.GPS_satellites_locked = mySituation.GPSSatellites
 	globalStatus.GPS_satellites_seen = mySituation.GPSSatellitesSeen
@@ -1252,6 +1279,16 @@ type settings struct {
     GpsManualChip        string         // ublox8, ublox9, ublox
 	GpsManualTargetBaud  int            // default: 115200
 	RegionSelected       int			// 0 - none, 1 = US, 2 = EU
+
+	// PersistentDataUUID pins the filesystem UUID expected at
+	// /var/lib/stratux-data (see readiness.CertifyPersistentStorage). Set
+	// explicitly for a known installation, or leave empty to let
+	// readiness.DiscoverableMount pin it automatically the first time a
+	// structurally-valid (mounted, read-write, ext4) filesystem is found
+	// there - see main/health.go's ensurePersistentDataUUID. Never
+	// silently accepts an arbitrary mount: once pinned (by either path),
+	// every later check requires an exact match.
+	PersistentDataUUID   string
 }
 
 type status struct {
@@ -1281,6 +1318,40 @@ type status struct {
 	Ping_connected                             bool
 	Pong_connected                             bool
 	UATRadio_connected                         bool
+	// Primary 978 UAT / 1090 ES SDR receiver status below (UAT_Enabled..
+	// ES_DiagnosticReason). These describe the dedicated RTL-SDR bound to
+	// each band by main/sdr.go, distinct from UATRadio_connected above (an
+	// external low-power UAT radio) and from the *_messages_* counters
+	// (which alone cannot distinguish "no local RF traffic" from "receiver
+	// failed"). See docs/hardware/sdr-and-bands.md.
+	UAT_Enabled                                bool
+	UAT_Detected                                bool
+	UAT_Assigned                                bool
+	UAT_DeviceSerial                            string
+	UAT_DeviceIndex                             int
+	UAT_AssignmentSource                        string // "tagged", "anonymous", "external", or "none"
+	UAT_Ambiguous                               bool
+	UAT_Conflict                                bool
+	UAT_ExternallySatisfied                     bool // true when an external (non-SDR) low-power UAT radio already serves this band; see UATRadio_connected
+	UAT_IdentityUnstable                        bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
+	UAT_DecoderRunning                          bool
+	UAT_Receiving                               bool
+	UAT_Degraded                                bool
+	UAT_DiagnosticReason                        string
+	ES_Enabled                                  bool
+	ES_Detected                                 bool
+	ES_Assigned                                 bool
+	ES_DeviceSerial                             string
+	ES_DeviceIndex                              int
+	ES_AssignmentSource                         string // "tagged", "anonymous", "external", or "none"
+	ES_Ambiguous                                bool
+	ES_Conflict                                 bool
+	ES_ExternallySatisfied                      bool // always false today: no external (non-SDR) 1090 ES receiver path exists
+	ES_IdentityUnstable                         bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
+	ES_DecoderRunning                           bool
+	ES_Receiving                                bool
+	ES_Degraded                                 bool
+	ES_DiagnosticReason                         string
 	GPS_satellites_locked                      uint16
 	GPS_satellites_seen                        uint16
 	GPS_satellites_tracked                     uint16
@@ -1639,6 +1710,10 @@ func gracefulShutdown() {
 
 	pprof.StopCPUProfile()
 
+	// Flush and close any active recording session cleanly rather than
+	// leaving its last file unflushed.
+	stopRecordingForShutdown()
+
 	//TODO: Any other graceful shutdown functions.
 
 	// Turn off green ACT LED on the Pi. Path changed around kernel 6.1.21-v8
@@ -1777,6 +1852,7 @@ func main() {
 
 	// Start the management interface.
 	go managementInterface()
+	go healthUpdateLoop()
 	go traceLoggerWatchdog()
 
 	crcInit() // Initialize CRC16 table.

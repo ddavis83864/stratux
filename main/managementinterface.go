@@ -39,8 +39,6 @@ import (
 
 	humanize "github.com/dustin/go-humanize"
 	"golang.org/x/net/websocket"
-
-	"github.com/stratux/stratux/common"
 )
 
 type SettingMessage struct {
@@ -49,11 +47,10 @@ type SettingMessage struct {
 }
 
 type MbTileConnectionCacheEntry struct {
-	Path string
-	Conn *sql.DB
+	Path     string
+	Conn     *sql.DB
 	Metadata map[string]string
 	fileTime time.Time
-	
 }
 
 func (this *MbTileConnectionCacheEntry) IsOutdated() bool {
@@ -82,8 +79,6 @@ var trafficUpdate *uibroadcaster
 var radarUpdate *uibroadcaster
 var gdl90Update *uibroadcaster
 
-
-
 func handleGDL90WS(conn *websocket.Conn) {
 	// Subscribe the socket to receive updates.
 	gdl90Update.AddSocket(conn)
@@ -109,7 +104,7 @@ var situationUpdate *uibroadcaster
 var weatherRawUpdate *uibroadcaster
 
 /*
-	The /weather websocket starts off by sending the current buffer of weather messages, then sends updates as they are received.
+The /weather websocket starts off by sending the current buffer of weather messages, then sends updates as they are received.
 */
 func handleWeatherWS(conn *websocket.Conn) {
 	// Subscribe the socket to receive updates.
@@ -191,11 +186,11 @@ func handleTrafficWS(conn *websocket.Conn) {
 
 func handleRadarWS(conn *websocket.Conn) {
 	trafficMutex.Lock()
-	// Subscribe the socket to receive updates. Not necessary to send old traffic 
+	// Subscribe the socket to receive updates. Not necessary to send old traffic
 	radarUpdate.AddSocket(conn)
 	trafficMutex.Unlock()
 
-	radarUpdate.SendJSON(globalSettings);
+	radarUpdate.SendJSON(globalSettings)
 
 	// Connection closes when function returns. Since uibroadcast is writing and we don't need to read anything (for now), just keep it busy.
 	for {
@@ -210,7 +205,6 @@ func handleRadarWS(conn *websocket.Conn) {
 		time.Sleep(1 * time.Second)
 	}
 }
-
 
 func handleStatusWS(conn *websocket.Conn) {
 	//	log.Printf("Web client connected.\n")
@@ -327,7 +321,6 @@ func handleRegionGet(w http.ResponseWriter, r *http.Request) {
 		RegionSettings.IsSet = false
 	}
 
-
 	regionJSON, err := json.Marshal(&RegionSettings)
 	if err != nil {
 		log.Printf("%s", err)
@@ -361,7 +354,7 @@ func handleRegionSet(w http.ResponseWriter, r *http.Request) {
 					switch key {
 					case "Region":
 						val := val.(string)
-						log.Printf("String is %s\n",val)
+						log.Printf("String is %s\n", val)
 						if val == "US" {
 							globalSettings.RegionSelected = 1
 						} else if val == "EU" {
@@ -374,7 +367,7 @@ func handleRegionSet(w http.ResponseWriter, r *http.Request) {
 						log.Printf("handleRegionSet:json: unrecognized key:%s\n", key)
 					}
 				}
-//				saveSettings()
+				//				saveSettings()
 			}
 		}
 	}
@@ -495,7 +488,7 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 						globalSettings.GLimits = val.(string)
 					case "OwnshipModeS":
 						codes := strings.Split(val.(string), ",")
-						codesFinal :=  make([]string, 0)
+						codesFinal := make([]string, 0)
 						for _, code := range codes {
 							code = strings.Trim(code, " ")
 							// Expecting a hex string less than 6 characters (24 bits) long.
@@ -595,7 +588,7 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 					writeTrackerConfigFromSettings()
 				}
 				if reconfigureFancontrol {
-					exec.Command("killall", "-SIGUSR1", "fancontrol").Run();
+					exec.Command("killall", "-SIGUSR1", "fancontrol").Run()
 				}
 			}
 		}
@@ -613,7 +606,6 @@ func setPersistentLogging(persistent bool) {
 		overlayctl("enable")
 	}
 }
-
 
 func handleShutdownRequest(w http.ResponseWriter, r *http.Request) {
 	syscall.Sync()
@@ -842,79 +834,16 @@ func handleDownloadDBRequest(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "/var/log/stratux.sqlite")
 }
 
-// Upload an update file.
-func handleUpdatePostRequest(w http.ResponseWriter, r *http.Request) {
-	setNoCache(w)
-	setJSONHeaders(w)
-	reader, err := r.MultipartReader()
-	if err != nil {
-		log.Printf("Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
-		return
-	}
-
-	var temp_filename string
-	var upload_filename string
-
-	var base_dir string
-
-	if common.IsRunningAsRoot() {
-		base_dir = "/boot/firmware/StratuxUpdates"
-	} else {
-		base_dir = "."
-		log.Printf("not running as root, using base_dir of %s", base_dir)
-	}
-
-	// Ensure the upload directory exists. The SD card flow relies on the user
-	// creating this path manually; the web flow has no such step, so create it
-	// here to avoid a silent failure when os.OpenFile cannot create the file.
-	if err := os.MkdirAll(base_dir, 0755); err != nil {
-		log.Printf("Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
-		return
-	}
-
-	for {
-		part, err := reader.NextPart()
-		if err != nil {
-			log.Printf("Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
-			return
-		}
-		if part == nil {
-			return
-		}
-
-		if part.FormName() != "update_file" {
-			continue
-		}
-
-		temp_filename = fmt.Sprintf("%s/TMP_%s", base_dir, part.FileName())
-		upload_filename = fmt.Sprintf("%s/%s", base_dir, part.FileName())
-
-		fi, err := os.OpenFile(temp_filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
-		if err != nil {
-			log.Printf("Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
-			return
-		}
-		defer fi.Close()
-		_, err = io.Copy(fi, part)
-		if err != nil {
-			log.Printf("Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
-			return
-		}
-
-		break
-	}
-
-	os.Rename(temp_filename, upload_filename)
-	log.Printf("%s uploaded %s for update.\n", r.RemoteAddr, upload_filename)
-	// Successful update upload. stratux-pre-start.sh handles the rest on next boot.
-	go delayReboot()
-}
+// Upload an update file: see ota.go's handleOTAUploadRequest, which
+// stages under the persistent data partition and drives the deterministic
+// OTA state machine, rather than the previous approach of dropping the
+// file in /boot/firmware/StratuxUpdates and rebooting unconditionally.
 
 // Upload an update file for Pong
 func handlePongUpdatePostRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
-	log.Printf("request: %s\n",r.URL.RequestURI())
+	log.Printf("request: %s\n", r.URL.RequestURI())
 	err := r.ParseMultipartForm(8 << 20)
 	if err != nil {
 		log.Printf("Step 1 Update failed from %s (%s).\n", r.RemoteAddr, err.Error())
@@ -925,7 +854,7 @@ func handlePongUpdatePostRequest(w http.ResponseWriter, r *http.Request) {
 		log.Printf("FormFile returned error %s\n", err.Error())
 		return
 	}
-	fi, err := os.OpenFile("/tmp/update_pong.zip",os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0666)
+	fi, err := os.OpenFile("/tmp/update_pong.zip", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Printf("Cannot open file for saving (%s)\n", err.Error())
 		return
@@ -937,7 +866,7 @@ func handlePongUpdatePostRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("Set update mode flag to signal Pong to run the update\n")
-	pongSetUpdateMode();
+	pongSetUpdateMode()
 
 	file.Close()
 }
@@ -1023,7 +952,7 @@ type dirlisting struct {
 	ServerUA       string
 }
 
-//FIXME: This needs to be switched to show a "sessions log" from the sqlite database.
+// FIXME: This needs to be switched to show a "sessions log" from the sqlite database.
 func viewLogs(w http.ResponseWriter, r *http.Request) {
 	urlpath := strings.TrimPrefix(r.URL.Path, "/logs/")
 	path := "/var/log/" + urlpath
@@ -1037,18 +966,18 @@ func viewLogs(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, path)
 		return
 	}
-	
+
 	names, err := ioutil.ReadDir(path)
 	if err != nil {
 		return
-	}	
+	}
 
 	fi := make([]fileInfo, 0)
 	for _, val := range names {
 		if val.Name()[0] == '.' {
 			continue
 		} // Remove hidden files from listing
-		
+
 		if val.IsDir() {
 			mtime := val.ModTime().Format("2006-Jan-02 15:04:05")
 			sz := ""
@@ -1084,7 +1013,7 @@ func connectMbTilesArchive(path string) (*sql.DB, map[string]string, error) {
 		log.Printf("Reloading MBTiles " + path)
 	}
 
-	conn, err := sql.Open("sqlite3", "file:" + path + "?mode=ro")
+	conn, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1108,7 +1037,7 @@ func tileToDegree(z, x, y int) (lon, lat float64) {
 func readMbTilesMetadata(fname string, db *sql.DB) map[string]string {
 	rows, err := db.Query(`SELECT name, value FROM metadata 
 		UNION SELECT 'minzoom', min(zoom_level) FROM tiles WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='minzoom' and value is not null and value != '')
-		UNION SELECT 'maxzoom', max(zoom_level) FROM tiles WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='maxzoom' and value is not null and value != '')`);
+		UNION SELECT 'maxzoom', max(zoom_level) FROM tiles WHERE NOT EXISTS (SELECT * FROM metadata WHERE name='maxzoom' and value is not null and value != '')`)
 	if err != nil {
 		log.Printf("SQLite read error %s: %s", fname, err.Error())
 		return nil
@@ -1146,14 +1075,14 @@ func readMbTilesMetadata(fname string, db *sql.DB) map[string]string {
 			// We found a style!
 			meta["stratux_style_url"] = "/mapdata/styles/" + file + "/style.json"
 		}
-		
+
 	}
 	return meta
 }
 
 // Scans mapdata dir for all .db and .mbtiles files and returns json representation of all metadata values
 func handleTilesets(w http.ResponseWriter, r *http.Request) {
-	files, err := ioutil.ReadDir(STRATUX_HOME + "/mapdata/");
+	files, err := ioutil.ReadDir(STRATUX_HOME + "/mapdata/")
 	if err != nil {
 		log.Printf("handleTilesets() error: %s\n", err.Error())
 		http.Error(w, err.Error(), 500)
@@ -1166,7 +1095,7 @@ func handleTilesets(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(f.Name(), ".mbtiles") || strings.HasSuffix(f.Name(), ".db") {
 			_, meta, err := connectMbTilesArchive(STRATUX_HOME + "/mapdata/" + f.Name())
 			if err != nil {
-				log.Printf("SQLite open " + f.Name() + " failed: %s", err.Error())
+				log.Printf("SQLite open "+f.Name()+" failed: %s", err.Error())
 				continue
 			}
 			result[f.Name()] = meta
@@ -1186,7 +1115,7 @@ func loadTile(fname string, z, x, y int) ([]byte, error) {
 		log.Printf("Failed to query mbtiles: %s", err.Error())
 		return nil, nil
 	}
-	
+
 	defer rows.Close()
 	for rows.Next() {
 		var res []byte
@@ -1244,7 +1173,7 @@ func managementInterface() {
 
 	http.HandleFunc("/", defaultServer)
 	//http.Handle("/logs/", http.StripPrefix("/logs/", http.FileServer(http.Dir("/var/log"))))
-	http.Handle("/mapdata/styles/", http.StripPrefix("/mapdata/styles/", http.FileServer(http.Dir(STRATUX_HOME + "/mapdata/styles"))))
+	http.Handle("/mapdata/styles/", http.StripPrefix("/mapdata/styles/", http.FileServer(http.Dir(STRATUX_HOME+"/mapdata/styles"))))
 	http.HandleFunc("/logs/", viewLogs)
 
 	http.HandleFunc("/gdl90",
@@ -1284,7 +1213,6 @@ func managementInterface() {
 			s.ServeHTTP(w, req)
 		})
 
-
 	http.HandleFunc("/jsonio",
 		func(w http.ResponseWriter, req *http.Request) {
 			s := websocket.Server{
@@ -1293,6 +1221,7 @@ func managementInterface() {
 		})
 
 	http.HandleFunc("/getStatus", handleStatusRequest)
+	http.HandleFunc("/getHealth", handleHealthRequest)
 	http.HandleFunc("/getSituation", handleSituationRequest)
 	http.HandleFunc("/getTowers", handleTowersRequest)
 	http.HandleFunc("/getSatellites", handleSatellitesRequest)
@@ -1304,7 +1233,8 @@ func managementInterface() {
 	http.HandleFunc("/shutdown", handleShutdownRequest)
 	http.HandleFunc("/reboot", handleRebootRequest)
 	http.HandleFunc("/getClients", handleClientsGetRequest)
-	http.HandleFunc("/updateUpload", handleUpdatePostRequest)
+	http.HandleFunc("/updateUpload", handleOTAUploadRequest)
+	http.HandleFunc("/getOTAStatus", handleOTAStatusRequest)
 	http.HandleFunc("/updatePong", handlePongUpdatePostRequest)
 	http.HandleFunc("/roPartitionRebuild", handleroPartitionRebuild)
 	http.HandleFunc("/develmodetoggle", handleDevelModeToggle)
@@ -1320,9 +1250,23 @@ func managementInterface() {
 	http.HandleFunc("/tiles/tilesets", handleTilesets)
 	http.HandleFunc("/tiles/", handleTile)
 
+	// Diagnostics and recording: additive control/status API - see
+	// diagnosticsapi.go/recordingapi.go. Automatic flight recording and
+	// automatic diagnostic-bundle generation remain disabled; every one of
+	// these only ever runs when explicitly requested through this API.
+	http.HandleFunc("/generateDiagnostics", handleGenerateDiagnosticsRequest)
+	http.HandleFunc("/getDiagnostics", handleListDiagnosticsRequest)
+	http.HandleFunc("/downloadDiagnostics", handleDownloadDiagnosticsRequest)
+	http.HandleFunc("/startRecording", handleStartRecordingRequest)
+	http.HandleFunc("/stopRecording", handleStopRecordingRequest)
+	http.HandleFunc("/getRecordingStatus", handleRecordingStatusRequest)
+	http.HandleFunc("/getRecordings", handleListRecordingsRequest)
+	http.HandleFunc("/exportRecording", handleExportRecordingRequest)
+	http.HandleFunc("/downloadRecording", handleDownloadRecordingRequest)
+	http.HandleFunc("/downloadExport", handleDownloadExportRequest)
 
 	addr := fmt.Sprintf(":%d", ManagementAddr)
-  log.Printf("web configuration console on port %s", addr);
+	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Printf("managementInterface ListenAndServe: %s\n", err.Error())
 	}
