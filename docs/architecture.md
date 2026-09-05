@@ -65,6 +65,16 @@ network. The frontend (`web/`) is an **AngularJS** single-page app (mobile-angul
 OpenLayers maps); each screen is a "plate" (HTML in `web/plates/*.html`, controller in
 `web/plates/js/*.js`).
 
+## Readiness, trusted time, and storage
+
+Some hardware revisions add a dedicated persistent-data partition (`/var/lib/stratux-data`,
+distinct from the protected read-only-root overlay) and rely on GNSS-derived time discipline
+in place of a battery-backed real-time clock. The `readiness` package models unified component
+health (978/1090/GPS/GDL90/System/Storage/Time, plus `NOT_INSTALLED` placeholders for hardware
+not yet present), a trusted-time state machine, and persistent-storage certification, exposed
+via `GET /getHealth` and the "Readiness" dashboard page. See
+[readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model.
+
 ## Other binaries
 
 - `fancontrol_main/` → `fancontrol` (PID-controlled cooling fan, its own systemd service).

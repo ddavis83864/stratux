@@ -19,6 +19,7 @@ var URL_SETTINGS_GET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getSettings"
 var URL_SETTINGS_SET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setSettings";
 var URL_SHUTDOWN            = URL_HOST_PROTOCOL + URL_HOST_BASE + "/shutdown";
 var URL_STATUS_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStatus";
+var URL_HEALTH_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getHealth";
 var URL_REGION_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRegion";
 var URL_REGION_SET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setRegion";
 var URL_TOWERS_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getTowers";
@@ -28,6 +29,17 @@ var URL_GET_SITUATION       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getSituation
 var URL_GET_TILESETS        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/tiles/tilesets";
 var URL_GET_TILE            = URL_HOST_PROTOCOL + URL_HOST_BASE + "/tiles";
 var URL_GET_STYLE           = URL_HOST_PROTOCOL + URL_HOST_BASE + "/mapdata/styles"
+
+var URL_DIAGNOSTICS_GENERATE = URL_HOST_PROTOCOL + URL_HOST_BASE + "/generateDiagnostics";
+var URL_DIAGNOSTICS_LIST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getDiagnostics";
+var URL_DIAGNOSTICS_DOWNLOAD = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadDiagnostics";
+var URL_RECORDING_START      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/startRecording";
+var URL_RECORDING_STOP       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/stopRecording";
+var URL_RECORDING_STATUS     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRecordingStatus";
+var URL_RECORDING_LIST       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRecordings";
+var URL_RECORDING_EXPORT     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/exportRecording";
+var URL_RECORDING_DOWNLOAD   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadRecording";
+var URL_EXPORT_DOWNLOAD      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadExport";
 
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
@@ -52,6 +64,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/',
 			templateUrl: 'plates/status.html',
 			controller: 'StatusCtrl',
+			reloadOnSearch: false
+		})
+		.state('readiness', {
+			url: '/readiness',
+			templateUrl: 'plates/readiness.html',
+			controller: 'ReadinessCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {

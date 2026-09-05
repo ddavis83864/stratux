@@ -21,6 +21,17 @@ Primary 978/1090 receiver status is exposed as `UAT_*` / `ES_*` fields (`Enabled
 A frontend that hasn't received these fields yet (older cached page, or a backend predating
 this API) should treat the band as unknown, not as disabled.
 
+#### `GET /getHealth`
+Returns a unified component-readiness report as JSON: one `ComponentState`
+(`READY`/`DEGRADED`/`NOT_READY`/`NOT_INSTALLED`/`UNKNOWN`) per monitored subsystem (978, 1090,
+GPS, GDL90, System, persistent Storage, temporary Overlay, trusted Time, AHRS, Barometer, and Fan
+controller), plus an overall rollup. Recomputed on its own 5-second interval, independent of
+`/getStatus`. This is purely additive — no existing `/getStatus` field changed. See
+[readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model and the color rules
+the dashboard applies to each state, and
+[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the AHRS/Barometer/Fan-controller field
+definitions specifically.
+
 #### `GET /getSituation`
 Returns the current GPS/AHRS situation: position, altitude, track, speed, vertical speed, and attitude (pitch/roll/slip-skid) if AHRS is connected.
 
@@ -125,6 +136,64 @@ Upload a `.deb` OTA update package directly via HTTP POST (multipart form).
 
 #### `POST /updatePong`
 Upload firmware for the Pong ADS-B receiver.
+
+---
+
+### Diagnostics
+
+Generates and serves sanitized troubleshooting bundles - never enabled automatically, only on
+request. See `docs/readiness-and-time-trust.md` for what a bundle contains and excludes.
+
+#### `POST /generateDiagnostics`
+Builds and writes one new sanitized diagnostic bundle under `/var/lib/stratux-data/diagnostics`.
+Returns `{success, name, sizeBytes, generatedAt}` on success, or `{success:false, error}`. A
+retention-pruning failure after a successful write still reports `success:true` with
+`partial:true` and a `warning` - the bundle itself was written.
+
+#### `GET /getDiagnostics`
+Lists available bundles: `[{name, sizeBytes, generatedAt}, …]`, newest first.
+
+#### `GET /downloadDiagnostics?name=<bundle-name>`
+Downloads one bundle. `name` must exactly match an entry from `/getDiagnostics` - any other value
+(including path-traversal attempts) returns 404, never a filesystem error.
+
+---
+
+### Recording
+
+An on-demand, explicitly-controlled recording for troubleshooting/analysis. Automatic flight
+recording remains disabled regardless of this API's existence - nothing here runs unless
+requested. See `docs/readiness-and-time-trust.md` for the sample schema and known limitations
+(GPX/KML still return "not implemented") and `docs/ahrs-baro-fan-health.md` for the live
+AHRS/barometer sample fields and CSV columns.
+
+#### `POST /startRecording`
+Starts a new session (`/var/lib/stratux-data/recordings/<id>/`, `id` server-generated as
+`rec-<UTC timestamp>`). Returns `{success, status}`. `409 Conflict` if a session is already
+active. `503`/`507` if persistent storage is unavailable or below the minimum free-space
+threshold.
+
+#### `POST /stopRecording`
+Stops the active session, if any; a safe no-op if nothing is active. Returns `{success, status}`.
+
+#### `GET /getRecordingStatus`
+Current (or last) session status: `{id, state, startedAt, stoppedAt, sampleCount, lastError}`.
+`state` is one of `idle`, `active`, `error`.
+
+#### `GET /getRecordings`
+Lists sessions: `[{id, sizeBytes, fileCount, startedAt}, …]`, newest first.
+
+#### `POST /exportRecording?id=<session-id>&format=csv|gpx|kml`
+Exports a session to a persisted file under `/var/lib/stratux-data/exports`. `gpx`/`kml` honestly
+return `501 Not Implemented` (see `recording.ErrExportNotImplemented`). Returns
+`{success, name, sizeBytes, sampleCount}`.
+
+#### `GET /downloadRecording?id=<session-id>`
+Downloads a session's raw JSONL file(s) as a zip.
+
+#### `GET /downloadExport?name=<export-name>`
+Downloads a previously-created export. `name` must exactly match an entry produced by
+`/exportRecording` - same traversal-safety rule as `/downloadDiagnostics`.
 
 ---
 

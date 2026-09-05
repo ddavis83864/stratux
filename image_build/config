@@ -11,3 +11,10 @@ DISABLE_FIRST_BOOT_USER_RENAME=1
 FIRST_USER_PASS="raspberry"
 
 ENABLE_SSH=1
+
+# Standardize the appliance on UTC rather than pi-gen's own default
+# (Europe/London). Stored timestamps (health events, future recording
+# data) are always UTC regardless of this setting, but the system
+# timezone itself should match rather than default to an arbitrary
+# locale - see docs/time-trust.md.
+TIMEZONE_DEFAULT="UTC"

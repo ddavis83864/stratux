@@ -1279,6 +1279,16 @@ type settings struct {
     GpsManualChip        string         // ublox8, ublox9, ublox
 	GpsManualTargetBaud  int            // default: 115200
 	RegionSelected       int			// 0 - none, 1 = US, 2 = EU
+
+	// PersistentDataUUID pins the filesystem UUID expected at
+	// /var/lib/stratux-data (see readiness.CertifyPersistentStorage). Set
+	// explicitly for a known installation, or leave empty to let
+	// readiness.DiscoverableMount pin it automatically the first time a
+	// structurally-valid (mounted, read-write, ext4) filesystem is found
+	// there - see main/health.go's ensurePersistentDataUUID. Never
+	// silently accepts an arbitrary mount: once pinned (by either path),
+	// every later check requires an exact match.
+	PersistentDataUUID   string
 }
 
 type status struct {
@@ -1700,6 +1710,10 @@ func gracefulShutdown() {
 
 	pprof.StopCPUProfile()
 
+	// Flush and close any active recording session cleanly rather than
+	// leaving its last file unflushed.
+	stopRecordingForShutdown()
+
 	//TODO: Any other graceful shutdown functions.
 
 	// Turn off green ACT LED on the Pi. Path changed around kernel 6.1.21-v8
@@ -1838,6 +1852,7 @@ func main() {
 
 	// Start the management interface.
 	go managementInterface()
+	go healthUpdateLoop()
 	go traceLoggerWatchdog()
 
 	crcInit() // Initialize CRC16 table.

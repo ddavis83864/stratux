@@ -1,0 +1,226 @@
+<div class="col-sm-12">
+	<div class="text-center">
+		<a ng-click="VersionClick()" class="btn btn-hidden"><strong>Version: <span><tt>{{Health.System.Version}} ({{Health.System.Commit.substr(0,10)}})</tt></span></strong></a>
+	</div>
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Readiness</span>
+			<span class="label" ng-class="OverallClass">{{Health.Overall}}</span>
+			<span ng-show="ConnectState == 'Disconnected'" class="label label-danger">Disconnected</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Supplemental, non-certified situational-awareness equipment. This overview
+				summarizes component health; it is not a flight-readiness certification.
+			</p>
+
+			<div class="row">
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">978 UAT</strong>
+					<span class="col-xs-6"><span class="label" ng-class="UAT978Class">{{Health.UAT978.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.UAT978.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TotalFrames">
+						{{Health.UAT978.TotalFrames}} frames total, {{Health.UAT978.MessageRateLastMinute}}/min,
+						{{LastFrameTextUAT}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="!Health.UAT978.TotalFrames">
+						{{LastFrameTextUAT}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.UAT978.TowerCount">
+						{{Health.UAT978.TowerCount}} FIS-B tower(s) seen
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">1090 ES</strong>
+					<span class="col-xs-6"><span class="label" ng-class="ES1090Class">{{Health.ES1090.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.ES1090.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.ES1090.TotalFrames">
+						{{Health.ES1090.TotalFrames}} frames total, {{Health.ES1090.MessageRateLastMinute}}/min,
+						{{LastFrameTextES}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="!Health.ES1090.TotalFrames">
+						{{LastFrameTextES}}
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">GPS</strong>
+					<span class="col-xs-6"><span class="label" ng-class="GPSClass">{{Health.GPS.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.GPS.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.GPS.Present">
+						{{Health.GPS.DeviceType}}, {{Health.GPS.SatellitesInSolution}} sats in solution
+						({{Health.GPS.SatellitesSeen}} seen), &plusmn;{{Health.GPS.AccuracyMeters}}m
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Time</strong>
+					<span class="col-xs-6"><span class="label" ng-class="TimeClass">{{Health.Time.State}}</span></span>
+					<span class="col-xs-12 small text-muted">
+						Source: {{Health.Time.Source || 'none'}}<span ng-show="TimeSyncedAgoText">, synced {{TimeSyncedAgoText}}</span>
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Time.CurrentUTC">
+						{{Health.Time.CurrentUTC}} UTC
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Time.LastSyncError">
+						{{Health.Time.LastSyncError}}
+					</span>
+					<span class="col-xs-12 small" ng-class="{'text-danger': !Health.Time.RecordingAllowed}">
+						Recording {{Health.Time.RecordingAllowed ? 'permitted' : 'not permitted'}} by trusted time
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">GDL90 / Clients</strong>
+					<span class="col-xs-6"><span class="label" ng-class="GDL90Class">{{Health.GDL90.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.GDL90.Reason}}</span>
+					<span class="col-xs-12 small text-muted">
+						{{Health.GDL90.RecentClientCount}} recent client(s)
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="HasNetworkClientActivity">
+						last network client activity: {{Health.GDL90.LastNetworkClientActivity}}
+					</span>
+					<span class="col-xs-12 small text-muted">
+						Connected applications cannot be individually identified.
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">System</strong>
+					<span class="col-xs-6"><span class="label" ng-class="SystemClass">{{Health.System.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.System.Reason}}</span>
+					<span class="col-xs-12 small text-muted">
+						{{Health.System.CPUTempC | number:1}}&deg;C
+						<span ng-show="Health.System.Throttled" class="text-danger">&middot; throttled</span>
+						<span ng-show="Health.System.UndervoltageDetected" class="text-danger">&middot; undervoltage</span>
+					</span>
+					<span class="col-xs-12 small text-danger" ng-repeat="svc in Health.System.FailedServices">
+						failed: {{svc}}
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Persistent Storage</strong>
+					<span class="col-xs-6"><span class="label" ng-class="StorageClass">{{Health.Storage.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Storage.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Storage.Present">
+						{{(Health.Storage.UsedBytes/1073741824) | number:1}} /
+						{{(Health.Storage.TotalBytes/1073741824) | number:1}} GB used
+						({{Health.Storage.UtilizationPercent | number:1}}%)
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Overlay (temp)</strong>
+					<span class="col-xs-6"><span class="label" ng-class="OverlayClass">{{Health.TemporaryOverlay.State}}</span></span>
+					<span class="col-xs-12 small text-muted">
+						Protected RAM-backed root overlay - not recording capacity.
+						{{Health.TemporaryOverlay.UtilizationPercent | number:1}}% used.
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">AHRS</strong>
+					<span class="col-xs-6"><span class="label" ng-class="AHRSClass">{{Health.AHRS.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.AHRS.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						connected, {{AHRSAgeText}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						pitch {{Health.AHRS.PitchAvailable ? (Health.AHRS.PitchDeg | number:1) + '&deg;' : 'unavailable'}},
+						roll {{Health.AHRS.RollAvailable ? (Health.AHRS.RollDeg | number:1) + '&deg;' : 'unavailable'}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
+						{{Health.AHRS.LevelCalibrated ? 'level reference set' : 'no level reference set (use Set Level)'}}
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Barometer</strong>
+					<span class="col-xs-6"><span class="label" ng-class="BaroClass">{{Health.Baro.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Baro.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Baro.Connected">
+						{{Health.Baro.PressureAltitudeFt !== null ? (Health.Baro.PressureAltitudeFt | number:0) + ' ft' : 'altitude unavailable'}},
+						{{Health.Baro.VerticalSpeedFPM !== null ? (Health.Baro.VerticalSpeedFPM | number:0) + ' fpm' : 'VSI unavailable'}},
+						{{Health.Baro.TemperatureC !== null ? (Health.Baro.TemperatureC | number:1) + '&deg;C' : ''}}
+					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Baro.Connected">
+						{{BaroAgeText}}
+					</span>
+				</div>
+
+				<div class="col-sm-6 col-md-4 label_adj">
+					<strong class="col-xs-6">Fan Controller</strong>
+					<span class="col-xs-6"><span class="label" ng-class="FanClass">{{Health.Fan.State}}</span></span>
+					<span class="col-xs-12 small text-muted">{{Health.Fan.Reason}}</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.Fan.ServiceActive">
+						{{Health.Fan.CPUTempC !== null ? (Health.Fan.CPUTempC | number:1) + '&deg;C CPU' : ''}}
+						<span ng-show="Health.Fan.RequestedDutyPercent !== null">&middot; requested duty {{Health.Fan.RequestedDutyPercent}}%</span>
+					</span>
+					<span class="col-xs-12 small text-muted">
+						Rotation feedback unavailable - no tachometer is installed; PWM commands cannot confirm the fan is physically spinning.
+					</span>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Diagnostics</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Generates a sanitized snapshot (version, health, storage, radio/GPS state,
+				recent log excerpt) for troubleshooting. Never includes passwords, Wi-Fi
+				secrets, SSH material, or other credential-like values.
+			</p>
+			<button class="btn btn-primary" ng-click="generateDiagnostics()" ng-disabled="Diagnostics.busy">
+				{{Diagnostics.busy ? 'Generating...' : 'Generate Diagnostic Bundle'}}
+			</button>
+			<span class="small" ng-show="Diagnostics.message">{{Diagnostics.message}}</span>
+			<table class="table table-condensed" ng-show="Diagnostics.bundles.length">
+				<tr ng-repeat="b in Diagnostics.bundles">
+					<td>{{b.name}}</td>
+					<td>{{(b.sizeBytes/1024) | number:0}} KB</td>
+					<td><a ng-click="downloadDiagnostics(b.name)" class="btn btn-hidden">Download</a></td>
+				</tr>
+			</table>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Recording</span>
+			<span class="label" ng-class="{'label-success': Recording.status.state === 'active', 'label-danger': Recording.status.state === 'error', 'label-default': Recording.status.state === 'idle'}">
+				{{Recording.status.state}}
+			</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				A controlled, on-demand recording for troubleshooting/analysis - automatic
+				flight recording remains disabled. AHRS/barometer fields are recorded live
+				when that hardware is connected and producing valid readings, and stay
+				unavailable (null) otherwise - never a fabricated zero.
+			</p>
+			<button class="btn btn-primary" ng-click="startRecording()" ng-disabled="Recording.busy || Recording.status.state === 'active'">Start Recording</button>
+			<button class="btn btn-default" ng-click="stopRecording()" ng-disabled="Recording.busy || Recording.status.state !== 'active'">Stop Recording</button>
+			<span class="small" ng-show="Recording.message">{{Recording.message}}</span>
+			<p class="small text-muted" ng-show="Recording.status.state === 'active'">
+				{{Recording.status.sampleCount}} samples so far.
+			</p>
+			<p class="small text-danger" ng-show="Recording.status.state === 'error'">
+				{{Recording.status.lastError}}
+			</p>
+			<table class="table table-condensed" ng-show="Recording.sessions.length">
+				<tr ng-repeat="s in Recording.sessions">
+					<td>{{s.id}}</td>
+					<td>{{(s.sizeBytes/1024) | number:0}} KB</td>
+					<td><a ng-click="exportRecording(s.id)" class="btn btn-hidden">Export CSV</a></td>
+					<td><a ng-click="downloadRecording(s.id)" class="btn btn-hidden">Download</a></td>
+				</tr>
+			</table>
+		</div>
+	</div>
+</div>
