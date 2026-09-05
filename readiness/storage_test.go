@@ -156,8 +156,8 @@ func TestStatfsResult_UsedBytesMatchesDfNotUnprivilegedAvailable(t *testing.T) {
 	// Modeled on the live-device evidence: ~1GB of ext4 reserved blocks
 	// made AvailableBytes-based accounting report ~1.2GiB/6% used while df
 	// (and this package, post-fix) reported ~162MiB/1% used.
-	const total = uint64(20_000_000_000) // 20 GB, close to the live device's data partition
-	const reserved = uint64(1_073_741_824) // ~1 GiB reserved-blocks percentage
+	const total = uint64(20_000_000_000)    // 20 GB, close to the live device's data partition
+	const reserved = uint64(1_073_741_824)  // ~1 GiB reserved-blocks percentage
 	const trulyUsed = uint64(162 * 1 << 20) // ~162 MiB actually used
 	r := StatfsResult{
 		TotalBytes:     total,
