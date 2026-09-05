@@ -134,6 +134,13 @@
 					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Connected">
 						{{Health.AHRS.LevelCalibrated ? 'level reference set' : 'no level reference set (use Set Level)'}}
 					</span>
+					<span class="col-xs-12 small text-muted" ng-show="Health.AHRS.Profile.Available">
+						Profile: {{Health.AHRS.Profile.Name}} &middot;
+						Calibration: {{Health.AHRS.LevelCalibrated &amp;&amp; Health.AHRS.GyroCalibrated ? 'VALID' : 'INCOMPLETE'}}
+					</span>
+					<span class="col-xs-12 small text-danger" ng-show="Health.AHRS.Connected &amp;&amp; !Health.AHRS.Profile.Available">
+						Calibration profile unavailable: {{Health.AHRS.Profile.Error}}
+					</span>
 				</div>
 
 				<div class="col-sm-6 col-md-4 label_adj">

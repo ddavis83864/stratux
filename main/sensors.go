@@ -326,6 +326,11 @@ func sensorAttitudeSender() {
 					}
 				}
 				ahrsCalibrating = false
+				// Persist the just-completed calibration to the active
+				// named aircraft calibration profile, if one exists -
+				// additive only; does not change anything above. See
+				// main/calprofilesapi.go.
+				captureActiveProfileCalibration(action)
 				<-timer.C // Make sure we get data for the actual algorithm
 			default:
 			}
