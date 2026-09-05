@@ -76,7 +76,7 @@ func buildAHRSHealth(mono, wallNow time.Time) readiness.AHRSHealth {
 		pitchPtr, rollPtr, gLoadPtr,
 		lastAttitudeMono, mono, monoToWallOptional(lastAttitudeMono, mono, wallNow),
 		levelCalibrated, gyroCalibrated, globalSettings.IMUMapping,
-		ahrsStaleAfter,
+		ahrsStaleAfter, activeProfileHealthInfo(),
 	)
 }
 

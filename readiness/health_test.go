@@ -69,7 +69,7 @@ func healthyTime() (TimeHealth, TimeState) {
 }
 
 func noHardwareFixtures() (ahrs AHRSHealth, baro BaroHealth, fan FanHealth) {
-	ahrs = BuildAHRSHealth(false, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second)
+	ahrs = BuildAHRSHealth(false, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second, availableProfileFixture())
 	baro = BuildBaroHealth(false, false, nil, nil, nil, "none", time.Time{}, time.Now(), NoTime(), 15*time.Second)
 	fan = BuildFanHealth(false, false, false, false, "", "", nil, nil, nil, nil, nil, time.Time{}, time.Now(), 10*time.Second)
 	return

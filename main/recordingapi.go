@@ -85,6 +85,33 @@ type recordingSession struct {
 	SampleCount int64                   `json:"sampleCount"`
 	LastError   string                  `json:"lastError,omitempty"`
 
+	// Calibration* fields identify which named aircraft calibration
+	// profile (see the calprofile package) was active when this session
+	// started - captured once, at session start, and never changed for
+	// the life of the session (switching the active profile while a
+	// recording is active is refused - see
+	// handleActivateCalibrationProfileRequest). This is deliberately
+	// session-level metadata, not a per-sample field: the profile does
+	// not change mid-session, so repeating it into every 1Hz sample
+	// would only duplicate an unchanging string. recording.Sample's own
+	// per-sample AHRSCalibrationState field still conveys the moment-to-
+	// moment READY/DEGRADED calibration quality; these fields answer the
+	// separate question of *which* profile that quality was measured
+	// against.
+	CalibrationProfileID        string     `json:"calibrationProfileId,omitempty"`
+	CalibrationProfileName      string     `json:"calibrationProfileName,omitempty"`
+	CalibrationProfileKind      string     `json:"calibrationProfileKind,omitempty"`
+	CalibrationRegistration     string     `json:"calibrationRegistration,omitempty"`
+	CalibrationAircraftType     string     `json:"calibrationAircraftType,omitempty"`
+	CalibrationMountingNote     string     `json:"calibrationMountingNote,omitempty"`
+	CalibrationValid            bool       `json:"calibrationValid"`
+	CalibrationLastCalibratedAt *time.Time `json:"calibrationLastCalibratedAt,omitempty"`
+	// CalibrationProfileAvailable is false if no active profile could be
+	// determined at session start (profile subsystem missing/corrupt) -
+	// the recording still proceeds (a profile problem must never block
+	// or interrupt recording), just without profile identity attached.
+	CalibrationProfileAvailable bool `json:"calibrationProfileAvailable"`
+
 	dir             string
 	store           *recording.Store
 	stopCh          chan struct{}
@@ -107,6 +134,16 @@ type recordingStatusSnapshot struct {
 	StoppedAt   time.Time               `json:"stoppedAt,omitempty"`
 	SampleCount int64                   `json:"sampleCount"`
 	LastError   string                  `json:"lastError,omitempty"`
+
+	CalibrationProfileID        string     `json:"calibrationProfileId,omitempty"`
+	CalibrationProfileName      string     `json:"calibrationProfileName,omitempty"`
+	CalibrationProfileKind      string     `json:"calibrationProfileKind,omitempty"`
+	CalibrationRegistration     string     `json:"calibrationRegistration,omitempty"`
+	CalibrationAircraftType     string     `json:"calibrationAircraftType,omitempty"`
+	CalibrationMountingNote     string     `json:"calibrationMountingNote,omitempty"`
+	CalibrationValid            bool       `json:"calibrationValid"`
+	CalibrationLastCalibratedAt *time.Time `json:"calibrationLastCalibratedAt,omitempty"`
+	CalibrationProfileAvailable bool       `json:"calibrationProfileAvailable"`
 }
 
 func recordingStatusLocked() recordingStatusSnapshot {
@@ -114,12 +151,21 @@ func recordingStatusLocked() recordingStatusSnapshot {
 		return recordingStatusSnapshot{State: recordingStateIdle}
 	}
 	return recordingStatusSnapshot{
-		ID:          recCurrent.ID,
-		State:       recCurrent.State,
-		StartedAt:   recCurrent.StartedAt,
-		StoppedAt:   recCurrent.StoppedAt,
-		SampleCount: recCurrent.SampleCount,
-		LastError:   recCurrent.LastError,
+		ID:                          recCurrent.ID,
+		State:                       recCurrent.State,
+		StartedAt:                   recCurrent.StartedAt,
+		StoppedAt:                   recCurrent.StoppedAt,
+		SampleCount:                 recCurrent.SampleCount,
+		LastError:                   recCurrent.LastError,
+		CalibrationProfileID:        recCurrent.CalibrationProfileID,
+		CalibrationProfileName:      recCurrent.CalibrationProfileName,
+		CalibrationProfileKind:      recCurrent.CalibrationProfileKind,
+		CalibrationRegistration:     recCurrent.CalibrationRegistration,
+		CalibrationAircraftType:     recCurrent.CalibrationAircraftType,
+		CalibrationMountingNote:     recCurrent.CalibrationMountingNote,
+		CalibrationValid:            recCurrent.CalibrationValid,
+		CalibrationLastCalibratedAt: recCurrent.CalibrationLastCalibratedAt,
+		CalibrationProfileAvailable: recCurrent.CalibrationProfileAvailable,
 	}
 }
 
@@ -204,6 +250,7 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
 	}
+	populateSessionCalibrationProfile(session)
 	recCurrent = session
 	go recordingSamplerLoop(session)
 
@@ -212,6 +259,32 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"status":  recordingStatusLocked(),
 	})
+}
+
+// populateSessionCalibrationProfile captures the currently active
+// calibration profile's identity into session, once, at session start -
+// see recordingSession's Calibration* fields' doc comment for why this is
+// session-level, not per-sample. A missing/errored profile subsystem
+// leaves every Calibration* field at its zero value and
+// CalibrationProfileAvailable false - it must never block or interrupt
+// starting a recording.
+func populateSessionCalibrationProfile(session *recordingSession) {
+	if profilesStore == nil {
+		return
+	}
+	active, err := profilesStore.Active()
+	if err != nil {
+		return
+	}
+	session.CalibrationProfileAvailable = true
+	session.CalibrationProfileID = active.ID
+	session.CalibrationProfileName = active.Name
+	session.CalibrationProfileKind = active.Kind
+	session.CalibrationRegistration = active.Registration
+	session.CalibrationAircraftType = active.AircraftType
+	session.CalibrationMountingNote = active.MountingNote
+	session.CalibrationValid = active.CalibrationComplete()
+	session.CalibrationLastCalibratedAt = active.LastCalibratedAt
 }
 
 // recordingSamplerLoop appends one Sample every recordingSampleInterval

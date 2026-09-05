@@ -156,7 +156,7 @@ func TestDiagnosticBundleNamePattern_RejectsPathTraversalShapes(t *testing.T) {
 // device.
 func TestDiagnosticBundleNamePattern_MatchesRealWriter(t *testing.T) {
 	dir := t.TempDir()
-	bundle := readiness.BuildDiagnosticBundle(time.Now(), "v", "c", readiness.HealthReport{}, nil, nil)
+	bundle := readiness.BuildDiagnosticBundle(time.Now(), "v", "c", readiness.HealthReport{}, nil, nil, nil, "")
 	path, err := readiness.WriteDiagnosticBundle(dir, bundle, 10)
 	if err != nil {
 		t.Fatalf("WriteDiagnosticBundle error: %v", err)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stratux/stratux/calprofile"
 	"github.com/stratux/stratux/common"
 	"github.com/stratux/stratux/readiness"
 )
@@ -25,6 +26,20 @@ func ensureSituationLocks() {
 
 func TestBuildAHRSHealth_WiresLiveSituationState(t *testing.T) {
 	ensureSituationLocks()
+	// buildAHRSHealth now also reports calibration-profile subsystem
+	// state (see readiness.AHRSProfileInfo) - a test exercising the
+	// hardware-healthy/READY path needs a real active profile, the same
+	// way it needs globalSettings.IMU_Sensor_Enabled set; otherwise the
+	// profile-unavailable case correctly (not spuriously) downgrades an
+	// otherwise-READY result to DEGRADED.
+	store := withTestProfilesStore(t)
+	now := time.Now().UTC()
+	profile := calprofile.Profile{
+		ID: calprofile.NewID(), Name: "Test", Kind: calprofile.KindUser, SchemaVersion: calprofile.SchemaVersion,
+		CreatedAt: now, ModifiedAt: now,
+	}
+	store.Save(profile)
+	store.SetActiveID(profile.ID, now)
 
 	origSettings := globalSettings
 	origStatus := globalStatus

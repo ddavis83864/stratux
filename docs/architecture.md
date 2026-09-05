@@ -70,10 +70,12 @@ OpenLayers maps); each screen is a "plate" (HTML in `web/plates/*.html`, control
 Some hardware revisions add a dedicated persistent-data partition (`/var/lib/stratux-data`,
 distinct from the protected read-only-root overlay) and rely on GNSS-derived time discipline
 in place of a battery-backed real-time clock. The `readiness` package models unified component
-health (978/1090/GPS/GDL90/System/Storage/Time, plus `NOT_INSTALLED` placeholders for hardware
-not yet present), a trusted-time state machine, and persistent-storage certification, exposed
-via `GET /getHealth` and the "Readiness" dashboard page. See
-[readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model.
+health (978/1090/GPS/GDL90/System/Storage/Time/AHRS/Barometer/Fan-controller), a trusted-time
+state machine, and persistent-storage certification, exposed via `GET /getHealth` and the
+"Readiness" dashboard page. See [readiness-and-time-trust.md](readiness-and-time-trust.md) for
+the full model, [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the AHRS/barometer/fan
+health specifically, and [aircraft-calibration-profiles.md](aircraft-calibration-profiles.md)
+for named, persistent, per-airframe AHRS calibration.
 
 ## Other binaries
 

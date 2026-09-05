@@ -436,6 +436,67 @@ function GPSCtrl($rootScope, $scope, $state, $http, $interval) {
         }
     };
 
+    // --- Aircraft calibration profiles ---------------------------------
+    $scope.CalProfiles = { list: [], active: null, activeId: '', busy: false, error: '' };
+    $scope.NewProfile = { name: '', registration: '', aircraftType: '', mountingNote: '' };
+
+    function refreshCalProfiles() {
+        $http.get(URL_CALPROFILES_LIST).then(function (response) {
+            $scope.CalProfiles.list = response.data.profiles || [];
+            $scope.CalProfiles.activeId = response.data.activeProfileId || '';
+            $scope.CalProfiles.active = $scope.CalProfiles.list.filter(function (p) {
+                return p.id === $scope.CalProfiles.activeId;
+            })[0] || null;
+            $scope.CalProfiles.error = '';
+        }, function (response) {
+            $scope.CalProfiles.error = (response.data && response.data.error) || 'Could not load calibration profiles.';
+        });
+    }
+
+    $scope.createProfile = function () {
+        if ($scope.CalProfiles.busy || !$scope.NewProfile.name) return;
+        $scope.CalProfiles.busy = true;
+        $http.post(URL_CALPROFILES_CREATE, $scope.NewProfile).then(function () {
+            $scope.CalProfiles.busy = false;
+            $scope.NewProfile = { name: '', registration: '', aircraftType: '', mountingNote: '' };
+            refreshCalProfiles();
+        }, function (response) {
+            $scope.CalProfiles.busy = false;
+            $scope.CalProfiles.error = (response.data && response.data.error) || 'Could not create profile.';
+        });
+    };
+
+    $scope.activateProfile = function (id) {
+        if ($scope.CalProfiles.busy) return;
+        $scope.CalProfiles.busy = true;
+        $http.post(URL_CALPROFILES_ACTIVATE + '?id=' + encodeURIComponent(id)).then(function () {
+            $scope.CalProfiles.busy = false;
+            refreshCalProfiles();
+        }, function (response) {
+            $scope.CalProfiles.busy = false;
+            $scope.CalProfiles.error = (response.data && response.data.error) || 'Could not activate profile.';
+        });
+    };
+
+    $scope.deleteProfile = function (id) {
+        if ($scope.CalProfiles.busy) return;
+        if (!window.confirm('Delete this calibration profile? This cannot be undone.')) return;
+        $scope.CalProfiles.busy = true;
+        $http.post(URL_CALPROFILES_DELETE + '?id=' + encodeURIComponent(id)).then(function () {
+            $scope.CalProfiles.busy = false;
+            refreshCalProfiles();
+        }, function (response) {
+            $scope.CalProfiles.busy = false;
+            $scope.CalProfiles.error = (response.data && response.data.error) || 'Could not delete profile.';
+        });
+    };
+
+    refreshCalProfiles();
+    var calProfilesInterval = $interval(refreshCalProfiles, 5000);
+    $scope.$on('$destroy', function () {
+        $interval.cancel(calProfilesInterval);
+    });
+
     $scope.GMeterReset = function() {
         $http.post(URL_GMETER_RESET).then(function (response) {
             // do nothing

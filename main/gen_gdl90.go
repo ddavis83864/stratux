@@ -1836,6 +1836,14 @@ func main() {
 	// Read settings.
 	readSettings()
 
+	// Initialize named aircraft calibration profiles and migrate any
+	// pre-existing legacy calibration into a default profile - must run
+	// before initI2CSensors() below starts any goroutine that reads
+	// globalSettings.C/D/SensorQuaternion/IMUMapping, since this may
+	// overwrite those fields with the active profile's stored values.
+	// See main/calprofilesapi.go.
+	initCalibrationProfiles()
+
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 

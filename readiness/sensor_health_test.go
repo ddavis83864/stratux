@@ -10,10 +10,23 @@ import (
 
 // --- AHRSHealth ------------------------------------------------------
 
+// availableProfileFixture is the "profile subsystem is fine, some
+// ordinary profile is active" case every pre-existing AHRS fixture uses,
+// so a profile-subsystem problem never affects tests that predate the
+// calibration-profile feature and are not exercising it.
+func availableProfileFixture() AHRSProfileInfo {
+	return AHRSProfileInfo{
+		Available: true,
+		ID:        "profile-0000000000000000",
+		Name:      "Current Installation",
+		Kind:      "user",
+	}
+}
+
 func TestBuildAHRSHealth_Ready(t *testing.T) {
 	mono := time.Now()
 	pitch, roll, gload := 1.5, -2.5, 1.02
-	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
 	if h.State != StateReady {
 		t.Errorf("State = %q, want READY: %s", h.State, h.Reason)
 	}
@@ -26,7 +39,7 @@ func TestBuildAHRSHealth_Ready(t *testing.T) {
 }
 
 func TestBuildAHRSHealth_DisabledByConfigurationIsNotInstalledNotFailed(t *testing.T) {
-	h := BuildAHRSHealth(false, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second)
+	h := BuildAHRSHealth(false, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second, availableProfileFixture())
 	if h.State != StateNotInstalled {
 		t.Errorf("disabled-by-configuration AHRS State = %q, want NOT_INSTALLED", h.State)
 	}
@@ -39,7 +52,7 @@ func TestBuildAHRSHealth_EnabledButMissingIsNotReady(t *testing.T) {
 	// Enabled by configuration but the IMU has never connected - a real
 	// problem for hardware the baseline requires, distinct from a
 	// deliberate disable.
-	h := BuildAHRSHealth(true, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second)
+	h := BuildAHRSHealth(true, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second, availableProfileFixture())
 	if h.State != StateNotReady {
 		t.Errorf("enabled-but-disconnected AHRS State = %q, want NOT_READY", h.State)
 	}
@@ -49,7 +62,7 @@ func TestBuildAHRSHealth_StaleMeasurementIsDegraded(t *testing.T) {
 	mono := time.Now()
 	later := mono.Add(10 * time.Second) // staleAfter is 2s
 	pitch, roll := 0.0, 0.0
-	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, nil, mono, later, SomeTime(mono), true, true, [2]int{-1, 0}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, nil, mono, later, SomeTime(mono), true, true, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
 	if h.State != StateDegraded {
 		t.Errorf("stale AHRS State = %q, want DEGRADED", h.State)
 	}
@@ -68,7 +81,7 @@ func TestBuildAHRSHealth_InvalidSentinelValuesAreUnavailableNotZero(t *testing.T
 	// be treated as a real 0/valid reading, and health degrades rather
 	// than reads READY.
 	mono := time.Now()
-	h := BuildAHRSHealth(true, true, 0x03, nil, nil, nil, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x03, nil, nil, nil, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
 	if h.PitchAvailable || h.RollAvailable || h.GLoadAvailable {
 		t.Error("nil pitch/roll/g-load must report as unavailable, never as a fabricated zero value")
 	}
@@ -83,7 +96,7 @@ func TestBuildAHRSHealth_UnavailableHeadingNeverAffectsReadiness(t *testing.T) {
 	// fully-ready AHRS report never depends on it.
 	mono := time.Now()
 	pitch, roll, gload := 0.1, 0.2, 1.0
-	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
 	if h.HeadingSupported {
 		t.Error("HeadingSupported must always be false - magnetic heading is not calibrated in this build")
 	}
@@ -98,7 +111,7 @@ func TestBuildAHRSHealth_ReconnectingHasNoMeasurementYet(t *testing.T) {
 	// the zero value by main/sensors.go on the prior failure) - this must
 	// read NOT_READY, not a stale-but-otherwise-normal DEGRADED, and must
 	// never fabricate an age.
-	h := BuildAHRSHealth(true, true, 0x02, nil, nil, nil, time.Time{}, time.Now(), NoTime(), true, true, [2]int{-1, 0}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x02, nil, nil, nil, time.Time{}, time.Now(), NoTime(), true, true, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
 	if h.State != StateNotReady {
 		t.Errorf("reconnecting AHRS (no solution yet) State = %q, want NOT_READY", h.State)
 	}
@@ -110,14 +123,77 @@ func TestBuildAHRSHealth_ReconnectingHasNoMeasurementYet(t *testing.T) {
 func TestBuildAHRSHealth_UncalibratedIsDegraded(t *testing.T) {
 	mono := time.Now()
 	pitch, roll := 0.0, 0.0
-	h := BuildAHRSHealth(true, true, 0x03, &pitch, &roll, nil, mono, mono, SomeTime(time.Now()), false, false, [2]int{}, 2*time.Second)
+	h := BuildAHRSHealth(true, true, 0x03, &pitch, &roll, nil, mono, mono, SomeTime(time.Now()), false, false, [2]int{}, 2*time.Second, availableProfileFixture())
 	if h.State != StateDegraded {
 		t.Errorf("no level reference set State = %q, want DEGRADED", h.State)
 	}
 }
 
+func TestBuildAHRSHealth_GyroUncalibratedIsDegraded(t *testing.T) {
+	// Level reference set, gyro zero-drift not - this is "incomplete"
+	// calibration and must read DEGRADED, not READY.
+	mono := time.Now()
+	pitch, roll := 0.0, 0.0
+	h := BuildAHRSHealth(true, true, 0x03, &pitch, &roll, nil, mono, mono, SomeTime(time.Now()), true, false, [2]int{-1, 0}, 2*time.Second, availableProfileFixture())
+	if h.State != StateDegraded {
+		t.Errorf("level set but gyro uncalibrated State = %q, want DEGRADED", h.State)
+	}
+}
+
+func TestBuildAHRSHealth_ProfileUnavailableDowngradesReadyToDegraded(t *testing.T) {
+	// Hardware is perfectly healthy - connected, fresh, calibrated - but
+	// the profile subsystem itself has a problem (missing/corrupt
+	// store). This must read DEGRADED, honestly, never a silently
+	// ignored READY and never a false NOT_READY implying the hardware
+	// itself failed.
+	mono := time.Now()
+	pitch, roll, gload := 0.5, -0.3, 1.0
+	unavailable := AHRSProfileInfo{Available: false, Error: "profile store corrupt: unexpected end of JSON input"}
+	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second, unavailable)
+	if h.State != StateDegraded {
+		t.Errorf("profile-unavailable State = %q, want DEGRADED", h.State)
+	}
+	if !strings.Contains(h.Reason, "profile") {
+		t.Errorf("Reason should mention the profile subsystem problem, got %q", h.Reason)
+	}
+	if h.Profile.Available {
+		t.Error("Profile.Available should reflect the unavailable input")
+	}
+}
+
+func TestBuildAHRSHealth_ProfileUnavailableDoesNotMaskHardwareFailure(t *testing.T) {
+	// A genuinely disconnected IMU must stay NOT_READY - a profile
+	// problem on top of it must never look milder than the hardware
+	// failure alone would.
+	unavailable := AHRSProfileInfo{Available: false, Error: "profile store missing"}
+	h := BuildAHRSHealth(true, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second, unavailable)
+	if h.State != StateNotReady {
+		t.Errorf("disconnected IMU with an unavailable profile subsystem State = %q, want NOT_READY (hardware failure must not be masked)", h.State)
+	}
+}
+
+func TestBuildAHRSHealth_ProfileFieldsPopulated(t *testing.T) {
+	mono := time.Now()
+	pitch, roll, gload := 0.1, 0.2, 1.0
+	then := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	profile := AHRSProfileInfo{
+		Available:        true,
+		ID:               "profile-0123456789abcdef",
+		Name:             "Cherokee Six",
+		Kind:             "user",
+		LastCalibratedAt: SomeTime(then),
+	}
+	h := BuildAHRSHealth(true, true, 0x1F, &pitch, &roll, &gload, mono, mono, SomeTime(time.Now()), true, true, [2]int{-1, 0}, 2*time.Second, profile)
+	if h.Profile.ID != "profile-0123456789abcdef" || h.Profile.Name != "Cherokee Six" || h.Profile.Kind != "user" {
+		t.Errorf("Profile fields not passed through: %+v", h.Profile)
+	}
+	if h.Profile.LastCalibratedAt.IsZero() || !h.Profile.LastCalibratedAt.Time.Equal(then) {
+		t.Errorf("Profile.LastCalibratedAt = %v, want %v", h.Profile.LastCalibratedAt, then)
+	}
+}
+
 func TestBuildAHRSHealth_JSONNeverContainsYearOne(t *testing.T) {
-	h := BuildAHRSHealth(true, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second)
+	h := BuildAHRSHealth(true, false, 0, nil, nil, nil, time.Time{}, time.Now(), NoTime(), false, false, [2]int{}, 2*time.Second, availableProfileFixture())
 	b, err := json.Marshal(h)
 	if err != nil {
 		t.Fatal(err)

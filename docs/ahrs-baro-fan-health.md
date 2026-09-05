@@ -80,6 +80,13 @@ Both persist into `globalSettings` (`C`, `D`, `SensorQuaternion`) via the existi
 `saveSettings()` and are unchanged by this work — see `readiness.AHRSHealth.LevelCalibrated`/
 `GyroCalibrated`, which simply report whether either has ever been set.
 
+Both actions are now additionally captured into the active named calibration profile,
+if one exists — see [aircraft-calibration-profiles.md](aircraft-calibration-profiles.md)
+for named, persistent, per-airframe calibration (letting the receiver move between
+aircraft without losing each one's mounting calibration), which this section's
+`CageAHRS`/`CalibrateAHRS` mechanism is unchanged by and still the actual calibration
+engine underneath.
+
 ## Barometer health (`readiness.BaroHealth`, `readiness.BuildBaroHealth`)
 
 Source signals (`main/fancontrolstatus.go`'s `buildBaroHealth`, under `mySituation`'s

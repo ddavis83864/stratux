@@ -66,6 +66,29 @@ type DiagnosticBundle struct {
 	Health            HealthReport
 	SanitizedSettings map[string]interface{}
 	RecentLogLines    []string
+
+	// CalibrationProfiles/ActiveCalibrationProfileID summarize the named
+	// aircraft calibration profiles (see the calprofile package) known at
+	// generation time - every field here is already non-sensitive by the
+	// mission's own scope (no real-world location data is ever stored in
+	// a profile), so no separate sanitization pass is needed the way
+	// SanitizedSettings requires for the general settings map.
+	CalibrationProfiles        []CalibrationProfileSummary `json:"CalibrationProfiles,omitempty"`
+	ActiveCalibrationProfileID string                      `json:"ActiveCalibrationProfileID,omitempty"`
+}
+
+// CalibrationProfileSummary is one profile's diagnostic-relevant fields -
+// deliberately a distinct, smaller type from calprofile.Profile itself, so
+// this package (which otherwise depends on nothing but the standard
+// library) never needs to import calprofile.
+type CalibrationProfileSummary struct {
+	ID               string
+	Name             string
+	AircraftType     string
+	Kind             string
+	CalibrationValid bool
+	LastCalibratedAt OptionalTime
+	SchemaVersion    int
 }
 
 // maxDiagnosticLogLines bounds how much log text one bundle embeds, so a
@@ -79,18 +102,20 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
 	}
 	return DiagnosticBundle{
-		GeneratedAt:       now,
-		Version:           version,
-		Commit:            commit,
-		Health:            health,
-		SanitizedSettings: SanitizeSettings(rawSettings),
-		RecentLogLines:    lines,
+		GeneratedAt:                now,
+		Version:                    version,
+		Commit:                     commit,
+		Health:                     health,
+		SanitizedSettings:          SanitizeSettings(rawSettings),
+		RecentLogLines:             lines,
+		CalibrationProfiles:        profiles,
+		ActiveCalibrationProfileID: activeProfileID,
 	}
 }
 
