@@ -119,13 +119,36 @@ Rebuilds the read-only filesystem partition. Use with caution — intended for r
 Triggers AHRS orientation detection.
 
 #### `POST /calibrateAHRS`
-Runs the AHRS calibration routine.
+Runs the AHRS calibration routine (Zero Drift - gyro zero bias). Returns `409` if no
+named calibration profile is active - see below.
 
 #### `POST /cageAHRS`
-Cages the AHRS to the current attitude (sets current orientation as level reference). The resulting quaternion is saved to `SensorQuaternion` in settings.
+Cages the AHRS to the current attitude (sets current orientation as level reference).
+The resulting quaternion is saved to `SensorQuaternion` in settings (Set Level). Returns
+`409` if no named calibration profile is active - see below.
 
 #### `POST /resetGMeter`
 Resets the G-meter min/max values.
+
+---
+
+### Aircraft Calibration Profiles
+
+Named, persistent AHRS calibration profiles - see
+[aircraft-calibration-profiles.md](aircraft-calibration-profiles.md) for the full
+schema, persistence design, and dashboard workflow. Every endpoint below is additive;
+none changes `/calibrateAHRS`/`/cageAHRS`'s underlying calibration algorithm.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getCalibrationProfiles` | GET | List every profile plus the active profile ID. |
+| `/getActiveCalibrationProfile` | GET | The active profile (`404` if none is set). |
+| `/getCalibrationProfileStatus` | GET | Active profile + subsystem availability, for a single-request dashboard summary. |
+| `/createCalibrationProfile` | POST | Body: `{name, registration, aircraftType, mountingNote}`. Creates an uncalibrated profile; does not activate it. |
+| `/updateCalibrationProfile?id=...` | POST | Metadata only - never touches calibration vectors. |
+| `/activateCalibrationProfile?id=...` | POST | Makes a profile active. `409` while a recording is active. |
+| `/deleteCalibrationProfile?id=...` | POST | `409` if `id` is the active profile. |
+| `/captureCalibrationProfile[?id=...]` | POST | Snapshots the currently live calibration into a profile (active, if `id` omitted). |
 
 ---
 
