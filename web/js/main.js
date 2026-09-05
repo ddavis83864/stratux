@@ -40,6 +40,12 @@ var URL_RECORDING_LIST       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRecordin
 var URL_RECORDING_EXPORT     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/exportRecording";
 var URL_RECORDING_DOWNLOAD   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadRecording";
 var URL_EXPORT_DOWNLOAD      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadExport";
+var URL_CALPROFILES_LIST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getCalibrationProfiles";
+var URL_CALPROFILES_ACTIVE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getActiveCalibrationProfile";
+var URL_CALPROFILES_CREATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/createCalibrationProfile";
+var URL_CALPROFILES_UPDATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/updateCalibrationProfile";
+var URL_CALPROFILES_ACTIVATE = URL_HOST_PROTOCOL + URL_HOST_BASE + "/activateCalibrationProfile";
+var URL_CALPROFILES_DELETE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/deleteCalibrationProfile";
 
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";

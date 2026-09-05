@@ -94,6 +94,78 @@
 	</div>
 </div>
 <div class="col-sm-12">
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Aircraft Calibration Profiles</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Named calibration profiles let this receiver move between aircraft and
+				restore the right mounting calibration - supplemental, non-certified
+				setup data only, never a flight-control input.
+			</p>
+			<div class="row" ng-show="CalProfiles.active">
+				<strong class="col-xs-4">Active:</strong>
+				<span class="col-xs-8">
+					{{CalProfiles.active.name}}
+					<span class="label" ng-class="CalProfiles.active.calibrationValid ? 'label-success' : 'label-warning'">
+						{{CalProfiles.active.calibrationValid ? 'VALID' : 'INCOMPLETE'}}
+					</span>
+				</span>
+			</div>
+			<div class="row" ng-show="CalProfiles.active.registration || CalProfiles.active.aircraftType">
+				<strong class="col-xs-4">Aircraft:</strong>
+				<span class="col-xs-8">{{CalProfiles.active.registration}} {{CalProfiles.active.aircraftType}}</span>
+			</div>
+			<div class="row" ng-show="CalProfiles.active.mountingNote">
+				<strong class="col-xs-4">Mount:</strong>
+				<span class="col-xs-8">{{CalProfiles.active.mountingNote}}</span>
+			</div>
+			<p class="small text-danger" ng-show="CalProfiles.active && !CalProfiles.active.calibrationValid">
+				Calibration incomplete - use Set Level / Zero Drift above to complete it for this profile.
+			</p>
+			<p class="small text-danger" ng-show="CalProfiles.error">{{CalProfiles.error}}</p>
+
+			<div class="separator"></div>
+			<table class="table table-condensed" ng-show="CalProfiles.list.length">
+				<tr ng-repeat="p in CalProfiles.list">
+					<td>
+						{{p.name}}
+						<span ng-show="p.id === CalProfiles.activeId"><strong>(active)</strong></span>
+						<br><span class="small text-muted">{{p.registration}} {{p.aircraftType}}</span>
+					</td>
+					<td>
+						<span class="label" ng-class="p.calibrationValid ? 'label-success' : 'label-warning'">
+							{{p.calibrationValid ? 'VALID' : 'INCOMPLETE'}}
+						</span>
+					</td>
+					<td>
+						<a class="btn btn-hidden" ng-click="activateProfile(p.id)"
+						   ng-hide="p.id === CalProfiles.activeId" ng-disabled="CalProfiles.busy">Activate</a>
+					</td>
+					<td>
+						<a class="btn btn-hidden" ng-click="deleteProfile(p.id)"
+						   ng-hide="p.id === CalProfiles.activeId" ng-disabled="CalProfiles.busy">Delete</a>
+					</td>
+				</tr>
+			</table>
+
+			<div class="separator"></div>
+			<p class="small"><strong>Add a profile</strong></p>
+			<div class="row">
+				<div class="col-xs-6"><input type="text" class="form-control" placeholder="Name (required)" ng-model="NewProfile.name"></div>
+				<div class="col-xs-6"><input type="text" class="form-control" placeholder="Registration" ng-model="NewProfile.registration"></div>
+			</div>
+			<div class="row" style="margin-top: 4px;">
+				<div class="col-xs-6"><input type="text" class="form-control" placeholder="Aircraft type" ng-model="NewProfile.aircraftType"></div>
+				<div class="col-xs-6"><input type="text" class="form-control" placeholder="Mounting position" ng-model="NewProfile.mountingNote"></div>
+			</div>
+			<button class="btn btn-primary" style="margin-top: 4px;" ng-click="createProfile()"
+					ng-disabled="CalProfiles.busy || !NewProfile.name">Create Profile</button>
+		</div>
+	</div>
+</div>
+<div class="col-sm-12">
 	<div class="col-sm-6 hider">
 		<div class="panel panel-default">
 			<div class="panel-heading">
