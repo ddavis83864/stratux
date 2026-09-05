@@ -169,7 +169,30 @@ func handleGenerateDiagnosticsRequest(w http.ResponseWriter, r *http.Request) {
 
 	logLines, logOK := recentSanitizedLogLines(logDir+"stratux.log", diagnosticsMaxLogLines)
 
-	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines)
+	var profileSummaries []readiness.CalibrationProfileSummary
+	var activeProfileID string
+	if profilesStore != nil {
+		if profiles, err := profilesStore.List(); err == nil {
+			for _, p := range profiles {
+				var lastCal readiness.OptionalTime
+				if p.LastCalibratedAt != nil {
+					lastCal = readiness.SomeTime(*p.LastCalibratedAt)
+				}
+				profileSummaries = append(profileSummaries, readiness.CalibrationProfileSummary{
+					ID:               p.ID,
+					Name:             p.Name,
+					AircraftType:     p.AircraftType,
+					Kind:             p.Kind,
+					CalibrationValid: p.CalibrationComplete(),
+					LastCalibratedAt: lastCal,
+					SchemaVersion:    p.SchemaVersion,
+				})
+			}
+		}
+		activeProfileID, _ = profilesStore.ActiveID()
+	}
+
+	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID)
 	path, err := readiness.WriteDiagnosticBundle(diagnosticsDir, bundle, diagnosticsMaxRetain)
 	if err != nil && path == "" {
 		log.Printf("diagnostics: generation failed: %s\n", err)

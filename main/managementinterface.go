@@ -712,6 +712,17 @@ func handleCageAHRS(w http.ResponseWriter, r *http.Request) {
 	// For an OPTION method request, we return header without processing.
 	// This ensures we are recognized as supporting cross-domain AJAX REST calls.
 	if r.Method == "POST" {
+		// Set Level's result is captured into the active calibration
+		// profile (see main/sensors.go's captureActiveProfileCalibration
+		// hook) - if the profile subsystem itself has no active profile
+		// to capture into, say so clearly rather than silently running
+		// the calibration algorithm with nowhere durable for its result
+		// to land beyond globalSettings/stratux.conf.
+		if !activeProfileHealthInfo().Available {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, "no active calibration profile - cannot Set Level")
+			return
+		}
 		CageAHRS()
 	}
 }
@@ -727,6 +738,11 @@ func handleCalibrateAHRS(w http.ResponseWriter, r *http.Request) {
 	// For an OPTION method request, we return header without processing.
 	// This ensures we are recognized as supporting cross-domain AJAX REST calls.
 	if r.Method == "POST" {
+		if !activeProfileHealthInfo().Available {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, "no active calibration profile - cannot Zero Drift")
+			return
+		}
 		CalibrateAHRS()
 	}
 }
@@ -1264,6 +1280,16 @@ func managementInterface() {
 	http.HandleFunc("/exportRecording", handleExportRecordingRequest)
 	http.HandleFunc("/downloadRecording", handleDownloadRecordingRequest)
 	http.HandleFunc("/downloadExport", handleDownloadExportRequest)
+
+	// Named aircraft calibration profiles - see main/calprofilesapi.go.
+	http.HandleFunc("/getCalibrationProfiles", handleListCalibrationProfilesRequest)
+	http.HandleFunc("/getActiveCalibrationProfile", handleActiveCalibrationProfileRequest)
+	http.HandleFunc("/getCalibrationProfileStatus", handleCalibrationProfileStatusRequest)
+	http.HandleFunc("/createCalibrationProfile", handleCreateCalibrationProfileRequest)
+	http.HandleFunc("/updateCalibrationProfile", handleUpdateCalibrationProfileRequest)
+	http.HandleFunc("/activateCalibrationProfile", handleActivateCalibrationProfileRequest)
+	http.HandleFunc("/deleteCalibrationProfile", handleDeleteCalibrationProfileRequest)
+	http.HandleFunc("/captureCalibrationProfile", handleCaptureCalibrationProfileRequest)
 
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
