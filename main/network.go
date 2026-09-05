@@ -28,11 +28,21 @@ import (
 )
 
 
-var clientConnections map[string]connection // UDP out, TCP out, serial out
+// clientConnections, networkGDL90Chan, and netMutex are initialized here at
+// package scope - not lazily inside initNetwork() - so that they are valid
+// for the complete process lifetime. healthUpdateLoop() (main/health.go) is
+// started as a goroutine before initNetwork() runs in main(), and its very
+// first tick calls lastNetworkClientActivityMono() below; before this fix
+// netMutex was a *sync.Mutex left nil until initNetwork() assigned it,
+// which meant Lock() on that first tick could nil-pointer-panic depending
+// on goroutine scheduling - an intermittent boot crash confirmed live on
+// hardware. A zero-value sync.Mutex is always ready to use, and an
+// eagerly-made map/channel are always safe to range/read/send-into.
+var clientConnections = make(map[string]connection) // UDP out, TCP out, serial out
 
 var dhcpLeases map[string]string
-var networkGDL90Chan chan []byte      // For gdl90 web socket
-var netMutex *sync.Mutex              // netMutex needs to be locked before accessing dhcpLeases, pingResponse, and outSockets and calling isSleeping() and isThrottled().
+var networkGDL90Chan = make(chan []byte, 1024) // For gdl90 web socket
+var netMutex sync.Mutex                        // netMutex needs to be locked before accessing dhcpLeases, pingResponse, and outSockets and calling isSleeping() and isThrottled().
 
 var totalNetworkMessagesSent uint32
 
@@ -739,10 +749,10 @@ func networkStatsCounter() {
 
 
 func initNetwork() {
-	networkGDL90Chan = make(chan []byte, 1024)
-	clientConnections = make(map[string]connection)
-
-	netMutex = &sync.Mutex{}
+	// clientConnections, networkGDL90Chan, and netMutex are already valid
+	// zero/eager values from their package-level declarations above - see
+	// the comment there. initNetwork() only needs to populate the initial
+	// client list and start the background goroutines that use them.
 	refreshConnectedClients()
 	go monitorDHCPLeases() // Checks for new UDP connections
 	go sleepMonitor()
