@@ -78,6 +78,40 @@ type AHRSHealth struct {
 	// IMUMapping is globalSettings.IMUMapping, passed through for
 	// diagnostic/dashboard display.
 	IMUMapping [2]int
+
+	// Profile carries which named aircraft calibration profile (see the
+	// calprofile package) is active, if the profile subsystem itself is
+	// available. A profile-subsystem problem (missing/corrupt store) is
+	// reported here, not folded silently into the AHRS hardware State -
+	// see BuildAHRSHealth's doc comment for the resulting rollup rule.
+	Profile AHRSProfileInfo
+}
+
+// AHRSProfileInfo describes the calprofile-package state BuildAHRSHealth
+// was given - never that package's own type, so readiness stays free of a
+// dependency on calprofile (matching the existing pattern where readiness
+// depends on nothing outside itself and the standard library; main/'s
+// glue does the translation).
+type AHRSProfileInfo struct {
+	// Available is false if the profile subsystem itself could not be
+	// consulted (missing/corrupt profile store, no active profile set) -
+	// distinct from "a profile is active but uncalibrated", which is a
+	// normal, expected state reflected in Kind below, not an Available
+	// failure.
+	Available bool
+	// Error explains why Available is false. Empty whenever Available is
+	// true.
+	Error string
+
+	ID   string
+	Name string
+	// Kind is one of calprofile.KindMigrated/KindUser/KindUncalibrated,
+	// passed through as a plain string so this package need not import
+	// calprofile for three constants.
+	Kind string
+	// LastCalibratedAt is unavailable (null) until this profile's
+	// calibration has actually succeeded at least once.
+	LastCalibratedAt OptionalTime
 }
 
 // BuildAHRSHealth derives an AHRSHealth from already-gathered IMU/AHRS
@@ -93,7 +127,18 @@ type AHRSHealth struct {
 // lastMeasurementWall is the best-effort wall-clock display value; pass
 // NoTime() if none can be derived yet even when lastMeasurementMono is
 // non-zero.
-func BuildAHRSHealth(enabled, connected bool, rawStatus uint8, pitchDeg, rollDeg, gLoad *float64, lastMeasurementMono, nowMono time.Time, lastMeasurementWall OptionalTime, levelCalibrated, gyroCalibrated bool, imuMapping [2]int, staleAfter time.Duration) AHRSHealth {
+//
+// profile carries the active calibration-profile state (see
+// AHRSProfileInfo). A profile subsystem problem (profile.Available ==
+// false) never turns a genuine hardware failure into something milder,
+// and never turns a genuinely absent/disconnected IMU into DEGRADED - it
+// only ever downgrades what would otherwise have been StateReady, since
+// "the hardware is fine but this software layer on top of it has a
+// problem" is exactly DEGRADED, not NOT_READY or a silently-ignored
+// READY. This is the "missing/corrupt profile store with working legacy
+// fallback -> honest DEGRADED" rule the profile-integration mission
+// requires.
+func BuildAHRSHealth(enabled, connected bool, rawStatus uint8, pitchDeg, rollDeg, gLoad *float64, lastMeasurementMono, nowMono time.Time, lastMeasurementWall OptionalTime, levelCalibrated, gyroCalibrated bool, imuMapping [2]int, staleAfter time.Duration, profile AHRSProfileInfo) AHRSHealth {
 	h := AHRSHealth{
 		Enabled:             enabled,
 		Connected:           connected,
@@ -110,6 +155,7 @@ func BuildAHRSHealth(enabled, connected bool, rawStatus uint8, pitchDeg, rollDeg
 		LevelCalibrated:     levelCalibrated,
 		GyroCalibrated:      gyroCalibrated,
 		IMUMapping:          imuMapping,
+		Profile:             profile,
 	}
 	if !lastMeasurementMono.IsZero() {
 		age := nowMono.Sub(lastMeasurementMono).Seconds()
@@ -140,6 +186,12 @@ func BuildAHRSHealth(enabled, connected bool, rawStatus uint8, pitchDeg, rollDeg
 	case !levelCalibrated:
 		h.State = StateDegraded
 		h.Reason = "AHRS connected and reporting but no level reference has been set (use Set Level)"
+	case !gyroCalibrated:
+		h.State = StateDegraded
+		h.Reason = "AHRS connected and reporting but no gyro zero-drift bias has been set (use Zero Drift)"
+	case !profile.Available:
+		h.State = StateDegraded
+		h.Reason = "AHRS hardware is healthy, but the calibration-profile subsystem is unavailable: " + profile.Error
 	default:
 		h.State = StateReady
 		h.Reason = "AHRS connected and producing recent, valid attitude measurements"
