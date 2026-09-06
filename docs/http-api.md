@@ -168,6 +168,26 @@ read-only with respect to every other subsystem.
 
 ---
 
+### Operational Alerting
+
+Supplemental, non-certified traffic-proximity and system-health notices - see
+[alerting.md](alerting.md) for the full design, threshold policy, and safety
+boundaries. **Not collision avoidance, not TCAS/ACAS, issues no maneuver
+guidance**, and never modifies the GDL90/FLARM stream ForeFlight and other EFBs
+receive.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getAlerts` | GET | Current active alerts, bounded recent event history, and counters. |
+| `/getAlertSettings` | GET | The current persisted alert settings. |
+| `/setAlertSettings` | POST | Replace the persisted settings (JSON body, fully validated, atomic). `400` for any NaN/Inf/negative/out-of-range field. |
+| `/acknowledgeAlert?id=...` | POST | Acknowledge one traffic target (by its sanitized id) or system-health component (by name). Idempotent; `found:false` (still `200`) for an unknown/already-expired id. |
+| `/muteAlerts` | POST | Mute audio. JSON body `{"durationSeconds": N}` - omitted or `0` mutes indefinitely; a documented maximum (12h) bounds any timed mute. Visual alerts remain unaffected. |
+| `/unmuteAlerts` | POST | Clear mute immediately. |
+| `/testAlertSound` | POST | Confirms the subsystem is reachable; the tone itself is generated entirely client-side and never creates a real alert event. |
+
+---
+
 ### OTA Update
 
 #### `POST /updateUpload`

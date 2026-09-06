@@ -294,6 +294,13 @@ persisted once per recording as a durable, versioned sidecar record - see
 [recording.md](recording.md) for the complete design, retrieval API, and
 dashboard behavior.
 
+## Alerting integration
+
+The operational-alerting subsystem's system-health notices are driven
+entirely by this same Preflight/Readiness truth (edge-triggered on
+transitions, never re-deriving component health) - see
+[alerting.md](alerting.md)'s "Health-transition behavior" section.
+
 ## Diagnostics integration
 
 `readiness.DiagnosticBundle` gains an opaque `PreflightReport` field

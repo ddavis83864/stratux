@@ -24,6 +24,9 @@ hardware integration). User-facing how-tos live in the
   caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
 - **[recording.md](recording.md)** — the on-demand recording subsystem and the durable,
   versioned session-level Preflight metadata captured once at recording start.
+- **[alerting.md](alerting.md)** — conservative, supplemental traffic-proximity and
+  system-health notices: threshold policy, hysteresis, duplicate suppression, health
+  transitions, settings, and browser-audio limitations. Not collision avoidance.
 
 ## Interfaces (for EFB / app / tool developers)
 
