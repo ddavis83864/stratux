@@ -194,7 +194,7 @@ func handleGenerateDiagnosticsRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	recordingMetadataSummary := recording.SummarizeMetadata(listRecordingRefs())
-	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID, buildPreflightReport(), recordingMetadataSummary)
+	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID, buildPreflightReport(), recordingMetadataSummary, alertingDiagnosticsSummary())
 	path, err := readiness.WriteDiagnosticBundle(diagnosticsDir, bundle, diagnosticsMaxRetain)
 	if err != nil && path == "" {
 		log.Printf("diagnostics: generation failed: %s\n", err)

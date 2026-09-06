@@ -576,6 +576,7 @@ func stopActiveRecording() {
 		StoppedAtUTC:    &stoppedAt,
 		DurationSeconds: stoppedAt.Sub(s.StartedAt).Seconds(),
 		SampleCount:     s.SampleCount,
+		AlertEvents:     recentAlertEventsForRecording(),
 	}
 	var metaErr error
 	if err := recording.FinalizeMetadata(s.dir, finalization); err != nil {

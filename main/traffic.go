@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stratux/stratux/alerting"
 	"github.com/stratux/stratux/common"
 )
 
@@ -300,6 +301,14 @@ func sendTrafficUpdates() {
 	defer trafficMutex.Unlock()
 	cleanupOldEntries()
 
+	// Collected below, one entry per non-ignored target, and handed off to
+	// the alerting subsystem via a bounded, nonblocking channel send at
+	// the end of this function - alert evaluation itself never happens
+	// here and never blocks this loop. See main/alertingapi.go's
+	// submitTrafficObservationsForAlerting/buildTrafficObservation and
+	// docs/alerting.md's "Failure isolation" section.
+	var alertObservations []alerting.TrafficObservation
+
 	// Summarize number of UAT and 1090ES traffic targets for reports that follow.
 	globalStatus.UAT_traffic_targets_tracking = 0
 	globalStatus.ES_traffic_targets_tracking = 0
@@ -346,6 +355,10 @@ func sendTrafficUpdates() {
 		isCurrent := (ti.ExtrapolatedPosition && ti.AgeExtrapolation < 2 && ti.Age < 25) || (!ti.ExtrapolatedPosition && ti.Age < 6)
 
 		isOwnshipTi, shouldIgnore := isOwnshipTrafficInfo(ti)
+
+		if !shouldIgnore {
+			alertObservations = append(alertObservations, buildTrafficObservation(ti, isOwnshipTi))
+		}
 
 		// As bearingless targets, we show the closest estimated traffic that is between +-2000ft
 		if !shouldIgnore && !ti.Position_valid && ti.DistanceEstimated > 0 &&
@@ -433,6 +446,8 @@ func sendTrafficUpdates() {
 
 	msgPFLAU := makeFlarmPFLAUString(highestAlarmTraffic)
 	sendNetFLARM(msgPFLAU, time.Second, 0)
+
+	submitTrafficObservationsForAlerting(alertObservations)
 }
 
 func computeTrafficPriority(ti *TrafficInfo) int32 {
