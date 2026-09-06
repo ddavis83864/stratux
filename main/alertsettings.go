@@ -198,8 +198,32 @@ func loadAlertSettings() AlertSettings {
 		log.Printf("alerting: settings file corrupt, using defaults: %s\n", err)
 		return DefaultAlertSettings()
 	}
-	if s.SchemaVersion != AlertSettingsSchemaVersion || s.Validate() != nil {
+	if s.SchemaVersion != AlertSettingsSchemaVersion {
 		log.Printf("alerting: settings file failed validation (schema=%d), using defaults\n", s.SchemaVersion)
+		return DefaultAlertSettings()
+	}
+	if err := s.Validate(); err != nil {
+		// A still-legitimate persisted timed mute can spuriously fail
+		// the excessive-duration check if this load happens before the
+		// system clock is GPS-corrected: an RTC-less board boots with a
+		// stale/default wall clock until a GPS fix arrives (see the
+		// "trusted-time" one-time correction in main/health.go), so
+		// time.Now() here can read far earlier than it did when the
+		// mute was saved, making a short real remaining duration look
+		// enormous. Rather than discard every other persisted
+		// preference (thresholds, audio/visual toggles) over one
+		// clock-skew-sensitive field, drop only the mute state - fail
+		// safe toward "not muted" (alerts stay visible) - and retry
+		// before giving up on the whole file.
+		unmuted := s
+		unmuted.Muted = false
+		unmuted.MutedIndefinitely = false
+		unmuted.MuteUntilUnixSeconds = 0
+		if unmuted.Validate() == nil {
+			log.Printf("alerting: settings file's mute state failed validation, clearing mute and keeping other settings: %s\n", err)
+			return unmuted
+		}
+		log.Printf("alerting: settings file failed validation (schema=%d), using defaults: %s\n", s.SchemaVersion, err)
 		return DefaultAlertSettings()
 	}
 	return s

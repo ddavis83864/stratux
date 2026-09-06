@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -124,6 +125,69 @@ func TestAlertSettings_ExcessiveMuteDurationRejected(t *testing.T) {
 	s.MuteUntilUnixSeconds = 1 << 62 // absurdly far in the future
 	if err := s.Validate(); err == nil {
 		t.Error("expected an excessive mute duration to be rejected")
+	}
+}
+
+// TestAlertSettings_LoadClearsOnlyStaleMuteKeepsOtherSettings reproduces a
+// defect found during live hardware validation: on an RTC-less board, the
+// wall clock reads a stale, far-earlier value until GPS trusted-time
+// correction completes (see main/health.go). If loadAlertSettings runs in
+// that window, a legitimately-short persisted mute can look "excessive"
+// against the not-yet-corrected time.Now(), and previously caused the
+// *entire* settings file - including the user's real thresholds and
+// audio/visual toggles - to be discarded back to full defaults. The fix:
+// a mute-only validation failure clears just the mute fields and keeps
+// everything else the user actually configured.
+func TestAlertSettings_LoadClearsOnlyStaleMuteKeepsOtherSettings(t *testing.T) {
+	withTestAlertSettingsPath(t)
+	s := DefaultAlertSettings()
+	s.AudioVolume = 0.77
+	s.SuppressGroundTraffic = true
+	s.NoticeHorizontalNM = 2.5
+	s.Muted = true
+	s.MutedIndefinitely = false
+	s.MuteUntilUnixSeconds = 1 << 62 // looks excessive against a stale "now"
+
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alertSettingsPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := loadAlertSettings()
+	if got.Muted || got.MutedIndefinitely || got.MuteUntilUnixSeconds != 0 {
+		t.Errorf("expected mute state to be cleared, got Muted=%v MutedIndefinitely=%v MuteUntilUnixSeconds=%d",
+			got.Muted, got.MutedIndefinitely, got.MuteUntilUnixSeconds)
+	}
+	if got.AudioVolume != 0.77 || !got.SuppressGroundTraffic || got.NoticeHorizontalNM != 2.5 {
+		t.Errorf("expected the user's other settings to survive a mute-only validation failure, got %+v", got)
+	}
+}
+
+// TestAlertSettings_LoadStillDefaultsWhenNonMuteFieldAlsoInvalid confirms
+// the mute-clearing recovery in loadAlertSettings does not mask a genuinely
+// invalid non-mute field - the whole file still degrades to defaults in
+// that case, exactly as before this fix.
+func TestAlertSettings_LoadStillDefaultsWhenNonMuteFieldAlsoInvalid(t *testing.T) {
+	withTestAlertSettingsPath(t)
+	s := DefaultAlertSettings()
+	s.CautionHorizontalNM = -1 // independently invalid
+	s.Muted = true
+	s.MuteUntilUnixSeconds = 1 << 62
+
+	data, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(alertSettingsPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := loadAlertSettings()
+	if got != DefaultAlertSettings() {
+		t.Errorf("expected full defaults when a non-mute field is also invalid, got %+v", got)
 	}
 }
 
