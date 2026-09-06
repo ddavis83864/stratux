@@ -65,9 +65,12 @@
 			<button class="btn btn-default" ng-click="testSound()" ng-disabled="AudioState !== 'armed'">Test Sound</button>
 			<span class="small" ng-show="Message">{{Message}}</span>
 			<hr/>
-			<button class="btn btn-default" ng-click="mute()" ng-hide="Alerts.muted">
-				Mute for <input type="number" ng-model="MuteMinutes" min="0" max="720" style="width:4em"/> minutes (0 = indefinite)
-			</button>
+			<div class="form-inline" ng-hide="Alerts.muted">
+				<label for="muteMinutes">Mute alerts for</label>
+				<input id="muteMinutes" type="number" ng-model="MuteMinutes" min="0" max="720" style="width:4em"/>
+				<label for="muteMinutes">minutes (0 = indefinite)</label>
+				<button class="btn btn-default" ng-click="mute()">Mute</button>
+			</div>
 			<button class="btn btn-warning" ng-click="unmute()" ng-show="Alerts.muted">Unmute</button>
 		</div>
 	</div>
