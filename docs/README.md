@@ -19,6 +19,9 @@ hardware integration). User-facing how-tos live in the
 - **[ota.md](ota.md)** — the `.deb` OTA update mechanism: the overlay-disable marker's proven
   persistent location (with mount/device evidence), and the deterministic, resumable install
   state machine built on it.
+- **[preflight-readiness.md](preflight-readiness.md)** — the simplified, supplemental preflight
+  checklist built on top of the readiness health model: state definitions, the blocking-vs-
+  caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
 
 ## Interfaces (for EFB / app / tool developers)
 

@@ -74,8 +74,10 @@ health (978/1090/GPS/GDL90/System/Storage/Time/AHRS/Barometer/Fan-controller), a
 state machine, and persistent-storage certification, exposed via `GET /getHealth` and the
 "Readiness" dashboard page. See [readiness-and-time-trust.md](readiness-and-time-trust.md) for
 the full model, [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the AHRS/barometer/fan
-health specifically, and [aircraft-calibration-profiles.md](aircraft-calibration-profiles.md)
-for named, persistent, per-airframe AHRS calibration.
+health specifically, [aircraft-calibration-profiles.md](aircraft-calibration-profiles.md)
+for named, persistent, per-airframe AHRS calibration, and
+[preflight-readiness.md](preflight-readiness.md) for the simplified preflight checklist
+(a separate `preflight` package) built on top of this same health model.
 
 ## Other binaries
 

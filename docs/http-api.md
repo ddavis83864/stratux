@@ -152,6 +152,22 @@ none changes `/calibrateAHRS`/`/cageAHRS`'s underlying calibration algorithm.
 
 ---
 
+### Preflight Readiness
+
+A simplified, supplemental preflight checklist built on top of `/getHealth` - see
+[preflight-readiness.md](preflight-readiness.md) for the full state model, decision
+policy, and manual-acknowledgement rules. Every endpoint below is additive and
+read-only with respect to every other subsystem.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getPreflightReport` | GET | The current preflight report. |
+| `/acknowledgePreflightCheck?id=...` (or JSON body `{"id":"..."}`) | POST | Acknowledge one manual check. Idempotent. `404` for an unrecognized id. |
+| `/clearPreflightCheck?id=...` | POST | Clear one manual acknowledgement. |
+| `/resetPreflightChecks` | POST | Clear every manual acknowledgement. |
+
+---
+
 ### OTA Update
 
 #### `POST /updateUpload`
