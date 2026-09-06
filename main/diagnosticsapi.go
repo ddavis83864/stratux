@@ -192,7 +192,7 @@ func handleGenerateDiagnosticsRequest(w http.ResponseWriter, r *http.Request) {
 		activeProfileID, _ = profilesStore.ActiveID()
 	}
 
-	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID)
+	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID, buildPreflightReport())
 	path, err := readiness.WriteDiagnosticBundle(diagnosticsDir, bundle, diagnosticsMaxRetain)
 	if err != nil && path == "" {
 		log.Printf("diagnostics: generation failed: %s\n", err)

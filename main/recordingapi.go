@@ -112,6 +112,18 @@ type recordingSession struct {
 	// or interrupt recording), just without profile identity attached.
 	CalibrationProfileAvailable bool `json:"calibrationProfileAvailable"`
 
+	// Preflight* fields are a small, session-level snapshot of the
+	// preflight report at the moment this session started - see
+	// main/preflightapi.go's populateSessionPreflightSummary. Deliberately
+	// not the full preflight.Report (which would duplicate an
+	// effectively-unchanging summary into session metadata far beyond
+	// what a recording needs) and never repeated into every 1Hz sample,
+	// same rationale as the Calibration* fields above.
+	PreflightOverallState         string `json:"preflightOverallState,omitempty"`
+	PreflightRequiredActionCount  int    `json:"preflightRequiredActionCount"`
+	PreflightCautionCount         int    `json:"preflightCautionCount"`
+	PreflightManualChecksComplete bool   `json:"preflightManualChecksComplete"`
+
 	dir             string
 	store           *recording.Store
 	stopCh          chan struct{}
@@ -251,6 +263,7 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		doneCh:    make(chan struct{}),
 	}
 	populateSessionCalibrationProfile(session)
+	populateSessionPreflightSummary(session)
 	recCurrent = session
 	go recordingSamplerLoop(session)
 
