@@ -75,6 +75,19 @@ type DiagnosticBundle struct {
 	// SanitizedSettings requires for the general settings map.
 	CalibrationProfiles        []CalibrationProfileSummary `json:"CalibrationProfiles,omitempty"`
 	ActiveCalibrationProfileID string                      `json:"ActiveCalibrationProfileID,omitempty"`
+
+	// PreflightReport is the current preflight-readiness report (see the
+	// preflight package) at generation time, opaque to this package -
+	// readiness deliberately does not import preflight (preflight already
+	// imports readiness; the dependency only ever goes one way). Callers
+	// that don't use the preflight feature simply never set this, and it
+	// is omitted from the bundle entirely (omitempty) rather than
+	// appearing as a null. Already free of sensitive data by
+	// preflight.Report's own design (no GPS coordinates, MAC addresses,
+	// credentials, or SSH material - it is built entirely from data this
+	// same HealthReport already carries), so no separate sanitization
+	// pass is needed here either.
+	PreflightReport interface{} `json:"PreflightReport,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -102,7 +115,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -116,6 +129,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		RecentLogLines:             lines,
 		CalibrationProfiles:        profiles,
 		ActiveCalibrationProfileID: activeProfileID,
+		PreflightReport:            preflightReport,
 	}
 }
 

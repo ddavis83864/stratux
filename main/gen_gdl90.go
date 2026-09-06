@@ -1844,6 +1844,12 @@ func main() {
 	// See main/calprofilesapi.go.
 	initCalibrationProfiles()
 
+	// Initialize the preflight-readiness session identity and manual-
+	// acknowledgement store - see main/preflightapi.go. Purely additive
+	// and observational; failure isolation is handled inside
+	// buildPreflightReport, not here.
+	initPreflight()
+
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 

@@ -1291,6 +1291,14 @@ func managementInterface() {
 	http.HandleFunc("/deleteCalibrationProfile", handleDeleteCalibrationProfileRequest)
 	http.HandleFunc("/captureCalibrationProfile", handleCaptureCalibrationProfileRequest)
 
+	// Simplified preflight-readiness workflow - see main/preflightapi.go.
+	// Supplemental, non-certified; never controls the aircraft or
+	// modifies ADS-B/GDL90 operation.
+	http.HandleFunc("/getPreflightReport", handlePreflightReportRequest)
+	http.HandleFunc("/acknowledgePreflightCheck", handleAcknowledgePreflightCheckRequest)
+	http.HandleFunc("/clearPreflightCheck", handleClearPreflightCheckRequest)
+	http.HandleFunc("/resetPreflightChecks", handleResetPreflightChecksRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {

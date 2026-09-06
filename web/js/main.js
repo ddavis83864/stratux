@@ -47,6 +47,11 @@ var URL_CALPROFILES_UPDATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/updateCalib
 var URL_CALPROFILES_ACTIVATE = URL_HOST_PROTOCOL + URL_HOST_BASE + "/activateCalibrationProfile";
 var URL_CALPROFILES_DELETE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/deleteCalibrationProfile";
 
+var URL_PREFLIGHT_GET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getPreflightReport";
+var URL_PREFLIGHT_ACK        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/acknowledgePreflightCheck";
+var URL_PREFLIGHT_CLEAR      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/clearPreflightCheck";
+var URL_PREFLIGHT_RESET      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/resetPreflightChecks";
+
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
 var URL_GPS_WS              = "ws://" + URL_HOST_BASE + "/situation";
@@ -76,6 +81,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/readiness',
 			templateUrl: 'plates/readiness.html',
 			controller: 'ReadinessCtrl',
+			reloadOnSearch: false
+		})
+		.state('preflight', {
+			url: '/preflight',
+			templateUrl: 'plates/preflight.html',
+			controller: 'PreflightCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {

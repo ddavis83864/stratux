@@ -4,8 +4,9 @@ This documents the `calprofile` package and its wiring into `main/`: persistent,
 named AHRS calibration profiles that let the same Stratux move between aircraft and
 restore the right mounting calibration, instead of overwriting a single global one.
 See [readiness-and-time-trust.md](readiness-and-time-trust.md) for the component-health
-model this integrates with, and [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for
-the live AHRS health this extends.
+model this integrates with, [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for
+the live AHRS health this extends, and [preflight-readiness.md](preflight-readiness.md)
+for the simplified preflight checklist this profile's calibration state feeds into.
 
 **Purpose and limitations.** A calibration profile is mounting/aircraft *metadata*
 attached to a level-reference quaternion and a gyro zero-drift bias - nothing more. A

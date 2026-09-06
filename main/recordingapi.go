@@ -112,6 +112,18 @@ type recordingSession struct {
 	// or interrupt recording), just without profile identity attached.
 	CalibrationProfileAvailable bool `json:"calibrationProfileAvailable"`
 
+	// Preflight* fields are a small, session-level snapshot of the
+	// preflight report at the moment this session started - see
+	// main/preflightapi.go's populateSessionPreflightSummary. Deliberately
+	// not the full preflight.Report (which would duplicate an
+	// effectively-unchanging summary into session metadata far beyond
+	// what a recording needs) and never repeated into every 1Hz sample,
+	// same rationale as the Calibration* fields above.
+	PreflightOverallState         string `json:"preflightOverallState,omitempty"`
+	PreflightRequiredActionCount  int    `json:"preflightRequiredActionCount"`
+	PreflightCautionCount         int    `json:"preflightCautionCount"`
+	PreflightManualChecksComplete bool   `json:"preflightManualChecksComplete"`
+
 	dir             string
 	store           *recording.Store
 	stopCh          chan struct{}
@@ -201,6 +213,15 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Computed before acquiring recMu below, not after: buildPreflightReport()
+	// transitively locks recMu itself (see main/preflightapi.go's
+	// recordingReadinessForPreflight), and sync.Mutex is not reentrant -
+	// calling it from inside this function's own locked section
+	// self-deadlocked the entire recording subsystem (confirmed live
+	// during hardware validation: /startRecording never returned, and
+	// every subsequent recording endpoint hung waiting on recMu forever).
+	preflightSnapshot := buildPreflightReport()
+
 	recMu.Lock()
 	defer recMu.Unlock()
 
@@ -251,6 +272,7 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		doneCh:    make(chan struct{}),
 	}
 	populateSessionCalibrationProfile(session)
+	applyPreflightSummaryToSession(session, preflightSnapshot)
 	recCurrent = session
 	go recordingSamplerLoop(session)
 

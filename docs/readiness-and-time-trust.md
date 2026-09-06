@@ -4,7 +4,8 @@ This is the Sentry-class readiness foundation: a unified component health model,
 time synchronization, and certified persistent storage, plus the diagnostic-bundle and
 flight-recording groundwork built on top of them. It is supplemental to, and does not replace,
 the existing `/getStatus` status model — see [architecture.md](architecture.md) for how the two
-relate.
+relate. See [preflight-readiness.md](preflight-readiness.md) for the simplified preflight
+checklist built on top of this health model.
 
 > Stratux remains supplemental, non-certified situational-awareness equipment. Nothing in this
 > document changes that; "readiness" here means "this component is working," not flight
