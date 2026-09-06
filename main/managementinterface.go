@@ -1280,6 +1280,8 @@ func managementInterface() {
 	http.HandleFunc("/exportRecording", handleExportRecordingRequest)
 	http.HandleFunc("/downloadRecording", handleDownloadRecordingRequest)
 	http.HandleFunc("/downloadExport", handleDownloadExportRequest)
+	http.HandleFunc("/getRecordingMetadata", handleRecordingMetadataRequest)
+	http.HandleFunc("/downloadRecordingMetadata", handleDownloadRecordingMetadataRequest)
 
 	// Named aircraft calibration profiles - see main/calprofilesapi.go.
 	http.HandleFunc("/getCalibrationProfiles", handleListCalibrationProfilesRequest)
