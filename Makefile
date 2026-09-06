@@ -43,6 +43,18 @@ xrtlais:
 test:
 	make -C test
 
+# Go unit tests for the deterministic SDR assignment logic (sdrassign).
+# Deliberately scoped to sdrassign rather than `go test ./...`: the main
+# package requires cgo and a locally-built libdump978.so (see stratuxrun
+# above), and several other packages talk to real hardware (GPS, sensors,
+# SDRs) that isn't available in CI or on a dev machine. sdrassign has
+# neither dependency, so it's the narrowest reliable scope for automated
+# regression coverage. See docs/hardware/sdr-and-bands.md.
+.PHONY: gotest
+gotest:
+	go vet ./sdrassign/...
+	go test ./sdrassign/... -v
+
 www:
 	make -C web
 
@@ -169,3 +181,6 @@ dall:
 
 ddpkg:
 	./docker_run.sh "cd data && make dpkg"
+
+dgotest:
+	./docker_run.sh "cd data && make gotest"

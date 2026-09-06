@@ -135,3 +135,4 @@ GXAirCom / SoftRF). See [hardware/ogn-ais-receivers.md](hardware/ogn-ais-receive
 | `DarkMode` | bool | Web UI dark theme. |
 | `NoSleep` | bool | *Advanced.* Disable [sleep-mode detection](integration/gdl90.md#sleep-mode) for GDL90 clients. Useful for always-on panel-mount EFIS where the display never sleeps. |
 | `RegionSelected` | int | `0`=none, `1`=US, `2`=EU. Drives UAT band selection and some OGN behavior. Prefer `POST /setRegion`. |
+| `PersistentDataUUID` | string | *Advanced.* Expected filesystem UUID at `/var/lib/stratux-data` (see [readiness-and-time-trust.md](readiness-and-time-trust.md)). Set explicitly for a known installation, or leave empty to let the daemon pin it automatically the first time it finds a structurally-valid (mounted, read-write, ext4) filesystem there. |

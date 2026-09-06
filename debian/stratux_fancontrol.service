@@ -8,6 +8,14 @@ Restart=always
 RestartSec=5
 LimitCORE=1073741824
 
+# RAM-backed (tmpfs) runtime status directory for the controller's own
+# self-reported status file (common.FanControllerStatusPath) - created and
+# owned by systemd, removed automatically when the unit stops. The Go code
+# also creates this directory itself (MkdirAll) so behavior is identical
+# when run manually, e.g. during development.
+RuntimeDirectory=stratux-fancontrol
+RuntimeDirectoryMode=0755
+
 StandardOutput=null
 
 [Install]

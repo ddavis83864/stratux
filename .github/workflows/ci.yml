@@ -29,6 +29,9 @@ jobs:
       - name: Update submodule
         run: git submodule update --init --recursive
 
+      - name: go vet / go test (sdrassign)
+        run: make dgotest
+
       - name: make ddpkg
         run: make ddpkg
 

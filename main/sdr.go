@@ -23,6 +23,7 @@ import (
 
 	rtl "github.com/jpoirier/gortlsdr"
 	"github.com/stratux/stratux/godump978"
+	"github.com/stratux/stratux/sdrassign"
 )
 
 // Device holds per dongle values and attributes
@@ -61,6 +62,39 @@ var OGNDev *OGN
 // AISDev holds a 162 MHz dongle object
 var AISDev *AIS
 
+// sdrAssignment is the most recent deterministic band assignment decision
+// (see the sdrassign package). It is populated by configDevices() and read
+// by updateSDRRadioStatus() to build the 978/1090 status shown in the web
+// UI, so it is guarded by sdrAssignmentMu since the two run on different
+// goroutines.
+//
+// uatAssignedAt / esAssignedAt record when configDevices() last (re)bound a
+// receiver to each band, on the same stratuxClock used to timestamp
+// messages (main/monotonic.go) so a real-time clock adjustment can't distort
+// the comparison. sdrassign.IsReceiving() uses this to make sure a message
+// buffered from a receiver that has since been replaced - e.g. resolving an
+// ambiguous or externally-satisfied state by tagging, or a hot-swap - can't
+// make the newly assigned receiver appear to already be receiving. Both are
+// set in the same critical section as sdrAssignment (see configDevices())
+// so a reader can never observe one updated without the other.
+var (
+	sdrAssignmentMu sync.RWMutex
+	sdrAssignment   sdrassign.Result
+	uatAssignedAt   time.Time
+	esAssignedAt    time.Time
+)
+
+// uatDecoderRunning / esDecoderRunning reflect whether the respective
+// band's decode path is currently believed to be active, as distinct from
+// whether a receiver is merely assigned (UATDev/ESDev != nil). This matters
+// most for ES: dump1090 is a supervised subprocess that is auto-restarted
+// on crash without tearing down ESDev, so ESDev can be non-nil for a few
+// seconds while no decoder is actually running.
+var (
+	uatDecoderRunning atomic.Bool
+	esDecoderRunning  atomic.Bool
+)
+
 type Dump1090TermMessage struct {
 	Text   string
 	Source string
@@ -89,6 +123,7 @@ func (e *ES) read() {
 	err := cmd.Start()
 	if err != nil {
 		log.Printf("Error executing " + STRATUX_HOME + "/bin/dump1090: %s\n", err)
+		esDecoderRunning.Store(false)
 		// don't return immediately, use the proper shutdown procedure
 		shutdownES = true
 		for {
@@ -100,6 +135,7 @@ func (e *ES) read() {
 			}
 		}
 	}
+	esDecoderRunning.Store(true)
 
 	log.Println("Executed " + cmd.String() + " successfully...")
 
@@ -157,6 +193,7 @@ func (e *ES) read() {
 	}()
 
 	cmd.Wait()
+	esDecoderRunning.Store(false)
 
 	// we get here if A) the dump1090 process died
 	// on its own or B) cmd.Process.Kill() was called
@@ -186,11 +223,23 @@ func (u *UAT) read() {
 				if globalSettings.DEBUG {
 					log.Printf("\tReadSync Failed - error: %s\n", err)
 				}
+				uatDecoderRunning.Store(false)
 				if shutdownUAT != true {
 					shutdownUAT = true
 				}
 				break
 			}
+			// Only claim the read path is up once a sample buffer has
+			// actually been pulled off the device: unlike ES's dump1090
+			// subprocess, there is no separate confirmation step, so
+			// setting this any earlier (e.g. right after the device was
+			// opened) would report DecoderRunning=true before anything is
+			// proven to be flowing. This still only proves the raw-sample
+			// read loop is alive, not that godump978's demodulator
+			// goroutine (started once in sdrInit(), independent of any
+			// particular UATDev instance) is healthy - see
+			// docs/hardware/sdr-and-bands.md for that distinction.
+			uatDecoderRunning.Store(true)
 
 			if nRead > 0 {
 				buf := buffer[:nRead]
@@ -198,6 +247,7 @@ func (u *UAT) read() {
 			}
 		case <-u.closeCh:
 			log.Println("UAT read(): shutdown msg received...")
+			uatDecoderRunning.Store(false)
 			return
 		}
 	}
@@ -656,50 +706,6 @@ func sdrKill() {
 	}
 }
 
-func reCompile(s string) *regexp.Regexp {
-	// note , compile returns a nil pointer on error
-	r, _ := regexp.Compile(s)
-	return r
-}
-
-type regexUAT regexp.Regexp
-type regexES regexp.Regexp
-type regexOGN regexp.Regexp
-type regexAIS regexp.Regexp
-
-var rUAT = (*regexUAT)(reCompile("str?a?t?u?x:978"))
-var rES = (*regexES)(reCompile("str?a?t?u?x:1090"))
-var rOGN = (*regexES)(reCompile("str?a?t?u?x:868"))
-var rAIS = (*regexAIS)(reCompile("str?a?t?u?x:162"))
-
-func (r *regexUAT) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:978")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexES) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:1090")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexOGN) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:868")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
-func (r *regexAIS) hasID(serial string) bool {
-	if r == nil {
-		return strings.HasPrefix(serial, "stratux:162")
-	}
-	return (*regexp.Regexp)(r).MatchString(serial)
-}
-
 func createUATDev(id int, serial string, idSet bool) error {
 	UATDev = &UAT{indexID: id, serial: serial}
 	if err := UATDev.sdrConfig(); err != nil {
@@ -760,50 +766,83 @@ func createAISDev(id int, serial string, idSet bool) error {
 	return nil
 }
 
-func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool) {
-	// once the tagged dongles have been assigned, explicitly range over
-	// the remaining IDs and assign them to any anonymous dongles
-	unusedIDs := make(map[int]string)
-
-	// loop 1: assign tagged dongles
+// discoverSDRDevices enumerates the currently plugged-in RTL-SDR dongles for
+// use by sdrassign.Assign(). Device.Index is the transient, process-local
+// libusb enumeration index; it is not a stable identity (see sdrassign's
+// package doc), so it must never be relied on beyond this single evaluation.
+func discoverSDRDevices(count int) []sdrassign.Device {
+	devices := make([]sdrassign.Device, 0, count)
 	for i := 0; i < count; i++ {
 		_, _, s, err := rtl.GetDeviceUsbStrings(i)
-		if err == nil {
-			//FIXME: Trim NULL from the serial. Best done in gortlsdr, but putting this here for now.
-			s = strings.Trim(s, "\x00")
-			// no need to check if createXDev returned an error; if it
-			// failed to config the error is logged and we can ignore
-			// it here so it doesn't get queued up again
-			if uatEnabled && UATDev == nil && rUAT.hasID(s) {
-				createUATDev(i, s, true)
-			} else if esEnabled && ESDev == nil && rES.hasID(s) {
-				createESDev(i, s, true)
-			} else if ognEnabled && OGNDev == nil && rOGN.hasID(s) {
-				createOGNDev(i, s, true)
-			} else if aisEnabled && AISDev == nil && rAIS.hasID(s) {
-				createAISDev(i, s, true)
-			} else {
-				unusedIDs[i] = s
-			}
-		} else {
+		if err != nil {
 			log.Printf("rtl.GetDeviceUsbStrings id %d: %s\n", i, err)
+			continue
 		}
+		//FIXME: Trim NULL from the serial. Best done in gortlsdr, but putting this here for now.
+		s = strings.Trim(s, "\x00")
+		devices = append(devices, sdrassign.Device{Index: i, Serial: s})
+	}
+	return devices
+}
+
+// configDevices assigns discovered SDR dongles to the enabled bands and
+// starts the corresponding demodulator for each newly assigned device.
+//
+// The assignment decision itself is delegated to sdrassign.Assign(), a
+// pure, deterministic function: it does not depend on map iteration order,
+// so the same set of tagged and anonymous dongles always produces the same
+// assignment regardless of discovery order. When a stable, unambiguous
+// assignment cannot be derived (two or more enabled bands competing for two
+// or more indistinguishable, untagged dongles), the affected bands are left
+// unassigned rather than guessed at; see updateSDRRadioStatus() and
+// sdrassign.BuildBandStatus() for how that is surfaced to the user.
+func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool) {
+	devices := discoverSDRDevices(count)
+	// UATRadio_connected indicates an external (non-RTL-SDR) low-power UAT
+	// radio is already serving 978. Read once so Assign() and the create
+	// call below agree on the same value. Assign() excludes UAT from
+	// competing for anonymous devices in that case - e.g. so a single spare
+	// dongle intended for 1090 ES isn't misreported as ambiguous just
+	// because UAT still looks "unmet" - but an explicitly tagged
+	// stratux:978 dongle still always wins, since a tag is an explicit user
+	// choice and is never silently overridden.
+	uatRadioConnected := globalStatus.UATRadio_connected
+	result := sdrassign.Assign(devices, uatEnabled, esEnabled, ognEnabled, aisEnabled, uatRadioConnected)
+
+	// createUAT/createES are decided once, up front, so the same booleans
+	// drive both the assignment-time bookkeeping below (in one critical
+	// section, so a concurrent updateSDRRadioStatus() call can never
+	// observe the new sdrAssignment paired with a stale xAssignedAt, or
+	// vice versa) and the actual device creation further down.
+	createUAT := result.UAT.Assigned && UATDev == nil
+	createES := result.ES.Assigned && ESDev == nil
+	now := stratuxClock.Time
+
+	sdrAssignmentMu.Lock()
+	sdrAssignment = result
+	if createUAT {
+		uatAssignedAt = now
+	}
+	if createES {
+		esAssignedAt = now
+	}
+	sdrAssignmentMu.Unlock()
+
+	for _, w := range result.Warnings {
+		log.Printf("SDR assignment: %s\n", w)
 	}
 
-	// loop 2: assign anonymous dongles but sanity check the serial ids
-	// so we don't cross config for dual assigned dongles. e.g. when two
-	// dongles are set to the same stratux id and the unconsumed,
-	// non-anonymous, dongle makes it to this loop.
-	for i, s := range unusedIDs {
-		if uatEnabled && !globalStatus.UATRadio_connected && UATDev == nil && !rES.hasID(s) && !rOGN.hasID(s) {
-			createUATDev(i, s, false)
-		} else if esEnabled && ESDev == nil && !rUAT.hasID(s) && !rOGN.hasID(s) {
-			createESDev(i, s, false)
-		} else if ognEnabled && OGNDev == nil {
-			createOGNDev(i, s, false)
-		} else if aisEnabled && AISDev == nil {
-			createAISDev(i, s, false)
-		}
+	if createUAT {
+		createUATDev(result.UAT.Device.Index, result.UAT.Device.Serial, result.UAT.Source == sdrassign.SourceTagged)
+	}
+	if createES {
+		createESDev(result.ES.Device.Index, result.ES.Device.Serial, result.ES.Source == sdrassign.SourceTagged)
+	}
+	if result.OGN.Assigned && OGNDev == nil {
+		createOGNDev(result.OGN.Device.Index, result.OGN.Device.Serial, result.OGN.Source == sdrassign.SourceTagged)
+	}
+	if result.AIS.Assigned && AISDev == nil {
+		createAISDev(result.AIS.Device.Index, result.AIS.Device.Serial, result.AIS.Source == sdrassign.SourceTagged)
 	}
 }
 
@@ -864,6 +903,16 @@ func sdrWatcher() {
 			return
 		}
 
+		// forceReconfig is set when a device was torn down because it
+		// failed to start (shutdownX), as opposed to a settings/device
+		// count change. Without it, if nothing else about the settings or
+		// device count happens to change afterward, the "nothing changed"
+		// check below would skip configDevices() forever: the failed
+		// band's cached sdrAssignment would stay stale-Assigned, and its
+		// status would never be refreshed to reflect that it is actually
+		// unassigned and will not retry on its own.
+		forceReconfig := false
+
 		// true when a ReadSync call fails
 		if shutdownUAT {
 			if UATDev != nil {
@@ -871,6 +920,7 @@ func sdrWatcher() {
 				UATDev = nil
 			}
 			shutdownUAT = false
+			forceReconfig = true
 		}
 		// true when we get stderr output
 		if shutdownES {
@@ -879,6 +929,7 @@ func sdrWatcher() {
 				ESDev = nil
 			}
 			shutdownES = false
+			forceReconfig = true
 		}
 		// true when we get stderr output
 		if shutdownOGN {
@@ -887,6 +938,7 @@ func sdrWatcher() {
 				OGNDev = nil
 			}
 			shutdownOGN = false
+			forceReconfig = true
 		}
 		if shutdownAIS {
 			if AISDev != nil {
@@ -894,6 +946,7 @@ func sdrWatcher() {
 				AISDev = nil
 			}
 			shutdownAIS = false
+			forceReconfig = true
 		}
 
 		// capture current state
@@ -915,12 +968,13 @@ func sdrWatcher() {
 			count = 3
 		}
 
-		if interfaceCount == prevCount && prevESEnabled == esEnabled && prevUATEnabled == uatEnabled && prevOGNEnabled == ognEnabled && prevAISEnabled == aisEnabled &&
+		if !forceReconfig && interfaceCount == prevCount && prevESEnabled == esEnabled && prevUATEnabled == uatEnabled && prevOGNEnabled == ognEnabled && prevAISEnabled == aisEnabled &&
 			prevOGNTXEnabled == ognTXEnabled  && prevdump1090Gain == dump1090Gain {
 			continue
 		}
 
-		// the device count or the global settings have changed, reconfig
+		// the device count or the global settings have changed (or a
+		// device failed to start this tick), reconfig
 		if UATDev != nil {
 			UATDev.shutdown()
 			UATDev = nil
@@ -975,4 +1029,76 @@ func sdrInit() {
 	go sdrWatcher()
 	go uatReader()
 	go godump978.ProcessDataFromChannel()
+}
+
+// updateSDRRadioStatus refreshes the primary 978 UAT / 1090 ES receiver
+// status fields on the status struct in gen_gdl90.go from the most recent
+// assignment decision, the live decoder-running signal, and recent message
+// activity. It performs no I/O and does not read UATDev/ESDev, so it is
+// safe to call every second from updateStatus() regardless of what the
+// sdrWatcher goroutine is doing.
+// receivingFreshness is the window used to decide whether a band is
+// currently "receiving": a message must have arrived within this long of
+// now to count. Matches the 60-second window updateMessageStats() already
+// uses for the UAT/ES_messages_last_minute counters.
+const receivingFreshness = time.Minute
+
+func updateSDRRadioStatus() {
+	sdrAssignmentMu.RLock()
+	uat := sdrAssignment.UAT
+	es := sdrAssignment.ES
+	uatSince := uatAssignedAt
+	esSince := esAssignedAt
+	sdrAssignmentMu.RUnlock()
+
+	uatRunning := uatDecoderRunning.Load()
+	esRunning := esDecoderRunning.Load()
+	// Zero recent messages does not by itself indicate receiver failure -
+	// it may simply mean no nearby RF traffic - so it is surfaced as
+	// UAT_Receiving/ES_Receiving rather than folded into UAT_Degraded/
+	// ES_Degraded. A message logged before the currently-bound receiver
+	// was (re)assigned does not count, so a freshly (re)assigned receiver
+	// can't appear to be receiving on the strength of a predecessor's
+	// buffered traffic; see sdrassign.IsReceiving().
+	now := stratuxClock.Time
+	uatReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_UAT), uatSince, now, receivingFreshness)
+	esReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_ES), esSince, now, receivingFreshness)
+
+	// The band-status derivation itself (the truth table combining
+	// enabled/detected/assigned/ambiguous/conflict/decoder/receiving into
+	// Degraded and a diagnostic reason) lives in sdrassign.BuildBandStatus,
+	// not here, specifically so it can be unit tested: this main package
+	// requires cgo and a locally-built libdump978.so just to compile, so
+	// nothing here can be exercised with `go test`.
+	u := sdrassign.BuildBandStatus(uat, uatRunning, uatReceiving)
+	globalStatus.UAT_Enabled = u.Enabled
+	globalStatus.UAT_Detected = u.Detected
+	globalStatus.UAT_Assigned = u.Assigned
+	globalStatus.UAT_DeviceSerial = u.DeviceSerial
+	globalStatus.UAT_DeviceIndex = u.DeviceIndex
+	globalStatus.UAT_AssignmentSource = u.AssignmentSource
+	globalStatus.UAT_Ambiguous = u.Ambiguous
+	globalStatus.UAT_Conflict = u.Conflict
+	globalStatus.UAT_ExternallySatisfied = u.ExternallySatisfied
+	globalStatus.UAT_IdentityUnstable = u.IdentityUnstable
+	globalStatus.UAT_DecoderRunning = u.DecoderRunning
+	globalStatus.UAT_Receiving = u.Receiving
+	globalStatus.UAT_Degraded = u.Degraded
+	globalStatus.UAT_DiagnosticReason = u.Reason
+
+	e := sdrassign.BuildBandStatus(es, esRunning, esReceiving)
+	globalStatus.ES_Enabled = e.Enabled
+	globalStatus.ES_Detected = e.Detected
+	globalStatus.ES_Assigned = e.Assigned
+	globalStatus.ES_DeviceSerial = e.DeviceSerial
+	globalStatus.ES_DeviceIndex = e.DeviceIndex
+	globalStatus.ES_AssignmentSource = e.AssignmentSource
+	globalStatus.ES_Ambiguous = e.Ambiguous
+	globalStatus.ES_Conflict = e.Conflict
+	globalStatus.ES_ExternallySatisfied = e.ExternallySatisfied
+	globalStatus.ES_IdentityUnstable = e.IdentityUnstable
+	globalStatus.ES_DecoderRunning = e.DecoderRunning
+	globalStatus.ES_Receiving = e.Receiving
+	globalStatus.ES_Degraded = e.Degraded
+	globalStatus.ES_DiagnosticReason = e.Reason
 }

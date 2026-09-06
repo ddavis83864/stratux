@@ -1,5 +1,14 @@
 #!/bin/bash
 
+# STRATUX_OTA_INSTALL is set by the OTA install mechanism
+# (debian/stratux-pre-start.sh) when it runs dpkg -i itself - dpkg invokes
+# the previous version's prerm when reinstalling over an interrupted
+# ("unpacked"/"half-configured") install record, so this script is in
+# scope for the same reentrancy hazard as preinst/postinst. See docs/ota.md.
+if [ -n "${STRATUX_OTA_INSTALL:-}" ]; then
+	exit 0
+fi
+
 echo "Running pre-removal script for the stratux service"
 # Raspberry Pi's have the config.txt so this is one way to determine if its a raspberry pi
 arch=$(uname -m)

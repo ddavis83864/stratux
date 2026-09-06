@@ -13,6 +13,25 @@ Returns the current Stratux system status as JSON, including software version, c
 
 Example fields: `Version`, `GPS_connected`, `GPS_satellites_locked`, `UAT_messages_last_minute`, `ES_messages_last_minute`, `CPUTemp`, `Errors`
 
+Primary 978/1090 receiver status is exposed as `UAT_*` / `ES_*` fields (`Enabled`, `Detected`,
+`Assigned`, `DeviceSerial`, `DeviceIndex`, `AssignmentSource`, `Ambiguous`, `Conflict`,
+`ExternallySatisfied`, `IdentityUnstable`, `DecoderRunning`, `Receiving`, `Degraded`,
+`DiagnosticReason`) - see
+[hardware/sdr-and-bands.md](hardware/sdr-and-bands.md#verifying-assignment-in-the-status-page).
+A frontend that hasn't received these fields yet (older cached page, or a backend predating
+this API) should treat the band as unknown, not as disabled.
+
+#### `GET /getHealth`
+Returns a unified component-readiness report as JSON: one `ComponentState`
+(`READY`/`DEGRADED`/`NOT_READY`/`NOT_INSTALLED`/`UNKNOWN`) per monitored subsystem (978, 1090,
+GPS, GDL90, System, persistent Storage, temporary Overlay, trusted Time, AHRS, Barometer, and Fan
+controller), plus an overall rollup. Recomputed on its own 5-second interval, independent of
+`/getStatus`. This is purely additive — no existing `/getStatus` field changed. See
+[readiness-and-time-trust.md](readiness-and-time-trust.md) for the full model and the color rules
+the dashboard applies to each state, and
+[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md) for the AHRS/Barometer/Fan-controller field
+definitions specifically.
+
 #### `GET /getSituation`
 Returns the current GPS/AHRS situation: position, altitude, track, speed, vertical speed, and attitude (pitch/roll/slip-skid) if AHRS is connected.
 
@@ -100,13 +119,36 @@ Rebuilds the read-only filesystem partition. Use with caution — intended for r
 Triggers AHRS orientation detection.
 
 #### `POST /calibrateAHRS`
-Runs the AHRS calibration routine.
+Runs the AHRS calibration routine (Zero Drift - gyro zero bias). Returns `409` if no
+named calibration profile is active - see below.
 
 #### `POST /cageAHRS`
-Cages the AHRS to the current attitude (sets current orientation as level reference). The resulting quaternion is saved to `SensorQuaternion` in settings.
+Cages the AHRS to the current attitude (sets current orientation as level reference).
+The resulting quaternion is saved to `SensorQuaternion` in settings (Set Level). Returns
+`409` if no named calibration profile is active - see below.
 
 #### `POST /resetGMeter`
 Resets the G-meter min/max values.
+
+---
+
+### Aircraft Calibration Profiles
+
+Named, persistent AHRS calibration profiles - see
+[aircraft-calibration-profiles.md](aircraft-calibration-profiles.md) for the full
+schema, persistence design, and dashboard workflow. Every endpoint below is additive;
+none changes `/calibrateAHRS`/`/cageAHRS`'s underlying calibration algorithm.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getCalibrationProfiles` | GET | List every profile plus the active profile ID. |
+| `/getActiveCalibrationProfile` | GET | The active profile (`404` if none is set). |
+| `/getCalibrationProfileStatus` | GET | Active profile + subsystem availability, for a single-request dashboard summary. |
+| `/createCalibrationProfile` | POST | Body: `{name, registration, aircraftType, mountingNote}`. Creates an uncalibrated profile; does not activate it. |
+| `/updateCalibrationProfile?id=...` | POST | Metadata only - never touches calibration vectors. |
+| `/activateCalibrationProfile?id=...` | POST | Makes a profile active. `409` while a recording is active. |
+| `/deleteCalibrationProfile?id=...` | POST | `409` if `id` is the active profile. |
+| `/captureCalibrationProfile[?id=...]` | POST | Snapshots the currently live calibration into a profile (active, if `id` omitted). |
 
 ---
 
@@ -117,6 +159,64 @@ Upload a `.deb` OTA update package directly via HTTP POST (multipart form).
 
 #### `POST /updatePong`
 Upload firmware for the Pong ADS-B receiver.
+
+---
+
+### Diagnostics
+
+Generates and serves sanitized troubleshooting bundles - never enabled automatically, only on
+request. See `docs/readiness-and-time-trust.md` for what a bundle contains and excludes.
+
+#### `POST /generateDiagnostics`
+Builds and writes one new sanitized diagnostic bundle under `/var/lib/stratux-data/diagnostics`.
+Returns `{success, name, sizeBytes, generatedAt}` on success, or `{success:false, error}`. A
+retention-pruning failure after a successful write still reports `success:true` with
+`partial:true` and a `warning` - the bundle itself was written.
+
+#### `GET /getDiagnostics`
+Lists available bundles: `[{name, sizeBytes, generatedAt}, …]`, newest first.
+
+#### `GET /downloadDiagnostics?name=<bundle-name>`
+Downloads one bundle. `name` must exactly match an entry from `/getDiagnostics` - any other value
+(including path-traversal attempts) returns 404, never a filesystem error.
+
+---
+
+### Recording
+
+An on-demand, explicitly-controlled recording for troubleshooting/analysis. Automatic flight
+recording remains disabled regardless of this API's existence - nothing here runs unless
+requested. See `docs/readiness-and-time-trust.md` for the sample schema and known limitations
+(GPX/KML still return "not implemented") and `docs/ahrs-baro-fan-health.md` for the live
+AHRS/barometer sample fields and CSV columns.
+
+#### `POST /startRecording`
+Starts a new session (`/var/lib/stratux-data/recordings/<id>/`, `id` server-generated as
+`rec-<UTC timestamp>`). Returns `{success, status}`. `409 Conflict` if a session is already
+active. `503`/`507` if persistent storage is unavailable or below the minimum free-space
+threshold.
+
+#### `POST /stopRecording`
+Stops the active session, if any; a safe no-op if nothing is active. Returns `{success, status}`.
+
+#### `GET /getRecordingStatus`
+Current (or last) session status: `{id, state, startedAt, stoppedAt, sampleCount, lastError}`.
+`state` is one of `idle`, `active`, `error`.
+
+#### `GET /getRecordings`
+Lists sessions: `[{id, sizeBytes, fileCount, startedAt}, …]`, newest first.
+
+#### `POST /exportRecording?id=<session-id>&format=csv|gpx|kml`
+Exports a session to a persisted file under `/var/lib/stratux-data/exports`. `gpx`/`kml` honestly
+return `501 Not Implemented` (see `recording.ErrExportNotImplemented`). Returns
+`{success, name, sizeBytes, sampleCount}`.
+
+#### `GET /downloadRecording?id=<session-id>`
+Downloads a session's raw JSONL file(s) as a zip.
+
+#### `GET /downloadExport?name=<export-name>`
+Downloads a previously-created export. `name` must exactly match an entry produced by
+`/exportRecording` - same traversal-safety rule as `/downloadDiagnostics`.
 
 ---
 

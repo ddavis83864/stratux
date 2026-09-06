@@ -61,8 +61,8 @@ const (
 	defaultPwmDutyMin = 0
 
 	/* Maximum duty for PWM controller */
-	pwmDutyMax        = 100   // Must be kept at 100
-	defaultPwmFrequency   = 64000
+	pwmDutyMax          = 100 // Must be kept at 100
+	defaultPwmFrequency = 64000
 
 	// how often to update
 	updateDelayMS = 5000
@@ -70,7 +70,7 @@ const (
 	// start delay of the fan to start the fan to 80% to give the fan a kick to start spinning
 	PWMDuty80PStartDelay = 500
 
-	// GPIO-1/BCM "18"/Pin 12 on a Rev 2 and 3,4 Raspberry Pi   
+	// GPIO-1/BCM "18"/Pin 12 on a Rev 2 and 3,4 Raspberry Pi
 	defaultPin = 18
 
 	// name of the service
@@ -88,7 +88,7 @@ type FanControl struct {
 	TempTarget           float64
 	TempCurrent          float64
 	PWMDutyMin           uint32
-	PWMFrequency		 uint32
+	PWMFrequency         uint32
 	PWMDuty80PStartDelay uint32
 	PWMDutyCurrent       uint32
 	PWMPin               int
@@ -100,6 +100,41 @@ var configChan = make(chan bool, 1)
 
 var stdlog, errlog *log.Logger
 
+// controllerState/controllerErr are the daemon's own self-reported status,
+// written out to common.FanControllerStatusPath so the main stratuxrun
+// daemon can build readiness.FanHealth without an HTTP round trip. See
+// writeFanStatus. controllerState mirrors the branch fanControl()'s main
+// loop actually took ("STARTING" during the initial power-on fan test,
+// then "COMMANDING"/"IDLE" - see the pidValueOut branch below); it is only
+// ever written by the fanControl() goroutine, and only ever read by
+// updateStats() (also within this same process), both on the same 1Hz
+// ticker cadence, so no additional synchronization is introduced beyond
+// what already exists for myFanControl's other fields.
+var controllerState = "STARTING"
+var controllerErr string
+
+// writeFanStatus snapshots the daemon's current state to
+// common.FanControllerStatusPath. Called once per second from
+// updateStats() - a low-rate, RAM-backed (tmpfs) status snapshot, never
+// written to the SD card or persistent partition.
+func writeFanStatus() {
+	status := common.FanControllerStatus{
+		UpdatedAt:            time.Now().UTC(),
+		ControllerState:      controllerState,
+		Error:                controllerErr,
+		CPUTempC:             myFanControl.TempCurrent,
+		TempTargetC:          myFanControl.TempTarget,
+		PWMDutyMinPercent:    myFanControl.PWMDutyMin,
+		RequestedDutyPercent: myFanControl.PWMDutyCurrent,
+		PWMFrequencyHz:       myFanControl.PWMFrequency,
+		PWMPin:               myFanControl.PWMPin,
+		TachometerSupported:  false,
+	}
+	if err := common.WriteFanControllerStatus(common.FanControllerStatusPath, status); err != nil {
+		log.Printf("fancontrol: could not write status file: %s\n", err)
+	}
+}
+
 func updateStats() {
 	updateTicker := time.NewTicker(1 * time.Second)
 	for {
@@ -110,15 +145,14 @@ func updateStats() {
 		if myFanControl.PWMDutyCurrent > 0 {
 			totalFanOnTime.With(prometheus.Labels{"all": "all"}).Inc()
 		}
+		writeFanStatus()
 	}
 }
 
 // Map a incomming range to a outgoing range
-func fmap( x, in_min, in_max, out_min, out_max float64) float64 {
-	return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+func fmap(x, in_min, in_max, out_min, out_max float64) float64 {
+	return (x-in_min)*(out_max-out_min)/(in_max-in_min) + out_min
 }
-
-
 
 func fanControl() {
 	myFanControl.PWMDuty80PStartDelay = PWMDuty80PStartDelay
@@ -133,10 +167,13 @@ func fanControl() {
 		}
 	})
 
-	// Open Raspberry GPIO pins		
+	// Open Raspberry GPIO pins
 	err := rpio.Open()
 	if err != nil {
-			os.Exit(1)
+		controllerState = "ERROR"
+		controllerErr = "GPIO open failed: " + err.Error()
+		writeFanStatus()
+		os.Exit(1)
 	}
 	defer rpio.Close()
 
@@ -144,29 +181,28 @@ func fanControl() {
 	pin := rpio.Pin(myFanControl.PWMPin)
 	pin.Mode(rpio.Pwm)
 	setFanFrequency := func(frequency uint32) {
-		if (frequency < 250000) {
+		if frequency < 250000 {
 			frequency = 250000
-		} else if (frequency > 100000000) {
+		} else if frequency > 100000000 {
 			frequency = 100000000
 		}
 		pin.Freq(int(frequency))
 	}
 	setFanFrequency(myFanControl.PWMFrequency * 100)
 
- 
-	// func to Calculate the dutyCycle to the hardware value that 
+	// func to Calculate the dutyCycle to the hardware value that
 	// is approprate for the HW and minimum fan speed allowed
 	// Result is appropriate duty value for the fan
 	dutyCycleToFan := func(dutyCycle float64) float64 {
 		mappedMinimum := fmap(float64(myFanControl.PWMDutyMin), 0.0, 100.0, 0, float64(pwmDutyMax))
 		return fmap(dutyCycle, 0.0, 100.0, mappedMinimum, 100.0)
 	}
-	
+
 	// Setup HW to a specific duty cycle 0..100
 	setHWDutyCycle := func(value float64) {
-		if (value<0.0) {
+		if value < 0.0 {
 			value = 0.0
-		} else if (value>100.0) {
+		} else if value > 100.0 {
 			value = 100.0
 		}
 		myFanControl.PWMDutyCurrent = uint32(value)
@@ -174,7 +210,7 @@ func fanControl() {
 	}
 
 	// Fan test function
-	turnOnFanTest := func () {
+	turnOnFanTest := func() {
 		setHWDutyCycle(100.0)
 		time.Sleep(5 * time.Second) // to show user we are running
 		setHWDutyCycle(float64(myFanControl.PWMDutyMin))
@@ -185,7 +221,7 @@ func fanControl() {
 	// Turns on the fan at minimum duty for 10 seconds. User should see that the fan keeps running all the time
 	turnOnFanTest()
 
-	// Start Prometheus		
+	// Start Prometheus
 	prometheus.MustRegister(currentTemp)
 	prometheus.MustRegister(currentPWM)
 	prometheus.MustRegister(totalFanOnTime)
@@ -201,43 +237,42 @@ func fanControl() {
 	for {
 
 		// Update the PID controller.
-		pidValueOut := -pidControl.UpdateDuration(myFanControl.TempCurrent, updateDelayMS * time.Millisecond)
+		pidValueOut := -pidControl.UpdateDuration(myFanControl.TempCurrent, updateDelayMS*time.Millisecond)
 
 		// If fan is starting up eg from 0 to some value, start it up for myFanControl.PWMDuty80PStartDelay at 80%
-		if (lastPWMControlValue <=5.0 && pidValueOut>5.0 && !alwaysOn) {
-//			log.Println("Starting up fan for" ,myFanControl.PWMDuty80PStartDelay, "ms")
+		if lastPWMControlValue <= 5.0 && pidValueOut > 5.0 && !alwaysOn {
+			//			log.Println("Starting up fan for" ,myFanControl.PWMDuty80PStartDelay, "ms")
 			setHWDutyCycle(100.0)
 			time.Sleep(time.Duration(myFanControl.PWMDuty80PStartDelay) * time.Millisecond)
 		}
 
 		var fanRequiredDuty float64 = 0 // The duty cycle required by the fan
-		if (pidValueOut > 5.0 || lastPWMControlValue != 0.0) {
+		if pidValueOut > 5.0 || lastPWMControlValue != 0.0 {
 			lastPWMControlValue = pidValueOut
 			fanRequiredDuty = dutyCycleToFan(pidValueOut)
+			controllerState = "COMMANDING"
 		} else {
 			lastPWMControlValue = 0
-			if (alwaysOn) {
+			if alwaysOn {
 				fanRequiredDuty = dutyCycleToFan(1)
 			} else {
 				fanRequiredDuty = 0.0
 			}
+			controllerState = "IDLE"
 		}
 
 		setHWDutyCycle(fanRequiredDuty)
-//		log.Println("Temp:", myFanControl.TempCurrent, 
-//		            "Current PWM:", myFanControl.PWMDutyCurrent)
+		//		log.Println("Temp:", myFanControl.TempCurrent,
+		//		            "Current PWM:", myFanControl.PWMDutyCurrent)
 
 		select {
-			case <-updateControlDelay.C:
-				break;
-			case <-configChan:
-				setFanFrequency(myFanControl.PWMFrequency * 100)
-				pidControl.Set(myFanControl.TempTarget)
+		case <-updateControlDelay.C:
+			break
+		case <-configChan:
+			setFanFrequency(myFanControl.PWMFrequency * 100)
+			pidControl.Set(myFanControl.TempTarget)
 		}
 	}
-
-	// Default to "ON" when we bail out
-	pin.DutyCycle(pwmDutyMax, pwmDutyMax)
 }
 
 // Manage by daemon commands or run the daemon
@@ -275,15 +310,13 @@ func Run() (string, error) {
 		log.Println("Got signal:", killSignal)
 		if killSignal == syscall.SIGINT {
 			return "Daemon was interrupted by system signal", nil
-		} else if (killSignal == syscall.SIGUSR1) {
+		} else if killSignal == syscall.SIGUSR1 {
 			readSettings()
-			configChan<-true
+			configChan <- true
 		} else {
 			return "Daemon was killed", nil
 		}
 	}
-
-	return "", nil
 }
 
 func readSettings() {

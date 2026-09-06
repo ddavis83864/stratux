@@ -1,0 +1,35 @@
+<div class="section text-left help-page">
+    <p>The <strong>Readiness</strong> page is a single-glance summary of every monitored subsystem, aimed at the same
+    kind of overview a dedicated Sentry-class ADS-B receiver provides. It is <strong>not</strong> a flight-readiness
+    certification - Stratux remains supplemental, non-certified situational-awareness equipment.</p>
+
+    <p>Each tile shows one of five states:</p>
+    <ul class="list-simple">
+        <li><code style="color: #25C666">READY</code> (green) - affirmative evidence the component is working right now.</li>
+        <li><code style="color: #ff9900">DEGRADED</code> (amber) - partially working, or something needs attention.</li>
+        <li><code style="color: #d9534f">NOT_READY</code> (red) - a confirmed failure or unavailable component.</li>
+        <li><code>NOT_INSTALLED</code> (gray) - the hardware or feature is intentionally absent from this build, e.g.
+        the AHRS board before it is installed, or a receiver band you have disabled in Settings. This is not a
+        failure.</li>
+        <li><code>UNKNOWN</code> (gray) - health has not yet been determined, e.g. immediately after startup.</li>
+    </ul>
+
+    <p class="text-warning">A red or amber badge is never shown solely because no aircraft or FIS-B tower is
+    currently in range - that is expected and shows as READY with an explanatory note, not a fault.</p>
+
+    <ul class="list-simple">
+        <li><strong>978 UAT</strong> / <strong>1090 ES</strong> mirror the receiver status also shown on the Status
+        page, plus frame totals, current message rate, and (for 978) FIS-B tower count.</li>
+        <li><strong>GPS</strong> distinguishes a device that is present but has not resolved a fix yet (amber) from a
+        genuinely missing/unresponsive device (red).</li>
+        <li><strong>Time</strong> shows the trusted-time synchronization state. Stratux has no real-time clock, so it
+        must synchronize from GNSS (offline) or the network before recording can be trusted; "Recording permitted"
+        reflects that gate directly.</li>
+        <li><strong>Persistent Storage</strong> is the dedicated application-data partition (recordings, diagnostics,
+        exports) - not the 250 MiB protected temporary overlay, which is shown separately and is expected to run at
+        higher utilization by design.</li>
+        <li><strong>AHRS</strong>, <strong>Barometer</strong>, and <strong>Fan Controller</strong> read
+        <code>NOT_INSTALLED</code> until that physical hardware/integration exists; no attitude, pressure-altitude,
+        or g-load values are ever implied while gray.</li>
+    </ul>
+</div>
