@@ -1,0 +1,116 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Alerts</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Operational Alerting</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">{{Alerts.disclaimer}}</p>
+			<p class="small text-danger">
+				This is supplemental, non-certified situational awareness only - not TCAS/ACAS,
+				not collision avoidance, and never a substitute for visual scanning, ATC, or
+				ForeFlight. It issues no maneuver guidance. ForeFlight remains the primary EFB
+				presentation and receives the normal, unmodified GDL90 traffic stream regardless
+				of anything on this page.
+			</p>
+			<p class="small">
+				<a href="#/readiness">Readiness</a> &middot;
+				<a href="#/preflight">Preflight</a> &middot;
+				<a href="#/traffic">Traffic</a>
+			</p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Current Notices</span>
+			<span class="label label-default" ng-show="Alerts.muted">Muted</span>
+		</div>
+		<div class="panel-body">
+			<p class="small text-muted" ng-show="!Alerts.active.length">No active traffic or system notices.</p>
+			<div class="panel panel-default" ng-repeat="a in Alerts.active" ng-class="{'panel-warning': a.level === 'TRAFFIC_NOTICE', 'panel-danger': a.level === 'TRAFFIC_CAUTION' || a.level === 'SYSTEM_NOT_READY', 'panel-info': a.level === 'SYSTEM_CAUTION'}">
+				<div class="panel-body">
+					<strong>{{a.level}}</strong> <span class="small text-muted" ng-show="a.component">({{a.component}})</span>
+					<p>{{a.message}}</p>
+					<p class="small text-muted">
+						<span ng-show="a.clockDirectionValid">{{a.clockDirection}} &middot; </span>
+						<span ng-show="a.distanceValid">{{(a.distanceMeters/1852) | number:1}} NM &middot; </span>
+						<span ng-show="a.relativeAltitudeValid">{{a.relativeAltitudeFeet | number:0}} ft rel &middot; </span>
+						age {{a.lastUpdatedAgeSeconds | number:0}}s
+					</p>
+					<button class="btn btn-default btn-xs" ng-click="acknowledge(a.id)" ng-disabled="a.acknowledged">
+						{{a.acknowledged ? 'Acknowledged' : 'Acknowledge'}}
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Audio</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Browser audio requires you to explicitly enable it here, and only works while
+				this tab is open and in the foreground. It may not play if the browser is
+				backgrounded, the device is locked, or another app has exclusive audio - and it
+				cannot be guaranteed to reach an aviation headset. There is no Bluetooth audio
+				output from Stratux itself.
+			</p>
+			<p>
+				Audio state:
+				<span class="label" ng-class="{'label-success': AudioState === 'armed', 'label-warning': AudioState === 'suspended', 'label-default': AudioState === 'unavailable'}">{{AudioState}}</span>
+			</p>
+			<button class="btn btn-primary" ng-click="enableSound()" ng-disabled="AudioState === 'armed'">Enable Sound</button>
+			<button class="btn btn-default" ng-click="testSound()" ng-disabled="AudioState !== 'armed'">Test Sound</button>
+			<span class="small" ng-show="Message">{{Message}}</span>
+			<hr/>
+			<button class="btn btn-default" ng-click="mute()" ng-hide="Alerts.muted">
+				Mute for <input type="number" ng-model="MuteMinutes" min="0" max="720" style="width:4em"/> minutes (0 = indefinite)
+			</button>
+			<button class="btn btn-warning" ng-click="unmute()" ng-show="Alerts.muted">Unmute</button>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Settings">
+		<div class="panel-heading"><span class="panel_label">Settings</span></div>
+		<div class="panel-body">
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.masterEnabled"/> Alerting enabled</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.visualTrafficNoticesEnabled"/> Visual traffic notices</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.browserAudioEnabled"/> Browser audio enabled</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.systemVisualEnabled"/> System-health visual alerts</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.systemAudioEnabled"/> System-health audio</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.suppressGroundTraffic"/> Suppress ground-traffic caution</label></div>
+			<label>Audio volume: {{Settings.audioVolume}}</label>
+			<input type="range" min="0" max="1" step="0.05" ng-model="Settings.audioVolume"/>
+			<p class="small text-muted">
+				Thresholds (project-defined defaults for awareness, not a certified separation
+				standard - see docs/alerting.md):
+			</p>
+			<table class="table table-condensed">
+				<tr><th></th><th>Horizontal (NM)</th><th>Vertical (ft)</th></tr>
+				<tr><td>Monitoring</td><td><input type="number" ng-model="Settings.monitoringHorizontalNm" step="0.1"/></td><td><input type="number" ng-model="Settings.monitoringVerticalFeet"/></td></tr>
+				<tr><td>Notice</td><td><input type="number" ng-model="Settings.noticeHorizontalNm" step="0.1"/></td><td><input type="number" ng-model="Settings.noticeVerticalFeet"/></td></tr>
+				<tr><td>Caution</td><td><input type="number" ng-model="Settings.cautionHorizontalNm" step="0.1"/></td><td><input type="number" ng-model="Settings.cautionVerticalFeet"/></td></tr>
+				<tr><td>High caution</td><td><input type="number" ng-model="Settings.highCautionHorizontalNm" step="0.1"/></td><td><input type="number" ng-model="Settings.highCautionVerticalFeet"/></td></tr>
+			</table>
+			<button class="btn btn-primary" ng-click="saveSettings()">Save Settings</button>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Recent History</span></div>
+		<div class="panel-body">
+			<p class="small text-muted" ng-show="!Alerts.recentHistory.length">No recent alert activity.</p>
+			<table class="table table-condensed" ng-show="Alerts.recentHistory.length">
+				<tr><th>Level</th><th>Kind</th><th>Message</th><th>Age (s)</th></tr>
+				<tr ng-repeat="ev in Alerts.recentHistory.slice().reverse()">
+					<td>{{ev.level}}</td>
+					<td>{{ev.kind}}</td>
+					<td>{{ev.message}}</td>
+					<td>{{ev.lastUpdatedAgeSeconds | number:0}}</td>
+				</tr>
+			</table>
+		</div>
+	</div>
+</div>

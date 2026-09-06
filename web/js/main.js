@@ -42,6 +42,13 @@ var URL_RECORDING_DOWNLOAD   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadRec
 var URL_EXPORT_DOWNLOAD      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadExport";
 var URL_RECORDING_METADATA          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRecordingMetadata";
 var URL_RECORDING_METADATA_DOWNLOAD = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadRecordingMetadata";
+var URL_ALERTS_GET           = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getAlerts";
+var URL_ALERT_SETTINGS_GET   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getAlertSettings";
+var URL_ALERT_SETTINGS_SET   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setAlertSettings";
+var URL_ALERT_ACKNOWLEDGE    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/acknowledgeAlert";
+var URL_ALERTS_MUTE          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/muteAlerts";
+var URL_ALERTS_UNMUTE        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/unmuteAlerts";
+var URL_ALERTS_TEST_SOUND    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/testAlertSound";
 var URL_CALPROFILES_LIST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getCalibrationProfiles";
 var URL_CALPROFILES_ACTIVE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getActiveCalibrationProfile";
 var URL_CALPROFILES_CREATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/createCalibrationProfile";
@@ -89,6 +96,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/preflight',
 			templateUrl: 'plates/preflight.html',
 			controller: 'PreflightCtrl',
+			reloadOnSearch: false
+		})
+		.state('alerts', {
+			url: '/alerts',
+			templateUrl: 'plates/alerts.html',
+			controller: 'AlertsCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
@@ -154,7 +167,7 @@ app.run(function ($transform) {
 });
 
 // For this app we have a MainController for whatever and individual controllers for each page
-app.controller('MainCtrl', function ($scope, $http) {
+app.controller('MainCtrl', function ($scope, $http, $interval, alertAudioService) {
 	// any logic global logic
     $http.get(URL_SETTINGS_GET)
     .then(function(response) {
@@ -182,8 +195,119 @@ app.controller('MainCtrl', function ($scope, $http) {
             }
         }
     };
+
+    // --- Global alert indicator -------------------------------------
+    // A small, always-visible (every page, via the persistent navbar in
+    // index.html) summary of the worst currently-active alert level and
+    // mute state - see docs/alerting.md. Also the one place audio is
+    // triggered for events discovered outside the dedicated Alerts page,
+    // so a tone still plays even while the operator is looking at
+    // Traffic/Readiness/etc. Polling here is independent of, and in
+    // addition to, AlertsCtrl's own faster poll while that page is open.
+    $scope.AlertIndicator = { level: 'none', muted: false };
+    var alertIndicatorRank = { 'none': 0, 'TRAFFIC_NOTICE': 1, 'TRAFFIC_CAUTION': 2, 'SYSTEM_CAUTION': 3, 'SYSTEM_NOT_READY': 4 };
+    var lastGlobalAlertSeq = 0;
+    var globalAlertPollBusy = false;
+    var globalAlertVolume = 0.5;
+    $http.get(URL_ALERT_SETTINGS_GET).then(function (response) {
+        if (response.data && typeof response.data.audioVolume === 'number') {
+            globalAlertVolume = response.data.audioVolume;
+        }
+    });
+    function pollGlobalAlertIndicator() {
+        if (globalAlertPollBusy) return;
+        globalAlertPollBusy = true;
+        $http.get(URL_ALERTS_GET).then(function (response) {
+            globalAlertPollBusy = false;
+            var snap = response.data;
+            $scope.AlertIndicator.muted = !!snap.muted;
+            var worst = 'none';
+            (snap.active || []).forEach(function (a) {
+                if ((alertIndicatorRank[a.level] || 0) > (alertIndicatorRank[worst] || 0)) worst = a.level;
+            });
+            $scope.AlertIndicator.level = worst;
+            (snap.recentHistory || []).forEach(function (ev) {
+                if (ev.seq > lastGlobalAlertSeq) {
+                    lastGlobalAlertSeq = ev.seq;
+                    if (ev.audioEligible) alertAudioService.playPattern(ev.level, globalAlertVolume);
+                }
+            });
+        }, function () {
+            globalAlertPollBusy = false;
+        });
+    }
+    pollGlobalAlertIndicator();
+    var alertIndicatorInterval = $interval(pollGlobalAlertIndicator, 5000);
+    $scope.$on('$destroy', function () {
+        $interval.cancel(alertIndicatorInterval);
+    });
 })
-.service('craftService',function(){ 
+.service('alertAudioService', function () {
+	// Short, conservative tones for the three audible alert levels -
+	// never continuous, never started without an explicit user gesture
+	// (arm() is only ever called from a direct "Enable Sound" button
+	// click - see web/plates/js/alerts.js). See docs/alerting.md's
+	// browser-audio section for the iOS/backgrounding limitations this
+	// deliberately does not try to work around.
+	var ctx = null;
+	var armed = false;
+
+	function ensureContext() {
+		if (!ctx) {
+			var AudioCtor = window.AudioContext || window.webkitAudioContext;
+			if (!AudioCtor) return null;
+			ctx = new AudioCtor();
+		}
+		return ctx;
+	}
+
+	this.arm = function () {
+		var c = ensureContext();
+		if (!c) return false;
+		if (c.state === 'suspended' && c.resume) c.resume();
+		armed = true;
+		return true;
+	};
+
+	this.disarm = function () { armed = false; };
+	this.isArmed = function () { return armed && ctx !== null; };
+	this.contextState = function () { return ctx ? ctx.state : 'unavailable'; };
+
+	var patterns = {
+		'TRAFFIC_NOTICE':   { freq: 880,  beeps: 1, dur: 0.12 },
+		'TRAFFIC_CAUTION':  { freq: 1046, beeps: 2, dur: 0.10 },
+		'SYSTEM_CAUTION':   { freq: 660,  beeps: 3, dur: 0.15 },
+		'SYSTEM_NOT_READY': { freq: 523,  beeps: 3, dur: 0.20 }
+	};
+
+	// playPattern is a no-op (returns false) unless arm() has already
+	// succeeded - mute is enforced by the caller never invoking this for
+	// a muted/audio-ineligible event (see Alert.audioEligible), not by
+	// this service re-checking mute state itself.
+	this.playPattern = function (level, volume) {
+		var c = ensureContext();
+		if (!c || !armed) return false;
+		var vol = (typeof volume === 'number') ? Math.max(0, Math.min(1, volume)) : 0.5;
+		var p = patterns[level] || patterns['TRAFFIC_NOTICE'];
+		var t = c.currentTime;
+		for (var i = 0; i < p.beeps; i++) {
+			var osc = c.createOscillator();
+			var gain = c.createGain();
+			osc.frequency.value = p.freq;
+			osc.type = 'sine';
+			gain.gain.setValueAtTime(0, t);
+			gain.gain.linearRampToValueAtTime(vol * 0.3, t + 0.01);
+			gain.gain.linearRampToValueAtTime(0, t + p.dur);
+			osc.connect(gain);
+			gain.connect(c.destination);
+			osc.start(t);
+			osc.stop(t + p.dur + 0.02);
+			t += p.dur + 0.08;
+		}
+		return true;
+	};
+})
+.service('craftService',function(){
 	let trafficSourceColors = {
 		1: 'cornflowerblue', // ES
 		2: '#FF8C00',      // UAT

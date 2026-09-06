@@ -71,6 +71,7 @@
 	<script src="plates/js/status.js"></script>
 	<script src="plates/js/readiness.js"></script>
 	<script src="plates/js/preflight.js"></script>
+	<script src="plates/js/alerts.js"></script>
 	<script src="plates/js/towers.js"></script>
 	<script src="plates/js/traffic.js"></script>
 	<script src="plates/js/weather.js"></script>
@@ -94,6 +95,7 @@
 					<a class="list-group-item" href="#/"><i class="fa fa-home"></i>            Status   <i class="fa fa-chevron-right pull-right"></i></a>
 					<a class="list-group-item" href="#/preflight"><i class="fa fa-plane"></i>          Preflight <i class="fa fa-chevron-right pull-right"></i></a>
 					<a class="list-group-item" href="#/readiness"><i class="fa fa-check-circle"></i> Readiness <i class="fa fa-chevron-right pull-right"></i></a>
+					<a class="list-group-item" href="#/alerts"><i class="fa fa-bell"></i>          Alerts <i class="fa fa-chevron-right pull-right"></i></a>
 					<div ng-show="UAT_Enabled || Ping_Enabled || Pong_Enabled">
 						<a class="list-group-item" href="#/weather"><i class="fa fa-cloud"></i>    Weather  <i class="fa fa-chevron-right pull-right"></i></a>
 					</div>
@@ -143,6 +145,15 @@
 					<i class="fa fa-bars"></i> Menu
 				</div>
 			</div>
+			<!-- Global alert indicator - persistent across every page (see
+			     web/js/main.js's MainCtrl); never overrides navbarAction so
+			     it can never be hidden by a page-specific button. -->
+			<a href="#/alerts" class="btn-group pull-left" style="margin-left:4px">
+				<div class="btn" ng-class="{'text-warning': AlertIndicator.level === 'TRAFFIC_NOTICE', 'text-danger': AlertIndicator.level === 'TRAFFIC_CAUTION' || AlertIndicator.level === 'SYSTEM_NOT_READY', 'text-info': AlertIndicator.level === 'SYSTEM_CAUTION'}">
+					<i class="fa" ng-class="{'fa-bell-slash': AlertIndicator.muted, 'fa-bell': !AlertIndicator.muted}"></i>
+					<span ng-show="AlertIndicator.level !== 'none'">&nbsp;{{AlertIndicator.level}}</span>
+				</div>
+			</a>
 			<div class="btn-group pull-right" ui-yield-to="navbarAction">
 				<div ui-toggle="uiSidebarRight" class="btn">
 					<i class="fa fa-info-circle"></i> Help
