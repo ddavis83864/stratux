@@ -1,0 +1,109 @@
+<div class="col-sm-12">
+	<div class="panel panel-default">
+		<div class="panel-heading">
+			<span class="panel_label">Preflight</span>
+			<span class="label" ng-class="OverallClass">{{Preflight.overall}}</span>
+			<span ng-show="ConnectState == 'Disconnected'" class="label label-danger">Disconnected</span>
+			<span ng-show="ConnectState == 'Connecting'" class="label label-default">Connecting&hellip;</span>
+		</div>
+		<div class="panel-body">
+			<!-- 1. Overall preflight state + disclaimer - always visible, no scrolling required. -->
+			<p class="small text-muted">{{Preflight.disclaimer}}</p>
+			<h4 style="margin-top:0">{{Preflight.summary}}</h4>
+
+			<!-- 2. Required actions first. -->
+			<div ng-show="Preflight.overall == 'NOT_READY'">
+				<p class="text-danger"><strong>Required before flight:</strong></p>
+				<ul>
+					<li ng-repeat="c in Preflight.automated" ng-if="c.blocking && c.state != 'READY'">
+						<strong>{{c.label}}:</strong> {{c.reason}}
+					</li>
+				</ul>
+			</div>
+
+			<div class="separator"></div>
+
+			<!-- 3. Aircraft profile / AHRS. -->
+			<div class="row label_adj">
+				<strong class="col-xs-6">Aircraft profile</strong>
+				<span class="col-xs-6">
+					<span class="label" ng-class="Preflight.profile.available && Preflight.profile.calibrationValid ? 'label-success' : 'label-warning'">
+						{{Preflight.profile.available ? (Preflight.profile.calibrationValid ? 'CALIBRATED' : 'INCOMPLETE') : 'UNAVAILABLE'}}
+					</span>
+				</span>
+				<span class="col-xs-12 small text-muted" ng-show="Preflight.profile.available">{{Preflight.profile.name}}</span>
+			</div>
+
+			<!-- 4. GPS / time. -->
+			<div class="row label_adj" ng-repeat="c in checksFor('GPS').concat(checksFor('Time'))">
+				<strong class="col-xs-6">{{c.label}}</strong>
+				<span class="col-xs-6"><span class="label" ng-class="stateClass(c.state)">{{c.state}}</span></span>
+				<span class="col-xs-12 small text-muted">{{c.reason}}</span>
+			</div>
+
+			<!-- 5. ADS-B receivers. -->
+			<div class="row label_adj" ng-repeat="c in checksFor('UAT978').concat(checksFor('ES1090'))">
+				<strong class="col-xs-6">{{c.label}}</strong>
+				<span class="col-xs-6"><span class="label" ng-class="stateClass(c.state)">{{c.state}}</span></span>
+				<span class="col-xs-12 small text-muted">{{c.reason}}</span>
+			</div>
+
+			<!-- 6. GDL90 / EFB connection. -->
+			<div class="row label_adj" ng-repeat="c in checksFor('GDL90')" ng-if="c.state != 'NOT_APPLICABLE'">
+				<strong class="col-xs-6">{{c.label}}</strong>
+				<span class="col-xs-6"><span class="label" ng-class="stateClass(c.state)">{{c.state}}</span></span>
+				<span class="col-xs-12 small text-muted">{{c.reason}}</span>
+			</div>
+
+			<!-- 7. Power / system / storage. -->
+			<div class="row label_adj" ng-repeat="c in checksFor('System').concat(checksFor('Storage')).concat(checksFor('Overlay'))">
+				<strong class="col-xs-6">{{c.label}}</strong>
+				<span class="col-xs-6"><span class="label" ng-class="stateClass(c.state)">{{c.state}}</span></span>
+				<span class="col-xs-12 small text-muted">{{c.reason}}</span>
+			</div>
+
+			<div class="separator"></div>
+
+			<!-- 8. Manual checks. -->
+			<p class="small"><strong>Manual checks</strong> - confirm each before flight; these expire after {{ackExpiryHours}} hours or the next reboot, whichever comes first.</p>
+			<table class="table table-condensed">
+				<tr ng-repeat="c in Preflight.manual">
+					<td>
+						{{c.label}}
+						<br><span class="small text-muted">{{c.reason}}</span>
+					</td>
+					<td style="white-space:nowrap">
+						<span class="label" ng-class="c.state == 'READY' ? 'label-success' : 'label-default'">
+							{{c.state == 'READY' ? 'CONFIRMED' : 'VERIFY'}}
+						</span>
+					</td>
+					<td>
+						<a class="btn btn-hidden" ng-click="acknowledge(c.checkId)"
+						   ng-hide="c.state == 'READY'" ng-disabled="Manual.busy">Confirm</a>
+						<a class="btn btn-hidden" ng-click="clearCheck(c.checkId)"
+						   ng-show="c.state == 'READY'" ng-disabled="Manual.busy">Undo</a>
+					</td>
+				</tr>
+			</table>
+			<p class="small text-danger" ng-show="Manual.error">{{Manual.error}}</p>
+			<a class="btn btn-hidden" ng-click="resetChecklist()" ng-disabled="Manual.busy">Reset checklist</a>
+
+			<div class="separator"></div>
+
+			<!-- 9. Link to the existing detailed Readiness page. -->
+			<p class="small"><a href="#/readiness">View detailed component health &raquo;</a></p>
+
+			<!-- Expandable technical detail, collapsed by default - keeps the primary view uncluttered. -->
+			<a class="btn btn-hidden" ng-click="ShowDetails = !ShowDetails">{{ShowDetails ? 'Hide' : 'Show'}} all checks</a>
+			<div ng-show="ShowDetails">
+				<table class="table table-condensed">
+					<tr ng-repeat="c in Preflight.automated">
+						<td>{{c.component}}: {{c.label}}</td>
+						<td><span class="label" ng-class="stateClass(c.state)">{{c.state}}</span></td>
+						<td class="small text-muted">{{c.reason}}</td>
+					</tr>
+				</table>
+			</div>
+		</div>
+	</div>
+</div>
