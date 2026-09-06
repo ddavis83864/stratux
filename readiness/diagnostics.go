@@ -88,6 +88,16 @@ type DiagnosticBundle struct {
 	// same HealthReport already carries), so no separate sanitization
 	// pass is needed here either.
 	PreflightReport interface{} `json:"PreflightReport,omitempty"`
+
+	// RecordingMetadataSummary is a bounded count-only summary of every
+	// recording's session-metadata status (see
+	// recording.MetadataDiagnosticsSummary) at generation time, opaque to
+	// this package for exactly the same import-direction reason as
+	// PreflightReport above - readiness never imports recording either.
+	// Deliberately never the full contents of any individual recording's
+	// metadata, only counts plus the most-recent recording's identity, so
+	// this is safe regardless of how many recordings exist.
+	RecordingMetadataSummary interface{} `json:"RecordingMetadataSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -115,7 +125,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -130,6 +140,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		CalibrationProfiles:        profiles,
 		ActiveCalibrationProfileID: activeProfileID,
 		PreflightReport:            preflightReport,
+		RecordingMetadataSummary:   recordingMetadataSummary,
 	}
 }
 
