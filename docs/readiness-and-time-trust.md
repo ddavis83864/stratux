@@ -5,7 +5,8 @@ time synchronization, and certified persistent storage, plus the diagnostic-bund
 flight-recording groundwork built on top of them. It is supplemental to, and does not replace,
 the existing `/getStatus` status model — see [architecture.md](architecture.md) for how the two
 relate. See [preflight-readiness.md](preflight-readiness.md) for the simplified preflight
-checklist built on top of this health model.
+checklist built on top of this health model, and [recording.md](recording.md) for the
+on-demand recording subsystem and its durable, session-level Preflight metadata.
 
 > Stratux remains supplemental, non-certified situational-awareness equipment. Nothing in this
 > document changes that; "readiness" here means "this component is working," not flight

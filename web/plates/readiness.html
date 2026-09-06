@@ -220,14 +220,63 @@
 			<p class="small text-danger" ng-show="Recording.status.state === 'error'">
 				{{Recording.status.lastError}}
 			</p>
-			<table class="table table-condensed" ng-show="Recording.sessions.length">
-				<tr ng-repeat="s in Recording.sessions">
-					<td>{{s.id}}</td>
+			<div class="table-responsive" ng-show="Recording.sessions.length">
+			<table class="table table-condensed">
+				<tr ng-repeat-start="s in Recording.sessions">
+					<td>
+						{{s.id}}<br/>
+						<small class="text-muted" ng-if="s.metadataAvailable">
+							{{s.preflightStateAtStart}} at start &middot; {{s.profileNameAtStart || 'no profile'}}
+							&middot; {{s.complete ? 'complete' : 'incomplete/interrupted'}}
+						</small>
+						<small class="text-muted" ng-if="s.metadataCorrupt">metadata unreadable (corrupt)</small>
+						<small class="text-muted" ng-if="!s.metadataAvailable && !s.metadataCorrupt">legacy recording - no metadata</small>
+					</td>
 					<td>{{(s.sizeBytes/1024) | number:0}} KB</td>
 					<td><a ng-click="exportRecording(s.id)" class="btn btn-hidden">Export CSV</a></td>
 					<td><a ng-click="downloadRecording(s.id)" class="btn btn-hidden">Download</a></td>
+					<td><a ng-click="toggleRecordingMetadata(s.id)" class="btn btn-hidden">{{RecordingMetadataOpen[s.id] ? 'Hide' : 'Details'}}</a></td>
+				</tr>
+				<tr ng-repeat-end ng-if="RecordingMetadataOpen[s.id]">
+					<td colspan="5">
+						<div class="small" ng-if="RecordingMetadataById[s.id].available">
+							<p class="text-muted">
+								Snapshot captured at recording start - not the current live Preflight
+								state. Later changes to Preflight checks or the active profile never
+								alter this recording's own record.
+							</p>
+							<dl class="dl-horizontal">
+								<dt>Overall (at start)</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.preflightOverallState}}</dd>
+								<dt>Required actions</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.preflightRequiredActionCount}}</dd>
+								<dt>Cautions</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.preflightCautionCount}}</dd>
+								<dt>Trusted time</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.trustedTimeAvailable ? 'yes' : 'no'}}</dd>
+								<dt>GPS fix</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.gpsFixAvailable ? 'yes' : 'no'}}</dd>
+								<dt>Aircraft profile</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.calibrationProfileName || 'unavailable'}}</dd>
+								<dt>Stratux build</dt><dd>{{RecordingMetadataById[s.id].metadata.snapshot.stratuxVersion}} ({{RecordingMetadataById[s.id].metadata.snapshot.stratuxCommit}})</dd>
+								<dt>Finalization</dt><dd>{{RecordingMetadataById[s.id].metadata.finalization.complete ? 'complete' : 'incomplete/interrupted'}}</dd>
+							</dl>
+							<ul class="list-unstyled">
+								<li ng-repeat="c in RecordingMetadataById[s.id].metadata.snapshot.preflightAutomated">
+									{{c.checkId}}: {{c.state}} - {{c.reason}}
+								</li>
+							</ul>
+							<a ng-click="downloadRecordingMetadata(s.id)" class="btn btn-hidden">Download Metadata</a>
+						</div>
+						<p class="small text-muted" ng-if="RecordingMetadataById[s.id].legacy">
+							No metadata was captured for this recording (created before this feature, or
+							its initial capture failed) - samples are still fully downloadable/exportable.
+						</p>
+						<p class="small text-danger" ng-if="RecordingMetadataById[s.id].corrupt">
+							This recording's metadata file could not be read (corrupt or truncated).
+							Samples are still fully downloadable/exportable.
+						</p>
+						<p class="small text-danger" ng-if="RecordingMetadataById[s.id].error">
+							Could not retrieve metadata (request failed).
+						</p>
+					</td>
 				</tr>
 			</table>
+			</div>
 		</div>
 	</div>
 </div>

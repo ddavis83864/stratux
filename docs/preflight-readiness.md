@@ -288,6 +288,12 @@ check was complete - at `/startRecording`, mirroring the existing
 `populateSessionCalibrationProfile`. This is deliberately a summary, not the full
 report, and is never repeated into every one-hertz sample.
 
+That in-memory summary is a live-status convenience; the full point-in-time
+snapshot (every automated/manual check result, not just counts) is additionally
+persisted once per recording as a durable, versioned sidecar record - see
+[recording.md](recording.md) for the complete design, retrieval API, and
+dashboard behavior.
+
 ## Diagnostics integration
 
 `readiness.DiagnosticBundle` gains an opaque `PreflightReport` field

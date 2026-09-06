@@ -199,6 +199,34 @@ function ReadinessCtrl($rootScope, $scope, $state, $http, $interval) {
 		window.open(URL_RECORDING_DOWNLOAD + '?id=' + encodeURIComponent(id), '_blank');
 	};
 
+	// --- Recording metadata (session-level Preflight snapshot) ----------
+	// $scope.RecordingMetadataOpen tracks which session ids currently have
+	// their "Details" panel expanded; $scope.RecordingMetadataById caches
+	// the fetched metadata per id so re-toggling doesn't re-fetch. Both
+	// are plain objects keyed by recording id, not arrays, since ids are
+	// opaque strings, not indices.
+	$scope.RecordingMetadataOpen = {};
+	$scope.RecordingMetadataById = {};
+
+	// toggleRecordingMetadata expands/collapses one recording's details
+	// panel, fetching its full metadata on first expand only. A fetch
+	// failure (network error, or a legacy/corrupt recording the summary
+	// row didn't already flag) is shown inline and must never disturb the
+	// Download/Export CSV controls on the same row.
+	$scope.toggleRecordingMetadata = function (id) {
+		$scope.RecordingMetadataOpen[id] = !$scope.RecordingMetadataOpen[id];
+		if (!$scope.RecordingMetadataOpen[id] || $scope.RecordingMetadataById[id]) return;
+		$http.get(URL_RECORDING_METADATA + '?id=' + encodeURIComponent(id)).then(function (response) {
+			$scope.RecordingMetadataById[id] = response.data;
+		}, function () {
+			$scope.RecordingMetadataById[id] = { available: false, error: true };
+		});
+	};
+
+	$scope.downloadRecordingMetadata = function (id) {
+		window.open(URL_RECORDING_METADATA_DOWNLOAD + '?id=' + encodeURIComponent(id), '_blank');
+	};
+
 	// The Time component uses its own five-value TimeState enum
 	// (UNSYNCHRONIZED/NETWORK_SYNCED/GNSS_SYNCED/DEGRADED/INVALID), not
 	// ComponentState directly - map it onto the same color rule.

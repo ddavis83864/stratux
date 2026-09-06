@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/stratux/stratux/readiness"
+	"github.com/stratux/stratux/recording"
 )
 
 const (
@@ -192,7 +193,8 @@ func handleGenerateDiagnosticsRequest(w http.ResponseWriter, r *http.Request) {
 		activeProfileID, _ = profilesStore.ActiveID()
 	}
 
-	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID, buildPreflightReport())
+	recordingMetadataSummary := recording.SummarizeMetadata(listRecordingRefs())
+	bundle := readiness.BuildDiagnosticBundle(now, stratuxVersion, stratuxBuild, health, rawSettings, logLines, profileSummaries, activeProfileID, buildPreflightReport(), recordingMetadataSummary)
 	path, err := readiness.WriteDiagnosticBundle(diagnosticsDir, bundle, diagnosticsMaxRetain)
 	if err != nil && path == "" {
 		log.Printf("diagnostics: generation failed: %s\n", err)
