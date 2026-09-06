@@ -213,6 +213,15 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Computed before acquiring recMu below, not after: buildPreflightReport()
+	// transitively locks recMu itself (see main/preflightapi.go's
+	// recordingReadinessForPreflight), and sync.Mutex is not reentrant -
+	// calling it from inside this function's own locked section
+	// self-deadlocked the entire recording subsystem (confirmed live
+	// during hardware validation: /startRecording never returned, and
+	// every subsequent recording endpoint hung waiting on recMu forever).
+	preflightSnapshot := buildPreflightReport()
+
 	recMu.Lock()
 	defer recMu.Unlock()
 
@@ -263,7 +272,7 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		doneCh:    make(chan struct{}),
 	}
 	populateSessionCalibrationProfile(session)
-	populateSessionPreflightSummary(session)
+	applyPreflightSummaryToSession(session, preflightSnapshot)
 	recCurrent = session
 	go recordingSamplerLoop(session)
 

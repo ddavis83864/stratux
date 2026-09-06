@@ -131,12 +131,25 @@ func profileSummaryForPreflight() preflight.ProfileSummary {
 // storage/time-trust logic itself (that already lives in
 // readiness.StorageHealth/TimeHealth, read via globalHealth below).
 func recordingReadinessForPreflight(storageAllowed, timeAllowed bool) preflight.RecordingReadiness {
-	recMu.Lock()
+	// TryLock, never Lock: this function is reachable from
+	// buildPreflightReport(), which handleStartRecordingRequest calls via
+	// populateSessionPreflightSummary/applyPreflightSummaryToSession -
+	// normally *before* acquiring recMu (see those functions' doc
+	// comments), but sync.Mutex is not reentrant, so if anything ever
+	// calls buildPreflightReport() while already holding recMu, blocking
+	// here would deadlock that goroutine against itself rather than
+	// against another goroutine. TryLock turns that into a graceful
+	// "state temporarily unknown" instead of a daemon-wide hang - this
+	// exact deadlock was caught live during hardware validation.
 	state := "idle"
-	if recCurrent != nil {
-		state = string(recCurrent.State)
+	if recMu.TryLock() {
+		if recCurrent != nil {
+			state = string(recCurrent.State)
+		}
+		recMu.Unlock()
+	} else {
+		state = "unknown"
 	}
-	recMu.Unlock()
 	return preflight.RecordingReadiness{
 		StorageAvailable: storageAllowed,
 		Permitted:        storageAllowed && timeAllowed,
@@ -211,8 +224,23 @@ func buildPreflightReport() (report preflight.Report) {
 // main/recordingapi.go's populateSessionCalibrationProfile. Deliberately
 // summary-only (not the full Report) - see recordingSession's
 // Preflight* fields for exactly what is captured and why.
+//
+// Must never be called while the caller already holds recMu:
+// buildPreflightReport() -> recordingReadinessForPreflight() locks recMu
+// itself, and sync.Mutex is not reentrant - main/recordingapi.go's
+// handleStartRecordingRequest computes the report via buildPreflightReport()
+// before acquiring recMu, then applies it with applyPreflightSummaryToSession
+// below, specifically to avoid this. Callers with no lock already held
+// (e.g. tests) may still use this convenience wrapper directly.
 func populateSessionPreflightSummary(session *recordingSession) {
-	r := buildPreflightReport()
+	applyPreflightSummaryToSession(session, buildPreflightReport())
+}
+
+// applyPreflightSummaryToSession copies the session-relevant fields out of
+// an already-built preflight.Report - a pure, lock-free operation, safe to
+// call from within a recMu-locked section (see populateSessionPreflightSummary's
+// doc comment for why that distinction matters).
+func applyPreflightSummaryToSession(session *recordingSession, r preflight.Report) {
 	session.PreflightOverallState = string(r.Overall)
 	session.PreflightRequiredActionCount = r.RequiredActionCount
 	session.PreflightCautionCount = r.CautionCount

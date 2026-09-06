@@ -358,6 +358,49 @@ func TestDiagnosticBundle_IncludesSanitizedPreflightReport(t *testing.T) {
 	}
 }
 
+// TestBuildPreflightReport_DoesNotDeadlockWhileRecMuHeld reproduces a real
+// deadlock caught live during hardware validation:
+// handleStartRecordingRequest used to call populateSessionPreflightSummary
+// (-> buildPreflightReport -> recordingReadinessForPreflight) while still
+// holding recMu - and recordingReadinessForPreflight locked recMu itself,
+// which never returns on a plain sync.Mutex.Lock() because Go mutexes are
+// not reentrant. main/recordingapi.go now computes the preflight snapshot
+// before acquiring recMu (see applyPreflightSummaryToSession), and
+// recordingReadinessForPreflight uses TryLock as defense in depth - this
+// test exercises that defense directly, simulating "called while recMu is
+// already held by this goroutine," and requires the call to return
+// promptly rather than hang.
+func TestBuildPreflightReport_DoesNotDeadlockWhileRecMuHeld(t *testing.T) {
+	ensureSituationLocks()
+	ensureADSBTowerMutexForTest()
+	ensureStratuxClockForTest()
+	withTestProfilesStore(t)
+	withTestPreflightStore(t)
+
+	recMu.Lock()
+	defer recMu.Unlock()
+
+	done := make(chan preflight.Report, 1)
+	go func() { done <- buildPreflightReport() }()
+	select {
+	case r := <-done:
+		found := false
+		for _, c := range r.Automated {
+			if c.CheckID == "recording_state" {
+				found = true
+				if c.Reason != "state: unknown" {
+					t.Errorf("recording_state Reason = %q while recMu was held by another goroutine, want \"state: unknown\"", c.Reason)
+				}
+			}
+		}
+		if !found {
+			t.Error("recording_state check not found")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("buildPreflightReport() did not return within 3s while recMu was held by another goroutine - this is the exact deadlock caught during hardware validation")
+	}
+}
+
 func TestPreflightAPI_ThreadSafety(t *testing.T) {
 	ensureStratuxClockForTest()
 	withTestPreflightStore(t)
