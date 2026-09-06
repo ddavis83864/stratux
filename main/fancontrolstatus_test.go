@@ -22,6 +22,9 @@ func ensureSituationLocks() {
 	if mySituation.muBaro == nil {
 		mySituation.muBaro = &sync.Mutex{}
 	}
+	if mySituation.muGPS == nil {
+		mySituation.muGPS = &sync.Mutex{}
+	}
 }
 
 func TestBuildAHRSHealth_WiresLiveSituationState(t *testing.T) {
