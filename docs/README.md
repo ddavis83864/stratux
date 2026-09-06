@@ -22,6 +22,8 @@ hardware integration). User-facing how-tos live in the
 - **[preflight-readiness.md](preflight-readiness.md)** — the simplified, supplemental preflight
   checklist built on top of the readiness health model: state definitions, the blocking-vs-
   caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
+- **[recording.md](recording.md)** — the on-demand recording subsystem and the durable,
+  versioned session-level Preflight metadata captured once at recording start.
 
 ## Interfaces (for EFB / app / tool developers)
 

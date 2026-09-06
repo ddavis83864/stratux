@@ -220,7 +220,25 @@ Current (or last) session status: `{id, state, startedAt, stoppedAt, sampleCount
 `state` is one of `idle`, `active`, `error`.
 
 #### `GET /getRecordings`
-Lists sessions: `[{id, sizeBytes, fileCount, startedAt}, …]`, newest first.
+Lists sessions: `[{id, sizeBytes, fileCount, startedAt, metadataAvailable,
+metadataCorrupt, metadataSchemaVersion, preflightStateAtStart, profileNameAtStart,
+complete}, …]`, newest first. The `metadata*`/`preflightStateAtStart`/
+`profileNameAtStart`/`complete` fields are additive - a client that ignores unknown
+fields keeps working. See [recording.md](recording.md) for what they mean.
+
+#### `GET /getRecordingMetadata?id=<session-id>`
+The durable, versioned, point-in-time Preflight/calibration snapshot captured once
+when the session started, plus its finalization state - see
+[recording.md](recording.md) for the full schema. `{available: true, metadata: {...}}`
+for a recording that has one; `{available: false, legacy: true}` for a recording
+created before this feature (or whose initial capture failed); `{available: false,
+corrupt: true, error}` if the sidecar file exists but could not be parsed. `404` for
+an unknown id, `400` for a malformed one.
+
+#### `GET /downloadRecordingMetadata?id=<session-id>`
+Downloads the same metadata as a named `<id>.metadata.json` file
+(`application/json`, `Content-Disposition: attachment`). `404` if the recording has
+no valid metadata (legacy or corrupt).
 
 #### `POST /exportRecording?id=<session-id>&format=csv|gpx|kml`
 Exports a session to a persisted file under `/var/lib/stratux-data/exports`. `gpx`/`kml` honestly
