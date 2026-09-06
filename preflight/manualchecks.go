@@ -13,15 +13,15 @@ import (
 type ManualCheckID string
 
 const (
-	CheckAntennasAttached      ManualCheckID = "antennas_attached"
-	CheckMountSecure           ManualCheckID = "mount_secure"
-	CheckVentsUnobstructed     ManualCheckID = "vents_unobstructed"
-	CheckFansSpinning          ManualCheckID = "fans_spinning"
-	CheckPowerSourceCharged    ManualCheckID = "power_source_charged"
-	CheckIpadConnectedWifi     ManualCheckID = "ipad_connected_wifi"
-	CheckForeFlightConnected   ManualCheckID = "foreflight_connected"
-	CheckProfileSelected       ManualCheckID = "profile_selected_correct"
-	CheckAHRSLevelReference    ManualCheckID = "ahrs_level_reference_appropriate"
+	CheckAntennasAttached    ManualCheckID = "antennas_attached"
+	CheckMountSecure         ManualCheckID = "mount_secure"
+	CheckVentsUnobstructed   ManualCheckID = "vents_unobstructed"
+	CheckFansSpinning        ManualCheckID = "fans_spinning"
+	CheckPowerSourceCharged  ManualCheckID = "power_source_charged"
+	CheckIpadConnectedWifi   ManualCheckID = "ipad_connected_wifi"
+	CheckForeFlightConnected ManualCheckID = "foreflight_connected"
+	CheckProfileSelected     ManualCheckID = "profile_selected_correct"
+	CheckAHRSLevelReference  ManualCheckID = "ahrs_level_reference_appropriate"
 )
 
 // ManualCheckDefinition is the fixed, documented description of one

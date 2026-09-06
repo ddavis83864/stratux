@@ -154,7 +154,7 @@ func gpsTimeChecks(in Input) []CheckResult {
 	// never itself a separate blocking/caution trigger.
 	if hasFix {
 		out = append(out, newCheck("GPS", "gps_accuracy", "GPS position accuracy", StateReady, SeverityInfo,
-			formatFloat(gps.AccuracyMeters)+" m estimated accuracy"))
+			formatFloat(float64(gps.AccuracyMeters))+" m estimated accuracy"))
 	} else {
 		out = append(out, newCheck("GPS", "gps_accuracy", "GPS position accuracy", StateUnknown, SeverityInfo, "no current position solution"))
 	}

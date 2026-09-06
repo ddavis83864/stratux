@@ -99,8 +99,8 @@ type Report struct {
 	Automated []CheckResult `json:"automated"`
 	Manual    []CheckResult `json:"manual"`
 
-	Profile   ProfileSummary      `json:"profile"`
-	Recording RecordingReadiness  `json:"recording"`
+	Profile   ProfileSummary     `json:"profile"`
+	Recording RecordingReadiness `json:"recording"`
 
 	// Disclaimer is included in every report (not just the dashboard
 	// copy) so any consumer - including a diagnostic bundle or a future
@@ -147,11 +147,11 @@ type Input struct {
 // GNSS/NTP clock step immediately after boot cannot shorten or lengthen
 // one - see docs/readiness-and-time-trust.md.
 const (
-	graceSDRDiscoverySeconds     = 30.0
-	graceGPSAcquisitionSeconds   = 90.0
-	graceGNSSTimeSeconds         = 90.0
-	graceNetworkClientSeconds    = 60.0
-	graceFanControllerSeconds    = 30.0
+	graceSDRDiscoverySeconds   = 30.0
+	graceGPSAcquisitionSeconds = 90.0
+	graceGNSSTimeSeconds       = 90.0
+	graceNetworkClientSeconds  = 60.0
+	graceFanControllerSeconds  = 30.0
 )
 
 // BuildReport applies the documented decision policy (see checks.go for
@@ -213,6 +213,14 @@ func rollup(automated, manual []CheckResult) (overall State, requiredActions, ca
 	sawAnyProblem := false
 	for _, c := range all {
 		if c.State == StateReady || c.State == StateNotApplicable {
+			continue
+		}
+		if c.Severity == SeverityInfo {
+			// Informational checks (e.g. the fixed "fan rotation is never
+			// electronically confirmed" VERIFY notice, or the GDL90
+			// client-identification disclosure) never affect the rollup
+			// on their own, regardless of their State - see Severity's
+			// doc comment.
 			continue
 		}
 		sawAnyProblem = true

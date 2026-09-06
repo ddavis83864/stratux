@@ -14,6 +14,6 @@ func itoaLocal(n int) string {
 	return strconv.Itoa(n)
 }
 
-func formatFloat(f float32) string {
-	return strconv.FormatFloat(float64(f), 'f', 1, 64)
+func formatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', 1, 64)
 }
