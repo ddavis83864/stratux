@@ -144,6 +144,62 @@ func TestBuildReport_TrustedTimeUnavailable(t *testing.T) {
 	}
 }
 
+// TestBuildReport_SDRBandNotYetEnabled_WithinGrace reproduces a real
+// live-hardware finding: with no GPS fix, main/sdr.go's sdrWatcher()
+// leaves readiness.RadioHealth.Band.Enabled false for up to 120 real
+// seconds (it deliberately delays configuring any SDR device until GPS
+// acquires a fix or that grace elapses, to reduce RF noise during
+// acquisition) - confirmed on the bench device, where 978_config/
+// fisb_tower read NOT_APPLICABLE for over two minutes before flipping to
+// READY. During that window this must read UNKNOWN ("not yet
+// determined"), never NOT_APPLICABLE ("deliberately disabled") - an
+// earlier, shorter grace constant here produced exactly that wrong
+// reading.
+func TestBuildReport_SDRBandNotYetEnabled_WithinGrace(t *testing.T) {
+	in := healthyInput()
+	in.UptimeSeconds = 60 // real observed window: false for ~120s with no GPS fix
+	in.Health.UAT978.Band = sdrassign.BandStatus{Enabled: false}
+	in.Health.ES1090.Band = sdrassign.BandStatus{Enabled: false}
+	r := BuildReport(in)
+	for _, id := range []string{"978_config", "1090_config", "fisb_tower"} {
+		found := false
+		for _, c := range r.Automated {
+			if c.CheckID == id {
+				found = true
+				if c.State != StateUnknown {
+					t.Errorf("%s State = %q within the SDR discovery grace period with Band.Enabled=false, want UNKNOWN", id, c.State)
+				}
+				if c.Blocking {
+					t.Errorf("%s must not be blocking while still within grace", id)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("check %s not found", id)
+		}
+	}
+}
+
+// TestBuildReport_SDRBandNotYetEnabled_AfterGrace confirms a still-false
+// Band.Enabled is trusted as a genuine, settled "this band is off" only
+// once the (120s) grace period has actually elapsed.
+func TestBuildReport_SDRBandNotYetEnabled_AfterGrace(t *testing.T) {
+	in := healthyInput()
+	in.UptimeSeconds = graceSDRDiscoverySeconds + 1
+	in.Health.UAT978.Band = sdrassign.BandStatus{Enabled: false}
+	in.Health.ES1090.Band = sdrassign.BandStatus{Enabled: false}
+	r := BuildReport(in)
+	for _, id := range []string{"978_config", "1090_config", "fisb_tower"} {
+		for _, c := range r.Automated {
+			if c.CheckID == id && c.State != StateNotApplicable {
+				t.Errorf("%s State = %q after the SDR discovery grace period expired with Band.Enabled still false, want NOT_APPLICABLE", id, c.State)
+			}
+		}
+	}
+	// A disabled band, once settled, must not affect the overall rollup.
+	mustOverall(t, in, StateReady)
+}
+
 func TestBuildReport_External978ReceiverZeroFrames(t *testing.T) {
 	in := healthyInput()
 	in.Health.UAT978.LastFrameAgeSeconds = nil

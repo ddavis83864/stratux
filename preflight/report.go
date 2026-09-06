@@ -147,7 +147,17 @@ type Input struct {
 // GNSS/NTP clock step immediately after boot cannot shorten or lengthen
 // one - see docs/readiness-and-time-trust.md.
 const (
-	graceSDRDiscoverySeconds   = 30.0
+	// graceSDRDiscoverySeconds is 120s, not a shorter guess, because it
+	// mirrors a real, pre-existing constraint: main/sdr.go's sdrWatcher()
+	// deliberately delays configuring any SDR device until GPS acquires a
+	// fix or 120s elapses, whichever comes first (to reduce RF noise
+	// during GPS acquisition) - confirmed live on hardware with no GPS
+	// fix, where readiness.RadioHealth.Band.Enabled read false for the
+	// full ~120s. An earlier, shorter value here caused 978/1090 to
+	// misreport NOT_APPLICABLE ("deliberately disabled") during that
+	// window instead of UNKNOWN ("not yet determined") - see checks.go's
+	// radioChecks()/fisbChecks().
+	graceSDRDiscoverySeconds   = 120.0
 	graceGPSAcquisitionSeconds = 90.0
 	graceGNSSTimeSeconds       = 90.0
 	graceNetworkClientSeconds  = 60.0

@@ -130,7 +130,7 @@ monotonic one cannot.
 
 | Grace period | Duration | Covers |
 |---|---|---|
-| SDR discovery | 30s | 978/1090 receiver assignment |
+| SDR discovery | 120s | 978/1090 receiver assignment |
 | GPS acquisition | 90s | GPS satellite solution |
 | GNSS time establishment | 90s | Trusted time synchronization |
 | Network client connection | 60s | First GDL90 client |
@@ -140,6 +140,19 @@ Within its grace period with no evidence yet, an item reports `UNKNOWN` (not `RE
 and not `CAUTION`) - "initializing," not "fine" and not yet "a problem." After the
 grace period expires with still no evidence, the item reports its documented `CAUTION`
 or `NOT_READY` state as appropriate.
+
+**SDR discovery is 120s, not a shorter guess, because it mirrors a real, pre-existing
+constraint**: `main/sdr.go`'s `sdrWatcher()` deliberately delays configuring any SDR
+device until GPS acquires a fix or 120s elapses, whichever comes first (to reduce RF
+noise during GPS acquisition). Confirmed on live hardware with no GPS fix:
+`readiness.RadioHealth.Band.Enabled` read `false` for the full ~120s window before
+becoming `true`. During that window, `978_config`/`1090_config`/`fisb_tower` report
+`UNKNOWN`, not `NOT_APPLICABLE` - a `Band.Enabled` reading of `false` is trusted as a
+genuine, settled "this band is off" only once the grace period has actually elapsed
+(see `preflight/checks.go`'s `radioChecks()`/`fisbChecks()`). An earlier, shorter
+value here caused exactly the wrong reading (a band still initializing was
+misreported as deliberately disabled) - caught during live-hardware validation and
+corrected before merge.
 
 ## Automated checks
 

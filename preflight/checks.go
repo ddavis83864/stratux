@@ -206,6 +206,24 @@ func radioChecks(band, component string, h readiness.RadioHealth, uptimeSeconds 
 	var out []CheckResult
 
 	if !h.Band.Enabled {
+		// readiness.RadioHealth.Band.Enabled is not populated from settings
+		// directly - it is set by main/sdr.go's sdrWatcher(), which
+		// deliberately delays configuring any SDR device until GPS gets a
+		// valid fix (to reduce RF noise during acquisition) or up to
+		// graceSDRDiscoverySeconds elapses, whichever comes first (see
+		// sdrWatcher's own comment: "Delay SDR start for a bit to reduce
+		// noise for the GPS to get a fix... give up waiting after 120s").
+		// Confirmed live on hardware: with no GPS fix, Band.Enabled reads
+		// false for the full ~120s, not some shorter guess - so within
+		// that window, false is "not yet determined," not "deliberately
+		// disabled," and must read UNKNOWN, never NOT_APPLICABLE. Only
+		// after the grace window closes do we trust a still-false Enabled
+		// as a genuine, settled "this band is off."
+		if uptimeSeconds < graceSDRDiscoverySeconds {
+			out = append(out, newCheck(component, band+"_config", band+" configuration", StateUnknown, SeverityCaution,
+				"still within the SDR discovery grace period - the SDR watcher delays device configuration until GPS acquires a fix or the grace period elapses"))
+			return out
+		}
 		out = append(out, newCheck(component, band+"_config", band+" configuration", StateNotApplicable, SeverityInfo, band+" is not enabled"))
 		return out
 	}
@@ -425,6 +443,14 @@ func fisbChecks(in Input) []CheckResult {
 	var out []CheckResult
 
 	if !uat.Band.Enabled {
+		// Same rationale as radioChecks() above - Band.Enabled can
+		// legitimately read false for up to graceSDRDiscoverySeconds
+		// while main/sdr.go's sdrWatcher() is still waiting on a GPS fix
+		// before configuring any SDR device.
+		if in.UptimeSeconds < graceSDRDiscoverySeconds {
+			out = append(out, newCheck("FISB", "fisb_tower", "FIS-B tower reception", StateUnknown, SeverityCaution, "still within the SDR discovery grace period"))
+			return out
+		}
 		out = append(out, newCheck("FISB", "fisb_tower", "FIS-B tower reception", StateNotApplicable, SeverityInfo, "978 UAT is not enabled"))
 		return out
 	}
