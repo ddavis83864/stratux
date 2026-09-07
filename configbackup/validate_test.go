@@ -16,6 +16,47 @@ func validDoc(t *testing.T) Document {
 	return doc
 }
 
+// TestChecksum_DetectsAccidentalCorruptionButNotDeliberateModification is
+// an explicit, isolated demonstration of the checksum-limitation
+// documented on Document.SectionChecksums/ContentChecksum: a checksum
+// catches accidental corruption (content changed, checksums left as-is),
+// but provides NO protection against deliberate modification (content
+// changed, checksums honestly recomputed) - a deliberate editor with
+// access to this same, public BuildDocument function produces an
+// internally self-consistent, Validate-passing document every time. This
+// is not a defect: it is exactly what a checksum is (and is not) for, and
+// is why this package documents that only a trusted backup should ever
+// be restored. This never touches live device state - both documents
+// here are in-memory test fixtures.
+func TestChecksum_DetectsAccidentalCorruptionButNotDeliberateModification(t *testing.T) {
+	original := validDoc(t)
+
+	// Accidental corruption: content changed, checksums NOT recomputed
+	// (e.g. a truncated download or a flipped byte) - Validate correctly
+	// rejects this.
+	corrupted := original
+	corrupted.Configuration.RegionSelected++
+	if res := Validate(corrupted, mustMarshalLen(t, corrupted)); res.OK() {
+		t.Fatal("expected accidental corruption (stale checksums) to be rejected")
+	}
+
+	// Deliberate modification: the same content change, but the "editor"
+	// - anyone with access to this exported function, not a privileged
+	// actor - honestly recomputes checksums via BuildDocument exactly as
+	// a legitimate export would. This is the documented limitation in
+	// action: Validate has no way to distinguish this from a genuine
+	// export, because there is nothing in the format that could.
+	edited := testBuildInputs()
+	edited.Configuration.RegionSelected++
+	tampered, err := BuildDocument(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := Validate(tampered, mustMarshalLen(t, tampered)); !res.OK() {
+		t.Fatalf("expected a deliberately-edited-and-honestly-recomputed document to still validate (this is the documented limitation, not a bug), got errors: %v", res.Errors)
+	}
+}
+
 func TestValidate_ValidCurrentVersionBackup(t *testing.T) {
 	doc := validDoc(t)
 	res := Validate(doc, mustMarshalLen(t, doc))
