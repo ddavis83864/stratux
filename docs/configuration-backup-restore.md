@@ -22,7 +22,7 @@ glue, in-memory restore-operation state machine, and every read/write of
 | Section | What | Restore behavior |
 |---|---|---|
 | `configuration` | An explicit allowlist of `globalSettings` fields (radio enablement, display prefs, GPS/OGN device config, region) - see `configbackup.ConfigurationSection`. | Overwrites the allowlisted fields; everything else in `globalSettings` is untouched. |
-| `configuration.privacySensitive` | Ownship-identifying fields: `ownshipModeS`, `ognAddr`, `ognReg`, `ognPilot`. | Always included, but always named distinctly in preview - never folded into the generic diff - so an owner never restores them unseen. |
+| `configuration.privacySensitive` | Ownship-identifying fields: `ownshipModeS`, `ognAddr`, `ognReg`, `ognPilot`. **Excluded by default** - only present when the owner explicitly opts in (dashboard checkbox, or `?includePrivacySensitive=true`); see "Privacy-sensitive fields" below. | When included, always named distinctly in preview and applied transactionally. When omitted (the default), restore leaves the device's current values completely untouched - omission is never interpreted as "clear these." |
 | `calibrationProfiles` | Every stored `calprofile.Profile` (name, mounting metadata, calibration vectors, validity, timestamps). | Additive/update only via `calprofile.Store.Save` - a profile absent from the backup is **never** deleted. |
 | `activeCalibrationProfileId` | Which profile is active. | Applied via `calprofile.Store.SetActiveID`, which itself refuses a dangling reference; the active profile's calibration is also mirrored into `globalSettings` (the same `applyProfileToGlobalSettingsLocked` helper `/activateCalibrationProfile` already uses). |
 | `alertSettings` | Every persisted operational-alerting preference (thresholds, audio toggles, volume, cooldowns) **except** mute state. | Overwrites those fields; `SchemaVersion` and `Muted`/`MutedIndefinitely`/`MuteUntilUnixSeconds` are always preserved from the *current* settings, never the backup. |
@@ -59,10 +59,42 @@ never touches them, in either direction.
   of this document at all.
 - No client MAC addresses.
 - Ownship-identifying fields (`ownshipModeS`, `ognAddr`, `ognReg`, `ognPilot`) are
-  privacy-sensitive but not secret - always present in the export (there is no partial
-  "everything except these" export in this version - see "Known limitations"), and
-  always named explicitly in `Preview.privacySensitiveFieldNames`/
-  `containsPrivacySensitiveFields` rather than folded into a generic diff.
+  privacy-sensitive but not secret - see "Privacy-sensitive fields" below for the
+  full opt-in design.
+
+## Privacy-sensitive fields
+
+Excluded from every export **by default**. The ordinary Download button (and a bare
+`GET /downloadConfigurationBackup`) produces a sanitized document:
+`configuration.privacySensitiveIncluded: false` and `configuration.privacySensitive`
+holding only zero values. Including them requires an explicit, off-by-default opt-in:
+the dashboard's unchecked "Include aircraft/owner identification fields" checkbox, or
+`?includePrivacySensitive=true` on the download request - any other query value is
+rejected (`400`), and omitting the parameter always means `false`.
+
+The document explicitly records which case it is
+(`configuration.privacySensitiveIncluded`), rather than leaving a reader to guess from
+whether the fields happen to be empty - a device with no ownship identifier configured
+and a sanitized export both produce empty strings, but only the flag says whether that
+absence was *deliberate disclosure of "there is nothing here"* or *"this was never
+captured."* `Validate` enforces the distinction is never lied about: a document
+claiming `false` while actually carrying non-empty privacy fields is rejected outright
+(`ErrPrivacySectionMismatch`), not merely warned about.
+
+Restore behavior follows the flag precisely:
+
+- **Omitted** (`privacySensitiveIncluded: false`, the default/sanitized case): the
+  device's current ownship/owner-identifying settings are left completely untouched.
+  Preview shows an explicit note ("were not included... existing values will be
+  preserved") rather than silently saying nothing.
+- **Included** (`privacySensitiveIncluded: true`, explicit opt-in): every affected field
+  name is listed in preview, the values are validated and applied transactionally
+  exactly like any other configuration field, and are included in rollback's snapshot
+  like everything else.
+
+Diagnostics and logs never include these values in either case - the diagnostics
+summary and this subsystem's logging never touch backup content at all (see
+"Diagnostics").
 
 ## Backup schema
 
@@ -74,6 +106,8 @@ createdAtUTC                *time.Time  (omitted if trusted/GNSS time wasn't ava
 sourceVersion, sourceCommit string
 minimumCompatibleVersion    int
 configuration                configbackup.ConfigurationSection
+  (includes privacySensitiveIncluded bool + privacySensitive - see
+  "Privacy-sensitive fields" below)
 calibrationProfiles          []calprofile.Profile
 activeCalibrationProfileId   string
 alertSettings                configbackup.AlertSettingsSection
@@ -89,13 +123,18 @@ never affects the result).
 
 ### Checksum limitations
 
-A checksum here detects **corruption, truncation, or accidental modification in
-transit**. It is **not authentication** and proves nothing about who produced the file -
-there is no signing key, no trusted-signer concept, and no protection against a
-deliberately crafted document with correctly recomputed checksums. Anyone who can reach
-`/applyConfigurationBackup` on this device can already change every setting it covers
-through the existing, unauthenticated management API - this subsystem does not change
-that trust boundary.
+**Checksums detect accidental corruption and incomplete modification. They do not
+authenticate the backup or protect against deliberate modification.** A checksum here
+catches a truncated download, a flipped byte, or a half-written file. It is **not
+authentication**: there is no signing key, no trusted-signer concept, and an attacker
+who can modify the backup can recompute a matching checksum for their edit exactly as
+this package does - a passing checksum proves the document is internally
+self-consistent, never that it came from a trusted source or wasn't deliberately
+altered. This subsystem implements no signing, encryption, or key management. **Restore
+only a backup you trust.** Separately: anyone who can already reach
+`/applyConfigurationBackup` on this device can change every setting it covers through
+the existing, unauthenticated management API - this subsystem does not change that
+trust boundary.
 
 ### Compatibility rules
 
@@ -233,7 +272,10 @@ arbitrary HTML into the page.
 ## API
 
 ```
-GET  /downloadConfigurationBackup       - the current configuration as a Document
+GET  /downloadConfigurationBackup       - the current configuration as a Document.
+                                           ?includePrivacySensitive=true opts into the
+                                           ownship/owner-identifying fields (default/
+                                           omitted = false; any other value is 400).
 POST /validateConfigurationBackup       - validate + preview; no writes; issues a token
 POST /applyConfigurationBackup          - {confirmationToken, backup}; transactional apply
 GET  /getConfigurationRestoreStatus     - idle/validating/preview-ready/applying/
