@@ -148,10 +148,10 @@
 			<!-- Global alert indicator - persistent across every page (see
 			     web/js/main.js's MainCtrl); never overrides navbarAction so
 			     it can never be hidden by a page-specific button. -->
-			<a href="#/alerts" class="btn-group pull-left" style="margin-left:4px">
+			<a href="#/alerts" class="btn-group pull-left" style="margin-left:4px" title="{{AlertIndicator.level !== 'none' ? AlertIndicator.level : 'Alerts'}}">
 				<div class="btn" ng-class="{'text-warning': AlertIndicator.level === 'TRAFFIC_NOTICE', 'text-danger': AlertIndicator.level === 'TRAFFIC_CAUTION' || AlertIndicator.level === 'SYSTEM_NOT_READY', 'text-info': AlertIndicator.level === 'SYSTEM_CAUTION'}">
 					<i class="fa" ng-class="{'fa-bell-slash': AlertIndicator.muted, 'fa-bell': !AlertIndicator.muted}"></i>
-					<span ng-show="AlertIndicator.level !== 'none'">&nbsp;{{AlertIndicator.level}}</span>
+					<span class="navbar-alert-label" ng-show="AlertIndicator.level !== 'none'">&nbsp;{{AlertIndicator.level}}</span>
 				</div>
 			</a>
 			<div class="btn-group pull-right" ui-yield-to="navbarAction">
