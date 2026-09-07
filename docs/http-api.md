@@ -188,6 +188,22 @@ receive.
 
 ---
 
+### Configuration Backup and Restore
+
+Backs up and restores supported Stratux **application** configuration only - never
+Wi-Fi credentials, SSH material, OS configuration, recordings, or diagnostics. See
+[configuration-backup-restore.md](configuration-backup-restore.md) for the full schema,
+validation, confirmation-token, and rollback design.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/downloadConfigurationBackup` | GET | The current configuration as a bounded, checksummed JSON document. |
+| `/validateConfigurationBackup` | POST | Validate an uploaded document (JSON body) and return a preview of what it would change. No writes. `200` with `{preview, confirmationToken, expiresInSeconds}` on success; `400` malformed/invalid, `413` oversized. |
+| `/applyConfigurationBackup` | POST | `{"confirmationToken": "...", "backup": {...}}` - transactionally applies a previously validated document. `200` only after complete success; `400` invalid input, `409` stale preview/active recording/active OTA/concurrent restore, `410` expired or already-used token, `413` oversized. A failure includes a structured rollback result and never claims partial success. |
+| `/getConfigurationRestoreStatus` | GET | Current restore-operation state (`idle`/`validating`/`preview-ready`/`applying`/`verifying`/`rolling-back`/`complete`/`failed`) and the last result, if any. |
+
+---
+
 ### OTA Update
 
 #### `POST /updateUpload`

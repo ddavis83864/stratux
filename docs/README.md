@@ -27,6 +27,11 @@ hardware integration). User-facing how-tos live in the
 - **[alerting.md](alerting.md)** — conservative, supplemental traffic-proximity and
   system-health notices: threshold policy, hysteresis, duplicate suppression, health
   transitions, settings, and browser-audio limitations. Not collision avoidance.
+- **[configuration-backup-restore.md](configuration-backup-restore.md)** — backing up and
+  restoring supported application configuration (radio enablement, alert settings,
+  calibration profiles): export allowlist, checksums, the validate/preview/confirm/apply
+  flow, transactional rollback, and what is deliberately excluded (credentials,
+  recordings, diagnostics, OS configuration).
 
 ## Interfaces (for EFB / app / tool developers)
 

@@ -1,0 +1,679 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stratux/stratux/calprofile"
+	"github.com/stratux/stratux/configbackup"
+	"github.com/stratux/stratux/ota"
+)
+
+// withConfigBackupTestEnv wires a temp calibration-profile store, a temp
+// alert-settings file, a monotonic clock, and a clean restore-operation
+// state machine for the duration of one test - mirrors
+// withTestProfilesStore (calprofilesapi_test.go) and
+// withTestAlertSettingsPath (alertsettings_test.go), plus this
+// subsystem's own state.
+func withConfigBackupTestEnv(t *testing.T) *calprofile.Store {
+	t.Helper()
+	store := withTestProfilesStore(t)
+	withTestAlertSettingsPath(t)
+	withFakePersistentStorageForTest(t)
+	if stratuxClock == nil {
+		stratuxClock = NewMonotonic()
+	}
+
+	origState := configBackupState
+	origPending := configBackupPending
+	origLast := configBackupLast
+	origLastErr := configBackupLastErr
+	origRestored := configBackupRestoredThisBoot
+	configBackupMu.Lock()
+	configBackupState = restoreStateIdle
+	configBackupPending = nil
+	configBackupLast = nil
+	configBackupLastErr = ""
+	configBackupRestoredThisBoot = false
+	configBackupMu.Unlock()
+	t.Cleanup(func() {
+		configBackupMu.Lock()
+		configBackupState = origState
+		configBackupPending = origPending
+		configBackupLast = origLast
+		configBackupLastErr = origLastErr
+		configBackupRestoredThisBoot = origRestored
+		configBackupMu.Unlock()
+	})
+
+	origOTADir := otaDir
+	t.Cleanup(func() { otaDir = origOTADir })
+	otaDir = t.TempDir() // no staged/state file here -> ota.LoadState reports StageIdle
+
+	// saveSettings() (called by applyConfigBackupTransaction) writes to
+	// configLocation, which defaults to /boot/firmware/stratux.conf - not
+	// writable by a test process, and not something a test should touch
+	// even if it were. Worse than just failing: saveSettings()'s error
+	// path calls addSingleSystemErrorf, which locks systemErrsMutex - a
+	// *sync.Mutex only ever initialized inside main() (never called by
+	// `go test`), so it's nil here and locking it hangs the test
+	// (observed: a real deadlock, reproduced with `go test -timeout`).
+	// Redirecting configLocation to a writable temp file keeps
+	// saveSettings() on its normal, already-tested success path instead.
+	origConfigLocation := configLocation
+	t.Cleanup(func() { configLocation = origConfigLocation })
+	configLocation = filepath.Join(t.TempDir(), "stratux.conf")
+
+	// withTestProfilesStore hands back an empty store - seed one profile
+	// and activate it, matching every real device's post-migration state
+	// (see calprofile.EnsureMigrated), so tests exercise a realistic
+	// "already has a profile" starting point rather than an empty store.
+	seed := calprofile.Profile{
+		ID:               calprofile.NewID(),
+		Name:             "Current Installation",
+		IMUMapping:       [2]int{-1, 0},
+		SensorQuaternion: [4]float64{0.1, 0.2, 0.3, 0.9},
+		D:                [3]float64{1, 2, 3},
+		Kind:             calprofile.KindMigrated,
+		SchemaVersion:    calprofile.SchemaVersion,
+		CreatedAt:        time.Now().UTC(),
+		ModifiedAt:       time.Now().UTC(),
+	}
+	seed.RecomputeValidity()
+	if err := store.Save(seed); err != nil {
+		t.Fatalf("could not seed a test calibration profile: %v", err)
+	}
+	if err := store.SetActiveID(seed.ID, time.Now().UTC()); err != nil {
+		t.Fatalf("could not activate the seeded test calibration profile: %v", err)
+	}
+	applyProfileToGlobalSettingsLocked(seed)
+
+	return store
+}
+
+func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]interface{} {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
+		t.Fatalf("could not decode response body %q: %v", rec.Body.String(), err)
+	}
+	return m
+}
+
+// --- download -----------------------------------------------------
+
+func TestHandleDownloadConfigurationBackup_OK(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json, got %q", ct)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); cd == "" {
+		t.Error("expected a Content-Disposition header naming the sanitized filename")
+	}
+	var doc configbackup.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("response body is not a valid Document: %v", err)
+	}
+	res := configbackup.Validate(doc, rec.Body.Len())
+	if !res.OK() {
+		t.Fatalf("downloaded backup failed its own validation: %v", res.Errors)
+	}
+	if len(doc.CalibrationProfiles) != 1 {
+		t.Fatalf("expected exactly one calibration profile (the migrated default), got %d", len(doc.CalibrationProfiles))
+	}
+}
+
+func TestHandleDownloadConfigurationBackup_WrongMethod(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/downloadConfigurationBackup", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// --- validate -------------------------------------------------------
+
+func downloadTestBackup(t *testing.T) []byte {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("could not obtain a test backup: %d %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.Bytes()
+}
+
+func TestHandleValidateConfigurationBackup_ValidNoOp(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSONBody(t, rec)
+	if resp["success"] != true {
+		t.Fatalf("expected success, got %+v", resp)
+	}
+	token, _ := resp["confirmationToken"].(string)
+	if token == "" {
+		t.Fatal("expected a non-empty confirmationToken")
+	}
+	preview, ok := resp["preview"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected a preview object, got %+v", resp)
+	}
+	if hasChanges, _ := preview["hasChanges"].(bool); hasChanges {
+		t.Errorf("expected hasChanges=false for a no-op backup, got %+v", preview)
+	}
+
+	status := configBackupStatusSnapshot()
+	if status.State != restoreStatePreviewReady {
+		t.Errorf("expected state preview-ready after a successful validate, got %q", status.State)
+	}
+	if !status.PreviewPending {
+		t.Error("expected PreviewPending after a successful validate")
+	}
+}
+
+func TestHandleValidateConfigurationBackup_MalformedJSON(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader([]byte("{not json")))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleValidateConfigurationBackup_TruncatedJSON(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	truncated := body[:len(body)/2]
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(truncated))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for truncated JSON, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleValidateConfigurationBackup_ChecksumMismatch(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	var doc configbackup.Document
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.Configuration.RegionSelected = doc.Configuration.RegionSelected + 1 // tamper after checksums stamped
+	tampered, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(tampered))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a checksum mismatch, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleValidateConfigurationBackup_UnsupportedSchema(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	var doc configbackup.Document
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.SchemaVersion = configbackup.SchemaVersion + 99
+	tampered, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(tampered))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unsupported schema version, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleValidateConfigurationBackup_Oversized(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	oversized := bytes.Repeat([]byte("a"), configBackupMaxRequestBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(oversized))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleValidateConfigurationBackup_WrongMethod(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/validateConfigurationBackup", nil)
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleValidateConfigurationBackup_ConcurrentValidationsBothSucceed(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+
+	done := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+			handleValidateConfigurationBackupRequest(rec, req)
+			done <- rec.Code
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if code := <-done; code != http.StatusOK {
+			t.Errorf("expected both concurrent validations to succeed, got %d", code)
+		}
+	}
+}
+
+// --- apply ------------------------------------------------------------
+
+// validateAndGetToken runs a real validate call and returns the token
+// plus the exact bytes to re-submit as "backup" at apply time.
+func validateAndGetToken(t *testing.T, body []byte) (token string, backup json.RawMessage) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("validate failed: %d %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSONBody(t, rec)
+	tok, _ := resp["confirmationToken"].(string)
+	if tok == "" {
+		t.Fatal("expected a confirmation token")
+	}
+	return tok, json.RawMessage(body)
+}
+
+func applyRequestBody(t *testing.T, token string, backup json.RawMessage) []byte {
+	t.Helper()
+	b, err := json.Marshal(map[string]interface{}{"confirmationToken": token, "backup": json.RawMessage(backup)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestHandleApplyConfigurationBackup_NoOpSucceedsAndChangesNothing(t *testing.T) {
+	store := withConfigBackupTestEnv(t)
+	before := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, before)
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a no-op restore, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSONBody(t, rec)
+	if resp["success"] != true {
+		t.Fatalf("expected success, got %+v", resp)
+	}
+
+	after := downloadTestBackup(t)
+	var beforeDoc, afterDoc configbackup.Document
+	json.Unmarshal(before, &beforeDoc)
+	json.Unmarshal(after, &afterDoc)
+	if beforeDoc.SectionChecksums["configuration"] != afterDoc.SectionChecksums["configuration"] {
+		t.Error("expected configuration section to be byte-identical after a no-op restore")
+	}
+	if beforeDoc.SectionChecksums["calibrationProfiles"] != afterDoc.SectionChecksums["calibrationProfiles"] {
+		t.Error("expected calibration-profiles section to be byte-identical after a no-op restore")
+	}
+
+	active, err := store.Active()
+	if err != nil {
+		t.Fatalf("expected an active profile after a no-op restore, got error: %v", err)
+	}
+	if active.ID != beforeDoc.ActiveCalibrationProfileID {
+		t.Errorf("expected the active profile to be unchanged, got %q want %q", active.ID, beforeDoc.ActiveCalibrationProfileID)
+	}
+}
+
+func TestHandleApplyConfigurationBackup_BenignSettingChangeAndRestore(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	original := downloadTestBackup(t)
+
+	// Change one benign, persisted alert setting through the real
+	// supported settings path - not calibration, radio, or network.
+	settings := loadAlertSettings()
+	originalVolume := settings.AudioVolume
+	settings.AudioVolume = 0.9
+	if originalVolume == 0.9 {
+		settings.AudioVolume = 0.1
+	}
+	if err := saveAlertSettings(settings); err != nil {
+		t.Fatalf("could not change the benign setting: %v", err)
+	}
+	if got := loadAlertSettings().AudioVolume; got == originalVolume {
+		t.Fatal("benign setting change did not persist")
+	}
+
+	// Validate the ORIGINAL backup against this now-changed state -
+	// preview must show exactly one expected difference.
+	token, backup := validateAndGetToken(t, original)
+
+	configBackupMu.Lock()
+	preview := configBackupPending.Preview
+	configBackupMu.Unlock()
+	if len(preview.AlertSettingsChanges) != 1 || preview.AlertSettingsChanges[0].Field != "audioVolume" {
+		t.Fatalf("expected exactly one audioVolume change in the preview, got %+v", preview.AlertSettingsChanges)
+	}
+	if len(preview.ConfigurationChanges) != 0 {
+		t.Errorf("expected no unrelated configuration changes, got %+v", preview.ConfigurationChanges)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if got := loadAlertSettings().AudioVolume; got != originalVolume {
+		t.Errorf("expected audioVolume restored to %v, got %v", originalVolume, got)
+	}
+}
+
+func TestHandleApplyConfigurationBackup_MissingToken(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, "", json.RawMessage(body))))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_UnknownToken(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, "cfgrestore-doesnotexist", json.RawMessage(body))))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_ReusedTokenRejected(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec1 := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first apply should succeed, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec2 := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec2, req2)
+	if rec2.Code != http.StatusGone {
+		t.Fatalf("expected 410 for a reused token, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_ExpiredToken(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	configBackupMu.Lock()
+	configBackupPending.Record.ExpiresAtMonotonic = monotonicSeconds() - 1
+	configBackupMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expected 410 for an expired token, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_BackupChangedAfterPreview(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, _ := validateAndGetToken(t, body)
+
+	var doc configbackup.Document
+	json.Unmarshal(body, &doc)
+	doc.Configuration.RegionSelected++ // change content without re-validating
+	tampered, _ := json.Marshal(doc)
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, tampered)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	// The re-validate step inside apply rejects this as a checksum
+	// mismatch (400) before token verification ever gets a chance to
+	// classify it as "content changed" (409) - either way, it must
+	// never be silently applied.
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a backup modified after preview must never be silently applied, got 200: %s", rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_CurrentConfigurationChangedAfterPreview(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	// Mutate live state through a completely different, real API after
+	// the preview was computed.
+	settings := loadAlertSettings()
+	settings.AudioVolume = settings.AudioVolume/2 + 0.05
+	if err := saveAlertSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when current configuration changed after preview, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_RejectedDuringActiveRecording(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	recMu.Lock()
+	origCurrent := recCurrent
+	recCurrent = &recordingSession{State: recordingStateActive}
+	recMu.Unlock()
+	t.Cleanup(func() {
+		recMu.Lock()
+		recCurrent = origCurrent
+		recMu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while a recording is active, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_RejectedDuringOTA(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	state := ota.State{Stage: ota.StageInstalling}
+	if err := ota.SaveState(otaDir, state, time.Now()); err != nil {
+		t.Fatalf("could not stage a fake OTA-in-progress state: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 during an in-progress OTA update, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_ConcurrentApplyRejected(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	token, backup := validateAndGetToken(t, body)
+
+	configBackupMu.Lock()
+	configBackupState = restoreStateApplying
+	configBackupMu.Unlock()
+	t.Cleanup(func() {
+		configBackupMu.Lock()
+		configBackupState = restoreStateIdle
+		configBackupMu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a concurrent apply, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_AddedAndActivatedProfile(t *testing.T) {
+	store := withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	var doc configbackup.Document
+	json.Unmarshal(body, &doc)
+
+	newProfile := calprofile.Profile{
+		ID:               calprofile.NewID(),
+		Name:             "Second Aircraft",
+		SensorQuaternion: [4]float64{0, 0, 0, 1},
+		D:                [3]float64{0.1, 0.1, 0.1},
+		Kind:             calprofile.KindUser,
+		SchemaVersion:    calprofile.SchemaVersion,
+		CreatedAt:        time.Now().UTC(),
+		ModifiedAt:       time.Now().UTC(),
+	}
+	newProfile.RecomputeValidity()
+	doc.CalibrationProfiles = append(doc.CalibrationProfiles, newProfile)
+	doc.ActiveCalibrationProfileID = newProfile.ID
+	rebuilt, err := configbackup.BuildDocument(configbackup.BuildInputs{
+		SourceVersion: doc.SourceVersion, SourceCommit: doc.SourceCommit, CreatedAtUTC: doc.CreatedAtUTC,
+		Configuration: doc.Configuration, CalibrationProfiles: doc.CalibrationProfiles,
+		ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID, AlertSettings: doc.AlertSettings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modifiedBody, err := json.Marshal(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	token, backup := validateAndGetToken(t, modifiedBody)
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	got, err := store.Get(newProfile.ID)
+	if err != nil {
+		t.Fatalf("expected the new profile to have been added: %v", err)
+	}
+	if got.Name != "Second Aircraft" {
+		t.Errorf("unexpected profile name %q", got.Name)
+	}
+	active, err := store.ActiveID()
+	if err != nil || active != newProfile.ID {
+		t.Errorf("expected the new profile to be active, got %q (err=%v)", active, err)
+	}
+	// The original migrated profile must still exist - a restore must
+	// never delete a profile merely because it's absent from a
+	// different backup revision (only this test's own additive backup
+	// was applied, which still names it).
+	if _, err := store.Get(doc.CalibrationProfiles[0].ID); err != nil {
+		t.Errorf("expected the original profile to remain, got error: %v", err)
+	}
+}
+
+// --- status -------------------------------------------------------
+
+func TestHandleGetConfigurationRestoreStatus_Idle(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/getConfigurationRestoreStatus", nil)
+	rec := httptest.NewRecorder()
+	handleGetConfigurationRestoreStatusRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	resp := decodeJSONBody(t, rec)
+	if resp["state"] != string(restoreStateIdle) {
+		t.Errorf("expected idle state, got %+v", resp)
+	}
+}
+
+func TestHandleGetConfigurationRestoreStatus_WrongMethod(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/getConfigurationRestoreStatus", nil)
+	rec := httptest.NewRecorder()
+	handleGetConfigurationRestoreStatusRequest(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// --- diagnostics summary --------------------------------------------
+
+func TestConfigBackupDiagnosticsSummary_NeverIncludesBackupContent(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := downloadTestBackup(t)
+	validateAndGetToken(t, body)
+
+	summary := configBackupDiagnosticsSummary()
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"sensorQuaternion", "calibrationProfiles", "contentChecksum"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Errorf("diagnostics summary must never include %q, got %s", forbidden, encoded)
+		}
+	}
+}
