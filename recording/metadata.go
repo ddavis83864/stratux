@@ -18,7 +18,10 @@ import (
 // docs/alerting.md's "Recording integration" section) - purely additive,
 // so a version-1 reader ignores the new fields and a version-2 file read
 // by older code degrades safely to zero-valued alerting fields.
-const MetadataSchemaVersion = 2
+// MetadataSchemaVersion 3 added the ConfigBackup* fields (see
+// docs/configuration-backup-restore.md's "Recording integration"
+// section) - likewise purely additive.
+const MetadataSchemaVersion = 3
 
 // metadataFileName is the fixed sidecar filename inside one recording's own
 // directory - not a timestamped name like the rotated *.jsonl sample files,
@@ -104,6 +107,20 @@ type SessionSnapshot struct {
 	AlertingSystemEnabled       bool           `json:"alertingSystemEnabled"`
 	AlertingMuted               bool           `json:"alertingMuted"`
 	AlertingActiveCountsByLevel map[string]int `json:"alertingActiveCountsByLevel,omitempty"`
+
+	// ConfigBackup* fields are a small, session-level fingerprint of the
+	// configuration backup/restore subsystem's state at the moment this
+	// session started - see docs/configuration-backup-restore.md's
+	// "Recording integration" section. Deliberately never the full
+	// backup document or any calibration value - only the schema
+	// version, an opaque configuration fingerprint (the same checksum
+	// configbackup.Fingerprint computes - safe by construction, since it
+	// is a SHA-256 of already-non-sensitive-by-allowlist fields, never a
+	// reversible encoding of them), and whether a restore completed
+	// during the current boot.
+	ConfigBackupSchemaVersion    int    `json:"configBackupSchemaVersion,omitempty"`
+	ConfigBackupFingerprint      string `json:"configBackupFingerprint,omitempty"`
+	ConfigBackupRestoredThisBoot bool   `json:"configBackupRestoredThisBoot"`
 }
 
 // SessionFinalization holds the fields that legitimately change after a
