@@ -139,9 +139,12 @@ trust boundary.
 ### Compatibility rules
 
 `schemaVersion` must fall within `[MinimumCompatibleSchemaVersion, SchemaVersion]` for
-the running build (both `1` today). A version outside that range is rejected outright by
-`Validate`, before any content is trusted. Bumping either constant requires an explicit,
-documented migration note in `configbackup/document.go`.
+the running build (both `2` today - schema 1, which exported privacy-sensitive fields
+unconditionally, was superseded before this feature's first release and is
+intentionally rejected, not migrated - see `configbackup/document.go`'s `SchemaVersion`
+doc comment). A version outside that range is rejected outright by `Validate`, before
+any content is trusted. Bumping either constant requires an explicit, documented
+migration note in `configbackup/document.go`.
 
 ## Validation
 
@@ -317,9 +320,10 @@ carry. One-second sample structure and CSV columns are unchanged.
 
 A backup's `schemaVersion` must be within `[MinimumCompatibleSchemaVersion,
 SchemaVersion]` for the currently-running build - see "Compatibility rules" above.
-There is no cross-version field migration in this version (schema 1 is the only schema);
-a future schema bump must add an explicit migration path rather than silently
-reinterpreting old field meanings.
+**Schema 2 is the only backup schema this build accepts; compatibility with schema 1 or
+an older Stratux build is not implemented or implied.** There is no cross-version field
+migration - a future schema bump must add an explicit migration path rather than
+silently reinterpreting old field meanings.
 
 ## SD-card recovery limitations
 
