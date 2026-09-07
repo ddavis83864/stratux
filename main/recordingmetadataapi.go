@@ -48,7 +48,11 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession) recordi
 		}
 	}
 	alertSchema, alertMaster, alertVisual, alertAudioArmed, alertSystem, alertMuted, alertCounts := alertingSnapshotForRecording()
+	cfgBackupSchema, cfgBackupFingerprint, cfgBackupRestored := configBackupSnapshotForRecording()
 	return recording.SessionSnapshot{
+		ConfigBackupSchemaVersion:       cfgBackupSchema,
+		ConfigBackupFingerprint:         cfgBackupFingerprint,
+		ConfigBackupRestoredThisBoot:    cfgBackupRestored,
 		AlertingSchemaVersion:           alertSchema,
 		AlertingMasterEnabled:           alertMaster,
 		AlertingVisualEnabled:           alertVisual,

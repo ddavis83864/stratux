@@ -1,0 +1,165 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Backup</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Configuration Backup and Restore</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Backs up and restores supported Stratux application settings only:
+				radio enablement, alert thresholds, calibration profiles, and
+				similar configuration. It is not a full SD-card backup and does
+				not include:
+			</p>
+			<ul class="small text-muted">
+				<li>Wi-Fi credentials, SSH keys, or any other secret/credential</li>
+				<li>Recordings or diagnostic bundles</li>
+				<li>Operating-system, network, or boot configuration</li>
+			</ul>
+			<p class="small text-danger">
+				Restoring a calibration profile only makes sense if the physical
+				AHRS mounting orientation matches the one it was captured for.
+				Applying a profile made for a different mounting will make AHRS
+				attitude (pitch/roll) incorrect. Some settings changes may
+				require a restart to take effect.
+			</p>
+			<p class="small"><a href="#/settings">Settings</a> &middot; <a href="docs/configuration-backup-restore.md" target="_blank">Documentation</a></p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Download Configuration Backup</span></div>
+		<div class="panel-body">
+			<div class="checkbox">
+				<label>
+					<input type="checkbox" ng-model="includePrivacy"/>
+					Include aircraft/owner identification fields
+				</label>
+			</div>
+			<p class="small text-danger" ng-show="includePrivacy">
+				This will include: ownship Mode S identifier, OGN address, OGN registration, and
+				OGN pilot information. These are not passwords, but they may identify the aircraft
+				or operator. Leave this unchecked for a sanitized backup. Treat a backup with this
+				included as a private file.
+			</p>
+			<a class="btn btn-primary" ng-href="{{downloadUrl}}{{includePrivacy ? '?includePrivacySensitive=true' : ''}}">
+				Download Configuration Backup
+			</a>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Restore from Backup</span></div>
+		<div class="panel-body">
+			<div class="form-group">
+				<span style="position:relative; overflow: hidden;">
+					<span class="fake-btn fake-btn-block">Click to select a configuration backup file</span>
+					<input style="opacity:0.0; position: absolute; top: 0; right: 0;" class="col-xs-12"
+						type="file" accept=".json,application/json"
+						onchange="angular.element(this).scope().onBackupFileSelected(this.files)" />
+				</span>
+			</div>
+			<p class="small" ng-show="selectedFileName">Selected: {{selectedFileName}}</p>
+
+			<button class="btn btn-default" ng-click="validateBackup()" ng-disabled="!selectedFileText || validating">
+				{{validating ? 'Validating...' : 'Validate Backup'}}
+			</button>
+
+			<span class="small text-danger" ng-show="validateError">{{validateError}}</span>
+			<ul class="small text-danger" ng-show="validateErrors.length">
+				<li ng-repeat="e in validateErrors">{{e}}</li>
+			</ul>
+
+			<div ng-show="preview">
+				<hr/>
+				<h4>Preview</h4>
+				<p class="small text-muted">
+					Backup from Stratux {{preview.sourceVersion}} ({{preview.sourceCommit.slice(0,10)}}),
+					schema {{preview.schemaVersion}}. Currently running
+					{{preview.currentVersion}} ({{preview.currentCommit.slice(0,10)}}).
+					<span ng-show="!preview.compatibleWithCurrent" class="text-danger">This backup's schema is not compatible with this build.</span>
+				</p>
+
+				<div class="alert alert-warning" ng-show="preview.privacySectionIncluded">
+					This backup includes privacy-sensitive ownship-identifying fields:
+					{{preview.privacySensitiveFieldNames.join(', ')}}. Applying it will overwrite
+					the device's current values with these.
+				</div>
+				<div class="alert alert-info" ng-show="!preview.privacySectionIncluded">
+					{{preview.privacyNote}}
+				</div>
+				<div class="alert alert-warning" ng-repeat="w in preview.warnings">{{w}}</div>
+				<div class="alert alert-danger" ng-repeat="e in preview.blockingErrors">{{e}}</div>
+				<div class="alert alert-info" ng-show="preview.restartRequired">
+					Applying this backup may require a restart for some settings to take effect.
+				</div>
+				<div class="alert alert-info" ng-show="!preview.hasChanges">
+					No changes - this backup matches the current configuration exactly.
+				</div>
+
+				<div ng-show="preview.configurationChanges.length">
+					<strong>Configuration changes</strong>
+					<table class="table table-condensed">
+						<tr><th>Field</th><th>Current</th><th>Proposed</th></tr>
+						<tr ng-repeat="c in preview.configurationChanges">
+							<td>{{c.field}}</td><td>{{c.current}}</td><td>{{c.proposed}}</td>
+						</tr>
+					</table>
+				</div>
+
+				<div ng-show="preview.alertSettingsChanges.length">
+					<strong>Alert settings changes</strong>
+					<table class="table table-condensed">
+						<tr><th>Field</th><th>Current</th><th>Proposed</th></tr>
+						<tr ng-repeat="c in preview.alertSettingsChanges">
+							<td>{{c.field}}</td><td>{{c.current}}</td><td>{{c.proposed}}</td>
+						</tr>
+					</table>
+				</div>
+
+				<div ng-show="preview.activeProfileChange">
+					<strong>Active calibration profile change</strong>
+					<p class="small">{{preview.activeProfileChange.current || '(none)'}} &rarr; {{preview.activeProfileChange.proposed}}</p>
+				</div>
+
+				<div ng-show="preview.addedProfiles.length">
+					<strong>Calibration profiles to add</strong>
+					<ul class="small"><li ng-repeat="p in preview.addedProfiles">{{p.name}} ({{p.id}})</li></ul>
+				</div>
+				<div ng-show="preview.updatedProfiles.length">
+					<strong>Calibration profiles to update</strong>
+					<ul class="small"><li ng-repeat="p in preview.updatedProfiles">{{p.name}} ({{p.id}})</li></ul>
+				</div>
+				<div ng-show="preview.unchangedProfiles.length">
+					<strong>Calibration profiles unchanged</strong>
+					<ul class="small"><li ng-repeat="p in preview.unchangedProfiles">{{p.name}} ({{p.id}})</li></ul>
+				</div>
+
+				<hr/>
+				<div class="checkbox">
+					<label>
+						<input type="checkbox" ng-model="confirmApply"/>
+						I have reviewed the preview above and want to apply this restore.
+					</label>
+				</div>
+				<button class="btn btn-warning" ng-click="applyBackup()"
+					ng-disabled="!preview.compatibleWithCurrent || preview.blockingErrors.length || !confirmApply || applying || applied">
+					{{applying ? 'Applying...' : 'Apply Restore'}}
+				</button>
+			</div>
+
+			<div ng-show="applyResult">
+				<hr/>
+				<div class="alert" ng-class="{'alert-success': applyResult.success, 'alert-danger': !applyResult.success}">
+					<strong ng-show="applyResult.success">Restore applied successfully.</strong>
+					<strong ng-show="!applyResult.success">Restore failed{{applyResult.rollbackFailed ? ' and automatic rollback also failed - manual recovery may be required' : ' and was fully rolled back'}}.</strong>
+					<p class="small" ng-show="applyResult.failureCategory">{{applyResult.failureCategory}}</p>
+					<p class="small" ng-show="applyResult.sectionsApplied.length">Sections applied: {{applyResult.sectionsApplied.join(', ')}}</p>
+					<p class="small" ng-show="applyResult.sectionsRolledBack.length">Sections rolled back: {{applyResult.sectionsRolledBack.join(', ')}}</p>
+					<p class="small" ng-show="applyResult.restartRequired">A restart may be required for all changes to take effect.</p>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>

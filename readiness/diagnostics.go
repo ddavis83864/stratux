@@ -106,6 +106,15 @@ type DiagnosticBundle struct {
 	// above. Never the full active-alert/event list, and never exact
 	// coordinates or MAC addresses.
 	AlertingSummary interface{} `json:"AlertingSummary,omitempty"`
+
+	// ConfigBackupSummary is a bounded, sanitized summary of the
+	// configuration backup/restore subsystem's current state (see the
+	// configbackup package) at generation time, opaque to this package
+	// for the same import-direction reason as the summaries above. Never
+	// backup contents, calibration values, or credentials - only
+	// availability, schema version, and the last restore attempt's
+	// outcome/sections.
+	ConfigBackupSummary interface{} `json:"ConfigBackupSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -133,7 +142,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -150,6 +159,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		PreflightReport:            preflightReport,
 		RecordingMetadataSummary:   recordingMetadataSummary,
 		AlertingSummary:            alertingSummary,
+		ConfigBackupSummary:        configBackupSummary,
 	}
 }
 

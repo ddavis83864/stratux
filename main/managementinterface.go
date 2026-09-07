@@ -1311,6 +1311,14 @@ func managementInterface() {
 	http.HandleFunc("/unmuteAlerts", handleUnmuteAlertsRequest)
 	http.HandleFunc("/testAlertSound", handleTestAlertSoundRequest)
 
+	// Configuration backup/restore - see main/configbackupapi.go. Never
+	// Wi-Fi credentials, SSH material, OS configuration, recordings, or
+	// diagnostics; validate/apply are a strict two-step confirmed flow.
+	http.HandleFunc("/downloadConfigurationBackup", handleDownloadConfigurationBackupRequest)
+	http.HandleFunc("/validateConfigurationBackup", handleValidateConfigurationBackupRequest)
+	http.HandleFunc("/applyConfigurationBackup", handleApplyConfigurationBackupRequest)
+	http.HandleFunc("/getConfigurationRestoreStatus", handleGetConfigurationRestoreStatusRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {

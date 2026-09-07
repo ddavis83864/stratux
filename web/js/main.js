@@ -49,6 +49,10 @@ var URL_ALERT_ACKNOWLEDGE    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/acknowledge
 var URL_ALERTS_MUTE          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/muteAlerts";
 var URL_ALERTS_UNMUTE        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/unmuteAlerts";
 var URL_ALERTS_TEST_SOUND    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/testAlertSound";
+var URL_CONFIGBACKUP_DOWNLOAD = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadConfigurationBackup";
+var URL_CONFIGBACKUP_VALIDATE = URL_HOST_PROTOCOL + URL_HOST_BASE + "/validateConfigurationBackup";
+var URL_CONFIGBACKUP_APPLY    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/applyConfigurationBackup";
+var URL_CONFIGBACKUP_STATUS   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getConfigurationRestoreStatus";
 var URL_CALPROFILES_LIST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getCalibrationProfiles";
 var URL_CALPROFILES_ACTIVE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getActiveCalibrationProfile";
 var URL_CALPROFILES_CREATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/createCalibrationProfile";
@@ -102,6 +106,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/alerts',
 			templateUrl: 'plates/alerts.html',
 			controller: 'AlertsCtrl',
+			reloadOnSearch: false
+		})
+		.state('configbackup', {
+			url: '/configbackup',
+			templateUrl: 'plates/configbackup.html',
+			controller: 'ConfigBackupCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
