@@ -40,7 +40,12 @@ import (
 // packages - on the dedicated data partition, never on /boot/firmware
 // (small, shared with critical boot files) and never anywhere under the
 // protected overlay.
-const otaDir = "/var/lib/stratux-data/updates"
+//
+// A var, not a const, solely so tests (e.g. main/configbackupapi_test.go's
+// OTA-in-progress guardrail test) can redirect it at a temp directory for
+// the duration of one test - mirrors alertSettingsPath's/recordingsDir's
+// established pattern. Never reassigned in production.
+var otaDir = "/var/lib/stratux-data/updates"
 
 func otaStagedDir() string { return filepath.Join(otaDir, "staged") }
 func otaBackupDir() string { return filepath.Join(otaDir, "backup") }
