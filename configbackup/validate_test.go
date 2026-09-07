@@ -204,8 +204,9 @@ func TestValidate_OutOfRangeAudioVolumeRejected(t *testing.T) {
 	}
 }
 
-func TestValidate_PrivacySensitiveFieldsWarnNotBlock(t *testing.T) {
+func TestValidate_PrivacyIncludedWarnsNotBlocks(t *testing.T) {
 	in := testBuildInputs()
+	in.Configuration.PrivacySensitiveIncluded = true
 	in.Configuration.PrivacySensitive = PrivacySensitiveSection{OwnshipModeS: "A1B2C3"}
 	doc, err := BuildDocument(in)
 	if err != nil {
@@ -213,10 +214,43 @@ func TestValidate_PrivacySensitiveFieldsWarnNotBlock(t *testing.T) {
 	}
 	res := Validate(doc, mustMarshalLen(t, doc))
 	if !res.OK() {
-		t.Fatalf("privacy-sensitive fields must not block validation, got errors: %v", res.Errors)
+		t.Fatalf("a deliberately-included privacy section must not block validation, got errors: %v", res.Errors)
 	}
 	if len(res.Warnings) == 0 {
-		t.Error("expected a privacy-sensitive warning")
+		t.Error("expected a privacy-inclusion warning")
+	}
+}
+
+func TestValidate_PrivacyOmittedNoWarning(t *testing.T) {
+	doc := validDoc(t) // PrivacySensitiveIncluded false, PrivacySensitive empty, by construction
+	res := Validate(doc, mustMarshalLen(t, doc))
+	if !res.OK() {
+		t.Fatalf("expected a document with no privacy section to validate cleanly, got errors: %v", res.Errors)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("expected no warning when the privacy section is genuinely omitted, got %v", res.Warnings)
+	}
+}
+
+// TestValidate_PrivacySectionMismatchRejected is the exact defect this
+// check exists to catch: a document that claims "no privacy-sensitive
+// data" (PrivacySensitiveIncluded: false) while actually carrying it.
+// This must be rejected outright, not merely warned about - see
+// ErrPrivacySectionMismatch's doc comment.
+func TestValidate_PrivacySectionMismatchRejected(t *testing.T) {
+	in := testBuildInputs()
+	in.Configuration.PrivacySensitiveIncluded = false
+	in.Configuration.PrivacySensitive = PrivacySensitiveSection{OGNPilot: "Jane Doe"}
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := Validate(doc, mustMarshalLen(t, doc))
+	if res.OK() {
+		t.Fatal("expected a privacy-section mismatch (data present, included=false) to be rejected")
+	}
+	if !errorsContain(res.Errors, ErrPrivacySectionMismatch) {
+		t.Errorf("expected ErrPrivacySectionMismatch, got %v", res.Errors)
 	}
 }
 

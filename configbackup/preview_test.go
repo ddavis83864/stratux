@@ -154,9 +154,10 @@ func TestComputePreview_UnsupportedSectionIgnoredHonestly(t *testing.T) {
 	}
 }
 
-func TestComputePreview_PrivacyWarning(t *testing.T) {
+func TestComputePreview_PrivacyIncluded(t *testing.T) {
 	current := testCurrentState()
 	backupCfg := current.Configuration
+	backupCfg.PrivacySensitiveIncluded = true
 	backupCfg.PrivacySensitive = PrivacySensitiveSection{OGNReg: "N12345"}
 	doc, err := BuildDocument(BuildInputs{
 		SourceVersion: current.Version, SourceCommit: current.Commit,
@@ -167,8 +168,8 @@ func TestComputePreview_PrivacyWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := ComputePreview(doc, current)
-	if !p.ContainsPrivacySensitiveFields {
-		t.Fatal("expected ContainsPrivacySensitiveFields to be true")
+	if !p.PrivacySectionIncluded {
+		t.Fatal("expected PrivacySectionIncluded to be true")
 	}
 	found := false
 	for _, n := range p.PrivacySensitiveFieldNames {
@@ -182,8 +183,47 @@ func TestComputePreview_PrivacyWarning(t *testing.T) {
 	// A privacy-sensitive field must never leak into the generic
 	// undifferentiated configuration diff.
 	for _, c := range p.ConfigurationChanges {
-		if c.Field == "privacySensitive" {
-			t.Error("privacySensitive must not appear as a generic configuration change")
+		if c.Field == "privacySensitive" || c.Field == "privacySensitiveIncluded" {
+			t.Errorf("privacy fields must not appear as a generic configuration change, got %q", c.Field)
+		}
+	}
+}
+
+// TestComputePreview_PrivacyOmittedIsPreserved is the default,
+// sanitized-export case: a backup that never captured privacy-sensitive
+// fields must report them as omitted (not "will be cleared"), and the
+// current device's real values (whatever they are) are never touched by
+// applying it.
+func TestComputePreview_PrivacyOmittedIsPreserved(t *testing.T) {
+	current := testCurrentState()
+	current.Configuration.PrivacySensitiveIncluded = true // real device state
+	current.Configuration.PrivacySensitive = PrivacySensitiveSection{OwnshipModeS: "ABC123"}
+
+	backupCfg := current.Configuration
+	backupCfg.PrivacySensitiveIncluded = false
+	backupCfg.PrivacySensitive = PrivacySensitiveSection{} // sanitized export
+
+	doc, err := BuildDocument(BuildInputs{
+		SourceVersion: current.Version, SourceCommit: current.Commit,
+		Configuration: backupCfg, CalibrationProfiles: current.CalibrationProfiles,
+		ActiveCalibrationProfileID: current.ActiveProfileID, AlertSettings: current.AlertSettings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := ComputePreview(doc, current)
+	if p.PrivacySectionIncluded {
+		t.Fatal("expected PrivacySectionIncluded to be false for a sanitized export")
+	}
+	if len(p.PrivacySensitiveFieldNames) != 0 {
+		t.Errorf("expected no privacy field names when the section is omitted, got %v", p.PrivacySensitiveFieldNames)
+	}
+	if p.PrivacyPreserved == "" {
+		t.Error("expected a non-empty preservation note when the privacy section is omitted")
+	}
+	for _, c := range p.ConfigurationChanges {
+		if c.Field == "privacySensitive" || c.Field == "privacySensitiveIncluded" {
+			t.Errorf("omitted privacy section must never surface as a proposed change, got %q", c.Field)
 		}
 	}
 }

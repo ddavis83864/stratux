@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +143,173 @@ func TestHandleDownloadConfigurationBackup_WrongMethod(t *testing.T) {
 	handleDownloadConfigurationBackupRequest(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// withPrivacySensitiveDeviceSettings sets every ownship/owner-identifying
+// globalSettings field to a distinguishable test value for the duration
+// of one test, restoring the original (zero) values afterward.
+func withPrivacySensitiveDeviceSettings(t *testing.T) {
+	t.Helper()
+	origModeS, origAddr, origReg, origPilot := globalSettings.OwnshipModeS, globalSettings.OGNAddr, globalSettings.OGNReg, globalSettings.OGNPilot
+	globalSettings.OwnshipModeS = "A1B2C3"
+	globalSettings.OGNAddr = "DDEEFF"
+	globalSettings.OGNReg = "N12345"
+	globalSettings.OGNPilot = "Test Pilot"
+	t.Cleanup(func() {
+		globalSettings.OwnshipModeS, globalSettings.OGNAddr, globalSettings.OGNReg, globalSettings.OGNPilot = origModeS, origAddr, origReg, origPilot
+	})
+}
+
+func TestHandleDownloadConfigurationBackup_DefaultExcludesPrivacy(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	withPrivacySensitiveDeviceSettings(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, needle := range []string{"A1B2C3", "DDEEFF", "N12345", "Test Pilot"} {
+		if strings.Contains(body, needle) {
+			t.Fatalf("default download must never include privacy-sensitive values, found %q in: %s", needle, body)
+		}
+	}
+	var doc configbackup.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Configuration.PrivacySensitiveIncluded {
+		t.Error("expected privacySensitiveIncluded to be false by default")
+	}
+	if !doc.Configuration.PrivacySensitive.Empty() {
+		t.Errorf("expected an empty privacy section by default, got %+v", doc.Configuration.PrivacySensitive)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "stratux-configuration-backup.json") {
+		t.Errorf("expected the sanitized filename, got %q", cd)
+	}
+}
+
+func TestHandleDownloadConfigurationBackup_ExplicitOptInIncludesPrivacy(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	withPrivacySensitiveDeviceSettings(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup?includePrivacySensitive=true", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var doc configbackup.Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.Configuration.PrivacySensitiveIncluded {
+		t.Fatal("expected privacySensitiveIncluded to be true with explicit opt-in")
+	}
+	if doc.Configuration.PrivacySensitive.OwnshipModeS != "A1B2C3" {
+		t.Errorf("expected the real ownshipModeS value, got %q", doc.Configuration.PrivacySensitive.OwnshipModeS)
+	}
+	res := configbackup.Validate(doc, rec.Body.Len())
+	if !res.OK() {
+		t.Fatalf("an honestly-flagged privacy-inclusive document must validate, got errors: %v", res.Errors)
+	}
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "stratux-configuration-backup-with-identifiers.json") {
+		t.Errorf("expected the identifiers-inclusive filename, got %q", cd)
+	}
+}
+
+func TestHandleDownloadConfigurationBackup_InvalidIncludeFlagRejected(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	req := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup?includePrivacySensitive=yes", nil)
+	rec := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an invalid includePrivacySensitive value, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleApplyConfigurationBackup_OmittedPrivacyPreservesCurrentValues(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	withPrivacySensitiveDeviceSettings(t)
+
+	// A sanitized (default) backup - privacy section omitted.
+	body := downloadTestBackup(t)
+	var doc configbackup.Document
+	json.Unmarshal(body, &doc)
+	if doc.Configuration.PrivacySensitiveIncluded {
+		t.Fatal("test precondition failed: expected the default backup to omit privacy fields")
+	}
+
+	token, backup := validateAndGetToken(t, body)
+
+	configBackupMu.Lock()
+	preview := configBackupPending.Preview
+	configBackupMu.Unlock()
+	if preview.PrivacySectionIncluded {
+		t.Error("expected PrivacySectionIncluded to be false for a sanitized no-op backup")
+	}
+	if preview.PrivacyPreserved == "" {
+		t.Error("expected a non-empty preservation note")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if globalSettings.OwnshipModeS != "A1B2C3" || globalSettings.OGNAddr != "DDEEFF" ||
+		globalSettings.OGNReg != "N12345" || globalSettings.OGNPilot != "Test Pilot" {
+		t.Errorf("expected privacy-sensitive device settings to be preserved untouched, got %+v",
+			[]string{globalSettings.OwnshipModeS, globalSettings.OGNAddr, globalSettings.OGNReg, globalSettings.OGNPilot})
+	}
+}
+
+func TestHandleApplyConfigurationBackup_IncludedPrivacyAppliesChange(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	withPrivacySensitiveDeviceSettings(t)
+
+	// A privacy-inclusive backup capturing the CURRENT (pre-change) values.
+	req0 := httptest.NewRequest(http.MethodGet, "/downloadConfigurationBackup?includePrivacySensitive=true", nil)
+	rec0 := httptest.NewRecorder()
+	handleDownloadConfigurationBackupRequest(rec0, req0)
+	var doc configbackup.Document
+	json.Unmarshal(rec0.Body.Bytes(), &doc)
+
+	// Now change the device's live value to something else.
+	globalSettings.OGNPilot = "Someone Else"
+
+	body, _ := json.Marshal(doc)
+	token, backup := validateAndGetToken(t, body)
+
+	configBackupMu.Lock()
+	preview := configBackupPending.Preview
+	configBackupMu.Unlock()
+	if !preview.PrivacySectionIncluded {
+		t.Fatal("expected PrivacySectionIncluded to be true")
+	}
+	found := false
+	for _, n := range preview.PrivacySensitiveFieldNames {
+		if n == "ognPilot" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected ognPilot to be named in the preview, got %v", preview.PrivacySensitiveFieldNames)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if globalSettings.OGNPilot != "Test Pilot" {
+		t.Errorf("expected ognPilot restored to the backed-up value, got %q", globalSettings.OGNPilot)
 	}
 }
 
