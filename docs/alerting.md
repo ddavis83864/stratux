@@ -295,7 +295,11 @@ primary EFB presentation. Tones are short, three audibly distinct patterns
 (notice/caution/system-caution), rate-limited by the same cooldown/global
 spacing rules as visual events, never continuous or rapidly repeating, and
 recovery is silent by default. Test Sound plays a tone without creating a
-real alert event.
+real alert event, and - like every other tone - is silenced immediately by
+an active mute (caught during owner field validation: the server-side
+`/testAlertSound` call is a pure reachability no-op, so the client has its
+own mute check rather than inheriting one from a real alert's server-gated
+`audioEligible` path).
 
 ## Known limitations
 
@@ -336,8 +340,9 @@ comparison).
    traffic notice's approximate range/clock/relative-altitude against the
    existing Traffic page for the same target - they should agree
    approximately, and no notice should ever name your own aircraft.
-6. Tap **Mute**. Confirm no further tones play (visual notices, if any,
-   should still update). Tap **Unmute** and confirm tones can resume.
+6. Tap **Mute**. Confirm no further tones play, including from **Test
+   Sound** (visual notices, if any, should still update). Tap **Unmute**
+   and confirm tones - including Test Sound - can resume.
 7. Change a setting (e.g. audio volume) and reload the page - confirm it
    persisted.
 8. Reboot the device. Confirm the mute preference (muted or not) matches

@@ -57,8 +57,16 @@ appControllers.controller('AlertsCtrl', function ($scope, $http, $interval, aler
 	};
 
 	// testSound plays a tone without creating a real alert event - the
-	// server call only confirms the subsystem is reachable.
+	// server call only confirms the subsystem is reachable. Muting is
+	// documented as silencing audio immediately, but a real alert's tone
+	// is gated server-side (audioEligible) while this one is entirely
+	// client-side - so it needs its own mute check, or Test Sound would
+	// audibly bypass an active mute.
 	$scope.testSound = function () {
+		if ($scope.Alerts.muted) {
+			$scope.Message = 'Alerts are muted - unmute to hear a test tone.';
+			return;
+		}
 		$http.post(URL_ALERTS_TEST_SOUND, {}).then(function () {
 			alertAudioService.playPattern('TRAFFIC_NOTICE', $scope.Settings ? $scope.Settings.audioVolume : 0.5);
 		});
