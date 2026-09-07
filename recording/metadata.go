@@ -7,13 +7,18 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/stratux/stratux/alerting"
 	"github.com/stratux/stratux/preflight"
 )
 
 // MetadataSchemaVersion is bumped whenever SessionMetadata, SessionSnapshot,
 // or SessionFinalization gains, removes, or changes the meaning of a field a
 // consumer should notice - mirroring preflight.SchemaVersion's convention.
-const MetadataSchemaVersion = 1
+// MetadataSchemaVersion 2 added the Alerting*/AlertEvents fields (see
+// docs/alerting.md's "Recording integration" section) - purely additive,
+// so a version-1 reader ignores the new fields and a version-2 file read
+// by older code degrades safely to zero-valued alerting fields.
+const MetadataSchemaVersion = 2
 
 // metadataFileName is the fixed sidecar filename inside one recording's own
 // directory - not a timestamped name like the rotated *.jsonl sample files,
@@ -85,6 +90,20 @@ type SessionSnapshot struct {
 	CalibrationProfileKind      string `json:"calibrationProfileKind,omitempty"`
 	CalibrationValid            bool   `json:"calibrationValid"`
 	CalibrationProfileAvailable bool   `json:"calibrationProfileAvailable"`
+
+	// Alerting* fields are a small, session-level snapshot of the
+	// operational-alerting subsystem's configuration and active-alert
+	// counts at the moment this session started - see docs/alerting.md's
+	// "Recording integration" section. Deliberately a summary (enabled
+	// flags, counts, mute state), not the full settings or active-alert
+	// list, and never repeated into every one-hertz sample.
+	AlertingSchemaVersion       int            `json:"alertingSchemaVersion,omitempty"`
+	AlertingMasterEnabled       bool           `json:"alertingMasterEnabled"`
+	AlertingVisualEnabled       bool           `json:"alertingVisualEnabled"`
+	AlertingAudioArmed          bool           `json:"alertingAudioArmed"`
+	AlertingSystemEnabled       bool           `json:"alertingSystemEnabled"`
+	AlertingMuted               bool           `json:"alertingMuted"`
+	AlertingActiveCountsByLevel map[string]int `json:"alertingActiveCountsByLevel,omitempty"`
 }
 
 // SessionFinalization holds the fields that legitimately change after a
@@ -99,6 +118,15 @@ type SessionFinalization struct {
 	StoppedAtUTC    *time.Time `json:"stoppedAtUtc,omitempty"`
 	DurationSeconds float64    `json:"durationSeconds,omitempty"`
 	SampleCount     int64      `json:"sampleCount"`
+
+	// AlertEvents is a bounded (see main's maxRecordingAlertEvents), sanitized
+	// tail of the alerting subsystem's recent event history at the moment
+	// the recording stopped - one bounded list captured once at
+	// finalization, never a per-sample field and never the full unbounded
+	// history. Empty/omitted for a recording with no material alert
+	// activity, an interrupted recording (finalization never ran), or a
+	// legacy recording predating this feature.
+	AlertEvents []alerting.Event `json:"alertEvents,omitempty"`
 }
 
 // metadataPath returns the fixed sidecar path inside a recording directory

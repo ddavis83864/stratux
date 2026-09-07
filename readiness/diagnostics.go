@@ -98,6 +98,14 @@ type DiagnosticBundle struct {
 	// metadata, only counts plus the most-recent recording's identity, so
 	// this is safe regardless of how many recordings exist.
 	RecordingMetadataSummary interface{} `json:"RecordingMetadataSummary,omitempty"`
+
+	// AlertingSummary is a bounded, sanitized summary of the
+	// operational-alerting subsystem's current state (see the alerting
+	// package) at generation time, opaque to this package for the same
+	// import-direction reason as PreflightReport/RecordingMetadataSummary
+	// above. Never the full active-alert/event list, and never exact
+	// coordinates or MAC addresses.
+	AlertingSummary interface{} `json:"AlertingSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -125,7 +133,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -141,6 +149,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		ActiveCalibrationProfileID: activeProfileID,
 		PreflightReport:            preflightReport,
 		RecordingMetadataSummary:   recordingMetadataSummary,
+		AlertingSummary:            alertingSummary,
 	}
 }
 

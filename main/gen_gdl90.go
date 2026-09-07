@@ -1850,6 +1850,12 @@ func main() {
 	// buildPreflightReport, not here.
 	initPreflight()
 
+	// Initialize the operational-alerting subsystem - see
+	// main/alertingapi.go. Purely additive/observational; a failure here
+	// is recovered and logged, never allowed to affect traffic ingestion
+	// or GDL90 output (see docs/alerting.md's "Failure isolation" section).
+	initAlerting()
+
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 

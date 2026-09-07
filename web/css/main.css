@@ -444,3 +444,16 @@ input.ng-invalid:not(.grayout){
 		transition: transform 0 ease;
 	}
 }
+
+/* The persistent navbar alert indicator (web/index.html) sits pull-left next
+   to the Menu button, while the app title is centered via .navbar-brand-center
+   (position: absolute, width: 100%) and doesn't yield space to its siblings.
+   On narrow phone-portrait widths, the indicator's text label ("SYSTEM_CAUTION",
+   etc.) is wide enough to run into the centered title. Below that width, hide
+   the label and keep only the colored/shaped icon (bell/bell-slash) - still
+   conveys state, and the indicator's title attribute covers the rest. */
+@media (max-width: 480px) {
+	.navbar-alert-label {
+		display: none;
+	}
+}

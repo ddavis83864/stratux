@@ -246,3 +246,7 @@ behaves today for recordings that predate this feature.
 - [http-api.md](http-api.md) - full endpoint reference, including
   diagnostics and calibration-profile APIs this feature reuses conventions
   from.
+- [alerting.md](alerting.md) - the operational-alerting subsystem whose
+  session-level configuration/counts snapshot and bounded recent-event tail
+  are captured into `SessionSnapshot`/`SessionFinalization` (schema
+  version 2) alongside the Preflight snapshot this document defines.

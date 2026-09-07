@@ -1301,6 +1301,16 @@ func managementInterface() {
 	http.HandleFunc("/clearPreflightCheck", handleClearPreflightCheckRequest)
 	http.HandleFunc("/resetPreflightChecks", handleResetPreflightChecksRequest)
 
+	// Operational alerting - see main/alertingapi.go. Supplemental,
+	// non-certified; never modifies GDL90/FLARM output or ADS-B ingestion.
+	http.HandleFunc("/getAlerts", handleGetAlertsRequest)
+	http.HandleFunc("/getAlertSettings", handleGetAlertSettingsRequest)
+	http.HandleFunc("/setAlertSettings", handleSetAlertSettingsRequest)
+	http.HandleFunc("/acknowledgeAlert", handleAcknowledgeAlertRequest)
+	http.HandleFunc("/muteAlerts", handleMuteAlertsRequest)
+	http.HandleFunc("/unmuteAlerts", handleUnmuteAlertsRequest)
+	http.HandleFunc("/testAlertSound", handleTestAlertSoundRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {

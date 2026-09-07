@@ -47,7 +47,15 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession) recordi
 			break
 		}
 	}
+	alertSchema, alertMaster, alertVisual, alertAudioArmed, alertSystem, alertMuted, alertCounts := alertingSnapshotForRecording()
 	return recording.SessionSnapshot{
+		AlertingSchemaVersion:           alertSchema,
+		AlertingMasterEnabled:           alertMaster,
+		AlertingVisualEnabled:           alertVisual,
+		AlertingAudioArmed:              alertAudioArmed,
+		AlertingSystemEnabled:           alertSystem,
+		AlertingMuted:                   alertMuted,
+		AlertingActiveCountsByLevel:     alertCounts,
 		CapturedAtUTC:                   r.GeneratedAt,
 		CapturedAtMonoSeconds:           r.GeneratedAtMonoSeconds,
 		StratuxVersion:                  globalStatus.Version,
