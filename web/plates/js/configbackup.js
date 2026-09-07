@@ -1,5 +1,10 @@
 appControllers.controller('ConfigBackupCtrl', function ($scope, $http) {
 	$scope.downloadUrl = URL_CONFIGBACKUP_DOWNLOAD;
+	// includePrivacy is the explicit, off-by-default opt-in for ownship/
+	// owner-identifying fields - the ordinary Download button must
+	// produce a sanitized backup unless the owner deliberately checks
+	// this first. See docs/configuration-backup-restore.md.
+	$scope.includePrivacy = false;
 
 	$scope.selectedFileName = '';
 	$scope.selectedFileText = '';

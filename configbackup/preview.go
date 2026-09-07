@@ -61,8 +61,18 @@ type Preview struct {
 
 	ActiveProfileChange *FieldChange `json:"activeProfileChange,omitempty"`
 
-	ContainsPrivacySensitiveFields bool     `json:"containsPrivacySensitiveFields"`
-	PrivacySensitiveFieldNames     []string `json:"privacySensitiveFieldNames,omitempty"`
+	// PrivacySectionIncluded mirrors Document.Configuration.
+	// PrivacySensitiveIncluded - whether this backup deliberately
+	// captured ownship/owner-identifying fields (off by default). When
+	// false, PrivacySensitiveFieldNames is always empty and restore will
+	// leave the device's current values exactly as they are - see
+	// PrivacyPreserved.
+	PrivacySectionIncluded     bool     `json:"privacySectionIncluded"`
+	PrivacySensitiveFieldNames []string `json:"privacySensitiveFieldNames,omitempty"`
+	// PrivacyPreserved is a human-readable note always present so a
+	// reviewer never has to infer restore behavior from the boolean
+	// alone.
+	PrivacyPreserved string `json:"privacyNote"`
 
 	Warnings       []string `json:"warnings,omitempty"`
 	BlockingErrors []string `json:"blockingErrors,omitempty"`
@@ -151,8 +161,8 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 		}
 	}
 
-	if !doc.Configuration.PrivacySensitive.Empty() {
-		preview.ContainsPrivacySensitiveFields = true
+	preview.PrivacySectionIncluded = doc.Configuration.PrivacySensitiveIncluded
+	if doc.Configuration.PrivacySensitiveIncluded {
 		p := doc.Configuration.PrivacySensitive
 		if p.OwnshipModeS != "" {
 			preview.PrivacySensitiveFieldNames = append(preview.PrivacySensitiveFieldNames, "ownshipModeS")
@@ -166,7 +176,10 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 		if p.OGNPilot != "" {
 			preview.PrivacySensitiveFieldNames = append(preview.PrivacySensitiveFieldNames, "ognPilot")
 		}
-		preview.Warnings = append(preview.Warnings, "This backup contains privacy-sensitive ownship-identifying fields - review privacySensitiveFieldNames before applying.")
+		preview.PrivacyPreserved = "This backup includes privacy-sensitive ownship-identifying fields - review privacySensitiveFieldNames; applying will overwrite the device's current values with these. Restore only a backup you trust."
+		preview.Warnings = append(preview.Warnings, "This backup includes privacy-sensitive ownship-identifying fields.")
+	} else {
+		preview.PrivacyPreserved = "Privacy-sensitive fields (ownship Mode S, OGN address/registration/pilot) were not included in this backup - the device's current values will be preserved unchanged."
 	}
 
 	preview.HasChanges = len(preview.ConfigurationChanges) > 0 ||
@@ -221,10 +234,14 @@ func diffJSONFields(current, proposed interface{}) []FieldChange {
 		if hadCur && bytes.Equal(curRaw, propRaw) {
 			continue
 		}
-		if k == "privacySensitive" {
-			// Reported separately (ContainsPrivacySensitiveFields/
-			// PrivacySensitiveFieldNames) - never as an undifferentiated
-			// generic field diff a reviewer could skim past.
+		if k == "privacySensitive" || k == "privacySensitiveIncluded" {
+			// Reported separately (PrivacySectionIncluded/
+			// PrivacySensitiveFieldNames/PrivacyPreserved) - never as an
+			// undifferentiated generic field diff a reviewer could skim
+			// past, and never implying the device's *current* value of
+			// PrivacySensitiveIncluded (always true - see
+			// configurationSectionFromGlobalSettings) "changed" just
+			// because a sanitized backup's flag is false.
 			continue
 		}
 		var curVal, propVal interface{}

@@ -31,7 +31,21 @@
 	<div class="panel panel-default">
 		<div class="panel-heading"><span class="panel_label">Download Configuration Backup</span></div>
 		<div class="panel-body">
-			<a class="btn btn-primary" href="{{downloadUrl}}">Download Configuration Backup</a>
+			<div class="checkbox">
+				<label>
+					<input type="checkbox" ng-model="includePrivacy"/>
+					Include aircraft/owner identification fields
+				</label>
+			</div>
+			<p class="small text-danger" ng-show="includePrivacy">
+				This will include: ownship Mode S identifier, OGN address, OGN registration, and
+				OGN pilot information. These are not passwords, but they may identify the aircraft
+				or operator. Leave this unchecked for a sanitized backup. Treat a backup with this
+				included as a private file.
+			</p>
+			<a class="btn btn-primary" ng-href="{{downloadUrl}}{{includePrivacy ? '?includePrivacySensitive=true' : ''}}">
+				Download Configuration Backup
+			</a>
 		</div>
 	</div>
 
@@ -67,9 +81,13 @@
 					<span ng-show="!preview.compatibleWithCurrent" class="text-danger">This backup's schema is not compatible with this build.</span>
 				</p>
 
-				<div class="alert alert-warning" ng-show="preview.containsPrivacySensitiveFields">
-					This backup contains privacy-sensitive ownship-identifying fields:
-					{{preview.privacySensitiveFieldNames.join(', ')}}.
+				<div class="alert alert-warning" ng-show="preview.privacySectionIncluded">
+					This backup includes privacy-sensitive ownship-identifying fields:
+					{{preview.privacySensitiveFieldNames.join(', ')}}. Applying it will overwrite
+					the device's current values with these.
+				</div>
+				<div class="alert alert-info" ng-show="!preview.privacySectionIncluded">
+					{{preview.privacyNote}}
 				</div>
 				<div class="alert alert-warning" ng-repeat="w in preview.warnings">{{w}}</div>
 				<div class="alert alert-danger" ng-repeat="e in preview.blockingErrors">{{e}}</div>

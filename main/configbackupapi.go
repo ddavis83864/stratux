@@ -123,6 +123,12 @@ func newConfigBackupToken() string {
 
 // --- globalSettings <-> configbackup.ConfigurationSection -------------
 
+// configurationSectionFromGlobalSettings reflects the device's actual
+// current state, so PrivacySensitiveIncluded is always true here - the
+// off-by-default opt-in only governs what a *portable export* discloses
+// (see buildConfigBackupDocument), never what this function reports about
+// the live device to itself (diffing, fingerprinting, rollback
+// snapshots).
 func configurationSectionFromGlobalSettings() configbackup.ConfigurationSection {
 	return configbackup.ConfigurationSection{
 		DarkMode:                globalSettings.DarkMode,
@@ -154,6 +160,7 @@ func configurationSectionFromGlobalSettings() configbackup.ConfigurationSection 
 		GpsManualChip:           globalSettings.GpsManualChip,
 		GpsManualTargetBaud:     globalSettings.GpsManualTargetBaud,
 		RegionSelected:          globalSettings.RegionSelected,
+		PrivacySensitiveIncluded: true,
 		PrivacySensitive: configbackup.PrivacySensitiveSection{
 			OwnshipModeS: globalSettings.OwnshipModeS,
 			OGNAddr:      globalSettings.OGNAddr,
@@ -199,10 +206,19 @@ func applyConfigurationSectionToGlobalSettings(c configbackup.ConfigurationSecti
 	globalSettings.GpsManualChip = c.GpsManualChip
 	globalSettings.GpsManualTargetBaud = c.GpsManualTargetBaud
 	globalSettings.RegionSelected = c.RegionSelected
-	globalSettings.OwnshipModeS = c.PrivacySensitive.OwnshipModeS
-	globalSettings.OGNAddr = c.PrivacySensitive.OGNAddr
-	globalSettings.OGNReg = c.PrivacySensitive.OGNReg
-	globalSettings.OGNPilot = c.PrivacySensitive.OGNPilot
+	// Privacy-sensitive fields are only ever applied when the document
+	// deliberately included them (PrivacySensitiveIncluded) - an export
+	// that omitted them (the default, sanitized case) must never clear or
+	// overwrite the device's existing values. Rollback's own snapshot
+	// (configurationSectionFromGlobalSettings) always has this true, so
+	// rollback still fully restores privacy fields regardless of what the
+	// failed backup claimed.
+	if c.PrivacySensitiveIncluded {
+		globalSettings.OwnshipModeS = c.PrivacySensitive.OwnshipModeS
+		globalSettings.OGNAddr = c.PrivacySensitive.OGNAddr
+		globalSettings.OGNReg = c.PrivacySensitive.OGNReg
+		globalSettings.OGNPilot = c.PrivacySensitive.OGNPilot
+	}
 }
 
 // --- AlertSettings <-> configbackup.AlertSettingsSection ---------------
@@ -307,20 +323,53 @@ func configBackupCreatedAtUTC() *time.Time {
 	return nil
 }
 
-func buildConfigBackupDocument() (configbackup.Document, error) {
+// buildConfigBackupDocument assembles a portable export. includePrivacySensitive
+// is the owner's explicit, off-by-default opt-in (the dashboard's "Include
+// aircraft/owner identification fields" checkbox, or
+// ?includePrivacySensitive=true) - false is the ordinary, sanitized
+// export: the privacy section is zeroed and marked not-included, never
+// silently populated from the live device state
+// (configurationSectionFromGlobalSettings always returns it populated,
+// since that function separately serves the "what is the device's actual
+// current state" question - see its own doc comment).
+func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Document, error) {
 	current, err := gatherConfigBackupCurrentState()
 	if err != nil {
 		return configbackup.Document{}, err
+	}
+	cfg := current.Configuration
+	if !includePrivacySensitive {
+		cfg.PrivacySensitiveIncluded = false
+		cfg.PrivacySensitive = configbackup.PrivacySensitiveSection{}
 	}
 	return configbackup.BuildDocument(configbackup.BuildInputs{
 		SourceVersion:              current.Version,
 		SourceCommit:               current.Commit,
 		CreatedAtUTC:               configBackupCreatedAtUTC(),
-		Configuration:              current.Configuration,
+		Configuration:              cfg,
 		CalibrationProfiles:        current.CalibrationProfiles,
 		ActiveCalibrationProfileID: current.ActiveProfileID,
 		AlertSettings:              current.AlertSettings,
 	})
+}
+
+// parseIncludePrivacySensitive reads the includePrivacySensitive query
+// parameter: absent means false (the safe default - "absence of the
+// option means false"); present, it must be exactly "true" or "false" -
+// any other value is rejected rather than silently coerced, so a caller's
+// typo can never accidentally enable it.
+func parseIncludePrivacySensitive(r *http.Request) (bool, error) {
+	v := r.URL.Query().Get("includePrivacySensitive")
+	switch v {
+	case "":
+		return false, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("includePrivacySensitive must be \"true\" or \"false\", got %q", v)
+	}
 }
 
 // --- HTTP handlers -------------------------------------------------
@@ -332,7 +381,12 @@ func handleDownloadConfigurationBackupRequest(w http.ResponseWriter, r *http.Req
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
-	doc, err := buildConfigBackupDocument()
+	includePrivacy, err := parseIncludePrivacySensitive(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	doc, err := buildConfigBackupDocument(includePrivacy)
 	if err != nil {
 		http.Error(w, "could not build configuration backup: "+err.Error(), http.StatusServiceUnavailable)
 		return
@@ -344,7 +398,7 @@ func handleDownloadConfigurationBackupRequest(w http.ResponseWriter, r *http.Req
 	}
 	setNoCache(w)
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", configbackup.SanitizedFilename()))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", configbackup.SanitizedFilename(includePrivacy)))
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
 }

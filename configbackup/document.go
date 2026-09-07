@@ -18,6 +18,17 @@
 // The thin glue that reads globalSettings/AlertSettings/calprofile.Store,
 // serves HTTP, and owns the in-memory restore-operation state lives in
 // main/configbackupapi.go.
+//
+// Checksum limitation: every SHA-256 in a Document (SectionChecksums,
+// ContentChecksum) detects accidental corruption and incomplete
+// modification - a truncated download, a byte flipped in transit, a
+// half-written file. It is NOT authentication and provides NO protection
+// against deliberate modification: anyone able to edit the document can
+// recompute a matching checksum for their edited content just as this
+// package does, so a passing checksum proves the document is internally
+// self-consistent, never that it came from a trusted source or wasn't
+// deliberately altered. This package implements no signing, encryption,
+// or key management. Restore only a backup you trust.
 package configbackup
 
 import (
@@ -35,12 +46,22 @@ import (
 // SchemaVersion is the current backup document schema. Bump this and add
 // an explicit compatibility/migration note whenever the document shape
 // changes in a way an older reader could misinterpret.
-const SchemaVersion = 1
+//
+// Schema 2 (current) changed the meaning of the privacy-sensitive fields:
+// schema 1 always populated them; schema 2 adds the explicit
+// PrivacySensitiveIncluded flag and requires it be true before those
+// fields may be treated as anything but absent (see
+// ConfigurationSection.PrivacySensitiveIncluded and Validate). This is a
+// deliberate, documented, non-additive break, made while this feature was
+// still unmerged and had never shipped a schema-1 document from a real
+// release - MinimumCompatibleSchemaVersion is raised alongside it rather
+// than carrying schema 1's unsafe-by-default meaning forward.
+const SchemaVersion = 2
 
 // MinimumCompatibleSchemaVersion is the oldest schemaVersion this build
 // will accept for restore. Bump only alongside a deliberate, documented
 // migration path - never silently.
-const MinimumCompatibleSchemaVersion = 1
+const MinimumCompatibleSchemaVersion = 2
 
 // Bounds enforced by Validate. All deliberately conservative: this
 // document holds small, bounded configuration, never bulk data.
@@ -67,22 +88,25 @@ const (
 // Sentinel errors, wrapped with context by Validate - callers can
 // distinguish categories with errors.Is without string-matching.
 var (
-	ErrTooLarge              = errors.New("configbackup: document exceeds maximum size")
-	ErrUnsupportedSchema     = errors.New("configbackup: unsupported schema version")
-	ErrChecksumMismatch      = errors.New("configbackup: checksum mismatch")
-	ErrInvalidField          = errors.New("configbackup: invalid field")
-	ErrTooManyProfiles       = errors.New("configbackup: too many calibration profiles")
-	ErrDuplicateProfileID    = errors.New("configbackup: duplicate calibration profile id")
-	ErrDanglingActiveProfile = errors.New("configbackup: active profile id does not match any included profile")
+	ErrTooLarge               = errors.New("configbackup: document exceeds maximum size")
+	ErrUnsupportedSchema      = errors.New("configbackup: unsupported schema version")
+	ErrChecksumMismatch       = errors.New("configbackup: checksum mismatch")
+	ErrInvalidField           = errors.New("configbackup: invalid field")
+	ErrTooManyProfiles        = errors.New("configbackup: too many calibration profiles")
+	ErrDuplicateProfileID     = errors.New("configbackup: duplicate calibration profile id")
+	ErrDanglingActiveProfile  = errors.New("configbackup: active profile id does not match any included profile")
+	ErrPrivacySectionMismatch = errors.New("configbackup: privacy-sensitive fields present but privacySensitiveIncluded is false")
 )
 
 // PrivacySensitiveSection holds ownship-identifying fields that are
 // technically supported application configuration but can identify the
-// aircraft or pilot. They are always included in a backup (a partial
-// "everything except these" export is not implemented - see docs'
-// "Known limitations"), but are always called out distinctly by name in
-// Preview and never silently folded into an undifferentiated settings
-// diff, so an owner never restores them without seeing them named.
+// aircraft or pilot. Excluded by default - see
+// ConfigurationSection.PrivacySensitiveIncluded, the explicit,
+// off-by-default opt-in an export must set before this section carries
+// real values. When it is included, every non-empty field here is always
+// called out distinctly by name in Preview, never silently folded into an
+// undifferentiated settings diff, so an owner never restores them without
+// seeing them named.
 type PrivacySensitiveSection struct {
 	// OwnshipModeS is globalSettings.OwnshipModeS - the ICAO/Mode S
 	// address this receiver treats as its own aircraft for self-alert
@@ -156,7 +180,21 @@ type ConfigurationSection struct {
 
 	RegionSelected int `json:"regionSelected"`
 
-	PrivacySensitive PrivacySensitiveSection `json:"privacySensitive"`
+	// PrivacySensitiveIncluded records whether PrivacySensitive was
+	// deliberately captured for this export - the owner-facing "Include
+	// aircraft/owner identification fields" checkbox, off by default.
+	// False is the ordinary, sanitized export: PrivacySensitive is the
+	// zero value, and restore must treat the section as *absent*
+	// (preserve whatever the device already has), never as "the owner
+	// wants these fields cleared." True means PrivacySensitive holds the
+	// real values (which may themselves still be empty strings, if the
+	// device simply has none set - that is a real, deliberately-captured
+	// empty, not an omission) and restore may propose changing them, with
+	// every affected field named in preview. See Validate, which rejects
+	// a document claiming false while PrivacySensitive is non-empty - an
+	// export cannot honestly disclaim inclusion while leaking the values.
+	PrivacySensitiveIncluded bool                    `json:"privacySensitiveIncluded"`
+	PrivacySensitive         PrivacySensitiveSection `json:"privacySensitive"`
 }
 
 // AlertSettingsSection mirrors main.AlertSettings's own persisted fields,
@@ -209,9 +247,13 @@ type Document struct {
 	ActiveCalibrationProfileID string               `json:"activeCalibrationProfileId,omitempty"`
 	AlertSettings              AlertSettingsSection `json:"alertSettings"`
 
-	// SectionChecksums/ContentChecksum detect corruption/truncation/
-	// tampering-in-transit - they are NOT authentication and prove
-	// nothing about who produced the file. See Validate's doc comment.
+	// SectionChecksums/ContentChecksum detect accidental corruption and
+	// incomplete modification (a truncated download, a flipped byte, a
+	// half-written file) - they are NOT authentication and provide NO
+	// protection against deliberate modification: anyone editing this
+	// document can recompute a matching checksum for their edit, exactly
+	// as this package does. Restore only a backup you trust. See the
+	// package doc comment and Validate's doc comment.
 	SectionChecksums map[string]string `json:"sectionChecksums"`
 	ContentChecksum  string            `json:"contentChecksum"`
 }
@@ -311,7 +353,13 @@ func contentChecksum(doc Document) (string, error) {
 
 // SanitizedFilename returns the fixed, safe filename this document should
 // always be downloaded/uploaded as - never derived from any user- or
-// backup-supplied string.
-func SanitizedFilename() string {
+// backup-supplied string. includesPrivacySensitive should match exactly
+// the document's own PrivacySensitiveIncluded, so a privacy-inclusive
+// export is distinguishable at a glance (and therefore handled with more
+// care) without the filename itself containing any identifying value.
+func SanitizedFilename(includesPrivacySensitive bool) string {
+	if includesPrivacySensitive {
+		return "stratux-configuration-backup-with-identifiers.json"
+	}
 	return "stratux-configuration-backup.json"
 }

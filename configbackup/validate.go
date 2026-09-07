@@ -103,8 +103,14 @@ func Validate(doc Document, rawSize int) ValidationResult {
 	validateAlertSettings(doc.AlertSettings, &res)
 	validateProfiles(doc.CalibrationProfiles, doc.ActiveCalibrationProfileID, &res)
 
-	if !doc.Configuration.PrivacySensitive.Empty() {
-		res.addWarning("backup contains privacy-sensitive ownship-identifying fields (ownship Mode S address, and/or OGN/FLARM address, registration, or pilot name)")
+	// A document cannot honestly disclaim "no privacy-sensitive data" while
+	// actually carrying it - reject outright rather than warn, since a
+	// producer that gets this wrong (or a document edited to lie about it)
+	// could cause those values to leak through a path that trusts the flag.
+	if !doc.Configuration.PrivacySensitiveIncluded && !doc.Configuration.PrivacySensitive.Empty() {
+		res.addErrorf("%s", ErrPrivacySectionMismatch)
+	} else if doc.Configuration.PrivacySensitiveIncluded {
+		res.addWarning("backup includes privacy-sensitive ownship-identifying fields (ownship Mode S address, and/or OGN/FLARM address, registration, or pilot name) - restore only a backup you trust")
 	}
 
 	return res
