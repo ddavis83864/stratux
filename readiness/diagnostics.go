@@ -115,6 +115,15 @@ type DiagnosticBundle struct {
 	// availability, schema version, and the last restore attempt's
 	// outcome/sections.
 	ConfigBackupSummary interface{} `json:"ConfigBackupSummary,omitempty"`
+
+	// PowerSummary is a bounded summary of the power/thermal-health and
+	// controlled-shutdown subsystem's current state (see the power
+	// package) at generation time, opaque to this package for the same
+	// import-direction reason as the summaries above. Never anything
+	// about an outstanding shutdown confirmation token - only the current
+	// throttle booleans, severity, previous-session assessment, and
+	// shutdown stage.
+	PowerSummary interface{} `json:"PowerSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -142,7 +151,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -160,6 +169,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		RecordingMetadataSummary:   recordingMetadataSummary,
 		AlertingSummary:            alertingSummary,
 		ConfigBackupSummary:        configBackupSummary,
+		PowerSummary:               powerSummary,
 	}
 }
 
