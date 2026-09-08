@@ -83,11 +83,12 @@ func NewMachine() *Machine {
 //
 // Decision policy, by current state:
 //
-//   - DISABLED: transitions to ARMED_WAITING the moment Settings.Enabled
-//     is true - with no candidate dwell carried over, so enabling the
-//     feature can never immediately start a recording from a stale
-//     pre-enable sample (the first post-enable sample only ever *begins*
-//     a fresh dwell).
+//   - DISABLED: transitions to ARMED_WAITING and evaluates that same
+//     tick's conditions the moment Settings.Enabled is true - with no
+//     candidate dwell carried over, so enabling the feature can never
+//     immediately start a recording from a stale pre-enable sample (the
+//     first post-enable sample only ever *begins* a fresh dwell, which
+//     still requires the full StartDwellSeconds like any other).
 //   - ARMED_WAITING / START_CANDIDATE / INHIBITED: re-checks every
 //     start-blocking precondition (see startBlocked) on every tick,
 //     regardless of dwell progress - a conflict appearing mid-dwell
@@ -127,7 +128,14 @@ func (m *Machine) Evaluate(in MachineInput) (Snapshot, Action) {
 	switch m.state {
 	case StateDisabled:
 		if in.Settings.Enabled {
+			// Arm and evaluate this same tick's conditions immediately -
+			// there is no reason to waste a tick merely observing "now
+			// armed" before anything else is checked. The anti-stale-dwell
+			// guarantee (see Evaluate's doc comment) is unaffected: no
+			// candidate dwell exists yet, so evaluateWaitingForStart can
+			// only ever *begin* a fresh one here, never resume one.
 			m.transition(StateArmedWaiting, ReasonWaitingForMotion, in.NowMonotonic)
+			return m.evaluateWaitingForStart(in)
 		}
 		return m.snapshot(in.NowMonotonic), ActionNone
 
