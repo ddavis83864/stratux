@@ -207,8 +207,9 @@ func updateHealth() {
 	ahrs := buildAHRSHealth(mono, now)
 	baro := buildBaroHealth(mono, now)
 	fan := buildFanHealth(now)
+	storageLifecycle := buildStorageLifecycleHealth()
 
-	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan)
+	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan, storageLifecycle)
 
 	globalHealthMutex.Lock()
 	globalHealth = report
