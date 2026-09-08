@@ -59,45 +59,62 @@ func Validate(doc Document, rawSize int) ValidationResult {
 		return res
 	}
 
-	// Recompute every checksum from doc's own content and compare -
-	// before trusting anything else in the document. A mismatch here
-	// means the document was corrupted, truncated, or edited outside
-	// this package's own export path; stop rather than partially
-	// validate content that may not even be self-consistent.
-	rebuilt, err := BuildDocument(BuildInputs{
-		SourceVersion:              doc.SourceVersion,
-		SourceCommit:               doc.SourceCommit,
-		CreatedAtUTC:               doc.CreatedAtUTC,
-		Configuration:              doc.Configuration,
-		CalibrationProfiles:        doc.CalibrationProfiles,
-		ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID,
-		AlertSettings:              doc.AlertSettings,
-		AutoRecordSettings:         doc.AutoRecordSettings,
-	})
-	if err != nil {
-		res.addErrorf("configbackup: could not verify checksums: %s", err)
-		return res
-	}
-	if doc.ContentChecksum == "" {
-		res.addErrorf("%s: missing contentChecksum", ErrChecksumMismatch)
-	} else if rebuilt.ContentChecksum != doc.ContentChecksum {
-		res.addErrorf("%s: whole-document checksum", ErrChecksumMismatch)
-	}
-	for section, want := range rebuilt.SectionChecksums {
-		got, present := doc.SectionChecksums[section]
-		if !present {
-			res.addErrorf("%s: missing checksum for section %q", ErrChecksumMismatch, section)
-			continue
+	// Before the general current-shape rebuild-and-compare below, ask
+	// whether doc's checksums are EXACTLY consistent with the one known
+	// historical pre-autoRecordSettings shape (see legacy.go) - never a
+	// partial/best-effort match. If they are, that IS this call's
+	// checksum verification (doc was never touched by
+	// autoRecordSettings-aware code, so re-deriving checksums against
+	// the CURRENT shape below would spuriously fail); skip straight to
+	// semantic validation, using a normalized copy with
+	// AutoRecordSettings defaulted (disabled) rather than the
+	// hysteresis-violating Go zero value. If they are not, doc is
+	// either a genuine current-format document or corrupt/tampered -
+	// either way, the existing rebuild-and-compare below decides,
+	// completely unchanged.
+	if normalized, ok := normalizeLegacyDocument(doc); ok {
+		doc = normalized
+	} else {
+		// Recompute every checksum from doc's own content and compare -
+		// before trusting anything else in the document. A mismatch here
+		// means the document was corrupted, truncated, or edited outside
+		// this package's own export path; stop rather than partially
+		// validate content that may not even be self-consistent.
+		rebuilt, err := BuildDocument(BuildInputs{
+			SourceVersion:              doc.SourceVersion,
+			SourceCommit:               doc.SourceCommit,
+			CreatedAtUTC:               doc.CreatedAtUTC,
+			Configuration:              doc.Configuration,
+			CalibrationProfiles:        doc.CalibrationProfiles,
+			ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID,
+			AlertSettings:              doc.AlertSettings,
+			AutoRecordSettings:         doc.AutoRecordSettings,
+		})
+		if err != nil {
+			res.addErrorf("configbackup: could not verify checksums: %s", err)
+			return res
 		}
-		if got != want {
-			res.addErrorf("%s: section %q", ErrChecksumMismatch, section)
+		if doc.ContentChecksum == "" {
+			res.addErrorf("%s: missing contentChecksum", ErrChecksumMismatch)
+		} else if rebuilt.ContentChecksum != doc.ContentChecksum {
+			res.addErrorf("%s: whole-document checksum", ErrChecksumMismatch)
 		}
-	}
-	if !res.OK() {
-		// Checksums didn't match at all - every further "content" check
-		// below would be validating data we already know is
-		// inconsistent with its own declared checksum. Stop here.
-		return res
+		for section, want := range rebuilt.SectionChecksums {
+			got, present := doc.SectionChecksums[section]
+			if !present {
+				res.addErrorf("%s: missing checksum for section %q", ErrChecksumMismatch, section)
+				continue
+			}
+			if got != want {
+				res.addErrorf("%s: section %q", ErrChecksumMismatch, section)
+			}
+		}
+		if !res.OK() {
+			// Checksums didn't match at all - every further "content"
+			// check below would be validating data we already know is
+			// inconsistent with its own declared checksum. Stop here.
+			return res
+		}
 	}
 
 	validateConfiguration(doc.Configuration, &res)

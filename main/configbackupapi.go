@@ -479,6 +479,15 @@ func handleValidateConfigurationBackupRequest(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "errors": res.Errors, "warnings": res.Warnings})
 		return
 	}
+	// Only after Validate has reported doc OK: fill in any historical-
+	// shape-only defaulting (currently: a verified pre-autoRecordSettings
+	// legacy document's AutoRecordSettings, defaulted disabled) so the
+	// preview shown below reflects what will actually be applied, not a
+	// hysteresis-violating zero value. A no-op for every current-format
+	// document. doc.ContentChecksum/SectionChecksums (used below for the
+	// confirmation token) are untouched by this - they still name
+	// exactly the bytes the caller uploaded.
+	doc = configbackup.NormalizeDocument(doc)
 
 	current, err := gatherConfigBackupCurrentState()
 	if err != nil {
@@ -598,6 +607,13 @@ func handleApplyConfigurationBackupRequest(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "errors": res.Errors})
 		return
 	}
+	// Same historical-shape defaulting as the validate/preview path,
+	// applied here too so a legacy document actually being applied gets
+	// the same disabled default rather than a hysteresis-violating zero
+	// value. req.Backup.ContentChecksum (used by VerifyToken below) is
+	// untouched - it still names exactly the bytes that were validated
+	// and bound into the confirmation token.
+	req.Backup = configbackup.NormalizeDocument(req.Backup)
 
 	current, err := gatherConfigBackupCurrentState()
 	if err != nil {
