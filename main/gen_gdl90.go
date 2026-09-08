@@ -1856,6 +1856,13 @@ func main() {
 	// or GDL90 output (see docs/alerting.md's "Failure isolation" section).
 	initAlerting()
 
+	// Initialize power/thermal health monitoring, the previous-session
+	// clean/unclean marker, and the controlled-shutdown state machine -
+	// see main/powerapi.go and docs/power-shutdown-resilience.md. Must run
+	// after initPreflight() (uses preflightSessionID as a fallback session
+	// id and as the shutdown-token boot-session binding).
+	initPower()
+
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 
