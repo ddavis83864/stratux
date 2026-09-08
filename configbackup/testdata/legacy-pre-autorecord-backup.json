@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 2,
+  "createdAtUTC": "2026-09-07T12:00:00Z",
+  "sourceVersion": "2.0-pre5",
+  "sourceCommit": "5b8509fca1ced937a6b66f257918f04abf967a36",
+  "minimumCompatibleVersion": 2,
+  "configuration": {
+    "darkMode": false,
+    "uatEnabled": true,
+    "esEnabled": true,
+    "ognEnabled": false,
+    "aprsEnabled": false,
+    "aisEnabled": false,
+    "pingEnabled": false,
+    "pongEnabled": false,
+    "gpsEnabled": false,
+    "bmpSensorEnabled": false,
+    "imuSensorEnabled": false,
+    "displayTrafficSource": false,
+    "ppm": 0,
+    "dump1090Gain": 0,
+    "altitudeOffset": 0,
+    "gLimits": "",
+    "estimateBearinglessDist": false,
+    "radarLimits": 0,
+    "radarRange": 0,
+    "ognI2cTxEnabled": false,
+    "ognAddrType": 0,
+    "ognAcftType": 0,
+    "ognTxPower": 0,
+    "pwmDutyMin": 0,
+    "gpsManualConfig": false,
+    "gpsManualDevice": "",
+    "gpsManualChip": "",
+    "gpsManualTargetBaud": 0,
+    "regionSelected": 1,
+    "privacySensitiveIncluded": false,
+    "privacySensitive": {}
+  },
+  "calibrationProfiles": [
+    {
+      "id": "profile-abcdef0123456789",
+      "name": "Legacy Backup Aircraft",
+      "imuMapping": [
+        -1,
+        0
+      ],
+      "sensorQuaternion": [
+        0.1,
+        0.2,
+        0.3,
+        0.9
+      ],
+      "c": [
+        0,
+        0,
+        0
+      ],
+      "d": [
+        1,
+        2,
+        3
+      ],
+      "levelCalibrated": true,
+      "gyroCalibrated": true,
+      "kind": "user",
+      "schemaVersion": 1,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "modifiedAt": "2026-01-01T00:00:00Z",
+      "lastCalibratedAt": null
+    }
+  ],
+  "activeCalibrationProfileId": "profile-abcdef0123456789",
+  "alertSettings": {
+    "masterEnabled": true,
+    "visualTrafficNoticesEnabled": false,
+    "browserAudioEnabled": false,
+    "systemVisualEnabled": false,
+    "systemAudioEnabled": false,
+    "audioVolume": 0.5,
+    "monitoringHorizontalNm": 0,
+    "monitoringVerticalFeet": 0,
+    "noticeHorizontalNm": 0,
+    "noticeVerticalFeet": 0,
+    "cautionHorizontalNm": 0,
+    "cautionVerticalFeet": 0,
+    "highCautionHorizontalNm": 0,
+    "highCautionVerticalFeet": 0,
+    "audioCooldownNoticeSeconds": 0,
+    "audioCooldownCautionSeconds": 0,
+    "globalMinAudioSpacingSeconds": 0,
+    "suppressGroundTraffic": false
+  },
+  "sectionChecksums": {
+    "alertSettings": "f916efe5af6f89ce378ff12d74a24e61c12554cff1343645ec23ac1f20092785",
+    "calibrationProfiles": "c8f986929cad1c66685a4bdf32c85282bbb2bf887447c2515e5380702696975d",
+    "configuration": "1a643a799aa1838a1fd11984972f3d3865c709f70b37976cf94d0aa8212750a7"
+  },
+  "contentChecksum": "572e84d60ba3ff5d5b594772b665ebe04211b08e926e3778173f57412ca0b006"
+}

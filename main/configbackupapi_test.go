@@ -5,26 +5,35 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stratux/stratux/autorecord"
 	"github.com/stratux/stratux/calprofile"
 	"github.com/stratux/stratux/configbackup"
 	"github.com/stratux/stratux/ota"
 )
 
 // withConfigBackupTestEnv wires a temp calibration-profile store, a temp
-// alert-settings file, a monotonic clock, and a clean restore-operation
-// state machine for the duration of one test - mirrors
-// withTestProfilesStore (calprofilesapi_test.go) and
-// withTestAlertSettingsPath (alertsettings_test.go), plus this
-// subsystem's own state.
+// alert-settings file, a temp autorecord-settings file, a monotonic
+// clock, and a clean restore-operation state machine for the duration of
+// one test - mirrors withTestProfilesStore (calprofilesapi_test.go),
+// withTestAlertSettingsPath (alertsettings_test.go), and
+// withTestAutoRecordSettingsPath (autorecordsettings_test.go), plus this
+// subsystem's own state. The autorecord-settings redirect matters here
+// specifically: gatherConfigBackupCurrentState/applyConfigBackupTransaction
+// both read/write autoRecordSettingsPath, which otherwise defaults to
+// the real PersistentDataPath - without this, a configbackup test run on
+// a real device or a developer machine with /var/lib/stratux-data
+// present could read or write that real file.
 func withConfigBackupTestEnv(t *testing.T) *calprofile.Store {
 	t.Helper()
 	store := withTestProfilesStore(t)
 	withTestAlertSettingsPath(t)
+	withTestAutoRecordSettingsPath(t)
 	withFakePersistentStorageForTest(t)
 	if stratuxClock == nil {
 		stratuxClock = NewMonotonic()
@@ -843,5 +852,167 @@ func TestConfigBackupDiagnosticsSummary_NeverIncludesBackupContent(t *testing.T)
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			t.Errorf("diagnostics summary must never include %q, got %s", forbidden, encoded)
 		}
+	}
+}
+
+// --- legacy (pre-Automatic-Flight-Recording) backup compatibility -----
+
+// TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault
+// cross-checks configbackup's own independently-restated legacy default
+// (it cannot import autorecord - see configbackup's package doc comment)
+// against the real autorecord.DefaultSettings() - the one place both
+// packages are already imported together, so a future change to either
+// default without updating the other fails here rather than silently
+// drifting.
+func TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault(t *testing.T) {
+	got := configbackup.LegacyDefaultAutoRecordSettings()
+	want := autorecord.DefaultSettings()
+	if got.Enabled != want.Enabled ||
+		got.StartGroundspeedKnots != want.StartGroundspeedKnots ||
+		got.StartDwellSeconds != want.StartDwellSeconds ||
+		got.StopGroundspeedKnots != want.StopGroundspeedKnots ||
+		got.StopDwellSeconds != want.StopDwellSeconds ||
+		got.GPSLossGraceSeconds != want.GPSLossGraceSeconds ||
+		got.RestartCooldownSeconds != want.RestartCooldownSeconds ||
+		got.MinimumRecordingDurationSeconds != want.MinimumRecordingDurationSeconds {
+		t.Fatalf("configbackup.LegacyDefaultAutoRecordSettings() = %+v has drifted from autorecord.DefaultSettings() = %+v - update legacy.go's legacyDefaultAutoRecordSettings to match", got, want)
+	}
+}
+
+// loadLegacyPreAutoRecordFixtureBody reads the same authentic,
+// historically-generated fixture the configbackup package's own tests
+// use - see configbackup/testdata/README.md.
+func loadLegacyPreAutoRecordFixtureBody(t *testing.T) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "configbackup", "testdata", "legacy-pre-autorecord-backup.json"))
+	if err != nil {
+		t.Fatalf("reading legacy fixture: %v", err)
+	}
+	return body
+}
+
+// TestHandleValidateConfigurationBackup_LegacyPreAutoRecordSucceeds is
+// the end-to-end (real HTTP handlers, real settings files) proof that a
+// genuine pre-Automatic-Flight-Recording backup validates successfully
+// through the live restore path, not just the configbackup package's
+// own pure-function tests.
+func TestHandleValidateConfigurationBackup_LegacyPreAutoRecordSucceeds(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := loadLegacyPreAutoRecordFixtureBody(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/validateConfigurationBackup", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleValidateConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected a genuine legacy backup to validate, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSONBody(t, rec)
+	if resp["success"] != true {
+		t.Fatalf("expected success, got %+v", resp)
+	}
+}
+
+// TestHandleApplyConfigurationBackup_LegacyPreAutoRecordAppliesDisabled
+// restores a genuine legacy backup end-to-end: Automatic Flight
+// Recording was previously enabled on this "device" (simulating an
+// operator who turned it on after the legacy backup was taken); after
+// restoring the legacy backup, it must come back disabled - the
+// documented safe default - while unrelated settings from the legacy
+// backup (alertSettings.masterEnabled/audioVolume) are genuinely
+// applied.
+func TestHandleApplyConfigurationBackup_LegacyPreAutoRecordAppliesDisabled(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	body := loadLegacyPreAutoRecordFixtureBody(t)
+
+	// Simulate the feature having been turned on since this legacy
+	// backup was taken.
+	enabled := autorecord.DefaultSettings()
+	enabled.Enabled = true
+	enabled.StartGroundspeedKnots = 15
+	enabled.StopGroundspeedKnots = 5
+	if err := saveAutoRecordSettings(enabled); err != nil {
+		t.Fatalf("could not pre-enable automatic recording: %v", err)
+	}
+	if !loadAutoRecordSettings().Enabled {
+		t.Fatal("setup failed: automatic recording should be enabled before this test's restore")
+	}
+	// Also change the live alert settings so the legacy backup's own
+	// alertSettings actually has something to restore.
+	live := loadAlertSettings()
+	live.MasterEnabled = false
+	live.AudioVolume = 0.9
+	if err := saveAlertSettings(live); err != nil {
+		t.Fatalf("could not change live alert settings: %v", err)
+	}
+
+	token, backup := validateAndGetToken(t, body)
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected a genuine legacy backup to apply, got %d: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSONBody(t, rec)
+	if resp["success"] != true {
+		t.Fatalf("expected success, got %+v", resp)
+	}
+
+	after := loadAutoRecordSettings()
+	if after.Enabled {
+		t.Fatal("restoring a legacy backup that predates Automatic Flight Recording must leave it disabled, not carry over the live enabled state")
+	}
+	if after != autorecord.DefaultSettings() {
+		t.Errorf("restored automatic-recording settings = %+v, want exactly autorecord.DefaultSettings() = %+v", after, autorecord.DefaultSettings())
+	}
+
+	// The legacy backup's own alertSettings (masterEnabled: true,
+	// audioVolume: 0.5 - see testdata/README.md's generation inputs)
+	// must have been genuinely applied, proving this restore is not
+	// merely "succeeding while doing nothing."
+	restoredAlert := loadAlertSettings()
+	if !restoredAlert.MasterEnabled {
+		t.Error("expected the legacy backup's alertSettings.masterEnabled=true to have been applied")
+	}
+	if restoredAlert.AudioVolume != 0.5 {
+		t.Errorf("expected the legacy backup's alertSettings.audioVolume=0.5 to have been applied, got %v", restoredAlert.AudioVolume)
+	}
+}
+
+// TestHandleApplyConfigurationBackup_LegacyPreAutoRecordNoPartialMutationOnFailure
+// proves a legacy restore that fails partway (simulated: an active
+// recording conflict, the same guard every restore already respects)
+// leaves automatic-recording settings untouched - no partial mutation.
+func TestHandleApplyConfigurationBackup_LegacyPreAutoRecordNoPartialMutationOnFailure(t *testing.T) {
+	withConfigBackupTestEnv(t)
+	ensureSituationLocks()
+	ensureADSBTowerMutexForTest()
+	ensureStratuxClockForTest()
+	withTestPreflightStore(t)
+	withTestRecordingsDir(t)
+
+	body := loadLegacyPreAutoRecordFixtureBody(t)
+	token, backup := validateAndGetToken(t, body)
+
+	before := loadAutoRecordSettings()
+
+	recMu.Lock()
+	recCurrent = &recordingSession{ID: "rec-legacy-conflict", State: recordingStateActive}
+	recMu.Unlock()
+	t.Cleanup(func() {
+		recMu.Lock()
+		recCurrent = nil
+		recMu.Unlock()
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/applyConfigurationBackup", bytes.NewReader(applyRequestBody(t, token, backup)))
+	rec := httptest.NewRecorder()
+	handleApplyConfigurationBackupRequest(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("expected the restore to be rejected while a recording is active, got 200: %s", rec.Body.String())
+	}
+
+	after := loadAutoRecordSettings()
+	if after != before {
+		t.Errorf("a rejected restore must not have touched automatic-recording settings at all: before=%+v after=%+v", before, after)
 	}
 }
