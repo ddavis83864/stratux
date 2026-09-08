@@ -26,6 +26,7 @@ glue, in-memory restore-operation state machine, and every read/write of
 | `calibrationProfiles` | Every stored `calprofile.Profile` (name, mounting metadata, calibration vectors, validity, timestamps). | Additive/update only via `calprofile.Store.Save` - a profile absent from the backup is **never** deleted. |
 | `activeCalibrationProfileId` | Which profile is active. | Applied via `calprofile.Store.SetActiveID`, which itself refuses a dangling reference; the active profile's calibration is also mirrored into `globalSettings` (the same `applyProfileToGlobalSettingsLocked` helper `/activateCalibrationProfile` already uses). |
 | `alertSettings` | Every persisted operational-alerting preference (thresholds, audio toggles, volume, cooldowns) **except** mute state. | Overwrites those fields; `SchemaVersion` and `Muted`/`MutedIndefinitely`/`MuteUntilUnixSeconds` are always preserved from the *current* settings, never the backup. |
+| `autoRecordSettings` | Every persisted Automatic Flight Recording setting (enabled, start/stop groundspeed and dwell thresholds, GPS-loss grace, restart cooldown, minimum recording duration) - see `docs/automatic-flight-recording.md`. | Overwrites those fields (`SchemaVersion` preserved from current); never changes any existing recording's own recorded origin (manual/automatic), only the going-forward configuration. |
 
 ## Excluded sections (never read or written by this subsystem)
 

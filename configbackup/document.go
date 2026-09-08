@@ -229,6 +229,24 @@ type AlertSettingsSection struct {
 	SuppressGroundTraffic bool `json:"suppressGroundTraffic"`
 }
 
+// AutoRecordSettingsSection mirrors autorecord.Settings's own persisted
+// fields, except SchemaVersion (this document has its own). Unlike
+// AlertSettingsSection's excluded mute state, Automatic Flight Recording
+// has no comparable operational/time-bound field to exclude - every
+// field here is durable configuration, and a restore never changes any
+// existing recording's own recorded origin (manual/automatic), only the
+// going-forward configuration.
+type AutoRecordSettingsSection struct {
+	Enabled                         bool    `json:"enabled"`
+	StartGroundspeedKnots           float64 `json:"startGroundspeedKnots"`
+	StartDwellSeconds               float64 `json:"startDwellSeconds"`
+	StopGroundspeedKnots            float64 `json:"stopGroundspeedKnots"`
+	StopDwellSeconds                float64 `json:"stopDwellSeconds"`
+	GPSLossGraceSeconds             float64 `json:"gpsLossGraceSeconds"`
+	RestartCooldownSeconds          float64 `json:"restartCooldownSeconds"`
+	MinimumRecordingDurationSeconds float64 `json:"minimumRecordingDurationSeconds"`
+}
+
 // Document is the complete, portable configuration backup.
 type Document struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -242,10 +260,11 @@ type Document struct {
 	SourceCommit             string `json:"sourceCommit"`
 	MinimumCompatibleVersion int    `json:"minimumCompatibleVersion"`
 
-	Configuration              ConfigurationSection `json:"configuration"`
-	CalibrationProfiles        []calprofile.Profile `json:"calibrationProfiles"`
-	ActiveCalibrationProfileID string               `json:"activeCalibrationProfileId,omitempty"`
-	AlertSettings              AlertSettingsSection `json:"alertSettings"`
+	Configuration              ConfigurationSection      `json:"configuration"`
+	CalibrationProfiles        []calprofile.Profile      `json:"calibrationProfiles"`
+	ActiveCalibrationProfileID string                    `json:"activeCalibrationProfileId,omitempty"`
+	AlertSettings              AlertSettingsSection      `json:"alertSettings"`
+	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
 
 	// SectionChecksums/ContentChecksum detect accidental corruption and
 	// incomplete modification (a truncated download, a flipped byte, a
@@ -272,6 +291,7 @@ type BuildInputs struct {
 	CalibrationProfiles        []calprofile.Profile
 	ActiveCalibrationProfileID string
 	AlertSettings              AlertSettingsSection
+	AutoRecordSettings         AutoRecordSettingsSection
 }
 
 // sectionChecksum returns the hex SHA-256 of v's canonical JSON encoding.
@@ -316,6 +336,7 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		CalibrationProfiles:        profiles,
 		ActiveCalibrationProfileID: in.ActiveCalibrationProfileID,
 		AlertSettings:              in.AlertSettings,
+		AutoRecordSettings:         in.AutoRecordSettings,
 	}
 
 	cfgSum, err := sectionChecksum(doc.Configuration)
@@ -330,10 +351,15 @@ func BuildDocument(in BuildInputs) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming alert settings: %w", err)
 	}
+	autoRecordSum, err := sectionChecksum(doc.AutoRecordSettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming automatic-recording settings: %w", err)
+	}
 	doc.SectionChecksums = map[string]string{
 		"configuration":       cfgSum,
 		"calibrationProfiles": profSum,
 		"alertSettings":       alertSum,
+		"autoRecordSettings":  autoRecordSum,
 	}
 
 	contentSum, err := contentChecksum(doc)

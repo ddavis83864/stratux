@@ -72,6 +72,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 		CalibrationProfiles:        doc.CalibrationProfiles,
 		ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID,
 		AlertSettings:              doc.AlertSettings,
+		AutoRecordSettings:         doc.AutoRecordSettings,
 	})
 	if err != nil {
 		res.addErrorf("configbackup: could not verify checksums: %s", err)
@@ -101,6 +102,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 
 	validateConfiguration(doc.Configuration, &res)
 	validateAlertSettings(doc.AlertSettings, &res)
+	validateAutoRecordSettings(doc.AutoRecordSettings, &res)
 	validateProfiles(doc.CalibrationProfiles, doc.ActiveCalibrationProfileID, &res)
 
 	// A document cannot honestly disclaim "no privacy-sensitive data" while
@@ -181,6 +183,38 @@ func validateAlertSettings(a AlertSettingsSection, res *ValidationResult) {
 		} else if v < 0 {
 			res.addErrorf("%s: alertSettings.%s must not be negative", ErrInvalidField, name)
 		}
+	}
+}
+
+// validateAutoRecordSettings mirrors autorecord.Settings.Validate's own
+// bound/hysteresis rules - this package cannot import autorecord (leaf-
+// dependency direction), so the rules are independently re-checked here
+// against the same documented bounds, exactly as validateAlertSettings
+// re-checks AlertSettings.Validate's rules.
+func validateAutoRecordSettings(a AutoRecordSettingsSection, res *ValidationResult) {
+	speeds := map[string]float64{
+		"autoRecordSettings.startGroundspeedKnots": a.StartGroundspeedKnots,
+		"autoRecordSettings.stopGroundspeedKnots":  a.StopGroundspeedKnots,
+	}
+	for name, v := range speeds {
+		if !finite(v) || v < 0 || v > 500 {
+			res.addErrorf("%s: %s must be between 0 and 500 knots", ErrInvalidField, name)
+		}
+	}
+	durations := map[string]float64{
+		"autoRecordSettings.startDwellSeconds":               a.StartDwellSeconds,
+		"autoRecordSettings.stopDwellSeconds":                a.StopDwellSeconds,
+		"autoRecordSettings.gpsLossGraceSeconds":             a.GPSLossGraceSeconds,
+		"autoRecordSettings.restartCooldownSeconds":          a.RestartCooldownSeconds,
+		"autoRecordSettings.minimumRecordingDurationSeconds": a.MinimumRecordingDurationSeconds,
+	}
+	for name, v := range durations {
+		if !finite(v) || v < 0 || v > 2*60*60 {
+			res.addErrorf("%s: %s must be between 0 and 7200 seconds", ErrInvalidField, name)
+		}
+	}
+	if a.StopGroundspeedKnots >= a.StartGroundspeedKnots {
+		res.addErrorf("%s: autoRecordSettings.stopGroundspeedKnots must be strictly lower than startGroundspeedKnots", ErrInvalidField)
 	}
 }
 
