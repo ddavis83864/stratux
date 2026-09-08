@@ -264,6 +264,50 @@ scanning any namespace) - the same non-blocking-lock discipline this project alr
 elsewhere (see `main/preflightapi.go`'s `recordingReadinessForPreflight`, which uses
 `TryLock` for exactly this reason).
 
+## Scan cancellation: formally bounded, not context-cancellable
+
+PR #13's hardware validation surfaced a real, previously-undocumented gap: `Scanner.Scan`/
+`Manager.Scan` accept no `context.Context` and have no explicit timeout, unlike
+`AtomicWriter.Write`. A follow-up mission (Automatic Flight Recording) investigated this
+before building anything that could depend on scan timing, and resolved it as **formally
+bounded, not corrected** - the alternative (threading a `context.Context` through the
+scanner and checking it at traversal boundaries) was judged unnecessary, and a real
+correction there would itself be new, untested surface added to an already-validated
+package for no removed risk. The reasoning:
+
+1. **`Scan` cannot leak a goroutine.** `storagelifecycle`'s production source has zero `go`
+   statements (verified by direct source search, and exercised concretely by
+   `TestScanner_NoGoroutineSpawnedStructurally`) - `Scan`/`scanNamespace`/
+   `sumDirectChildren` call only synchronous `FS` methods. A call to `Scan()` can only ever
+   return to the exact goroutine that called it; there is no way for it to keep running
+   after that goroutine stops waiting.
+2. **Each namespace is already hard-bounded.** `maxScanItemsPerNamespace` (100,000) caps
+   worst-case per-namespace item count, and `TestScanner_BoundedLatencyAtRepresentativeScale`
+   demonstrates roughly linear, low per-item cost at 5,000 synthetic items (well beyond any
+   real registered namespace's size) - a guard against an accidental O(n²) regression, not
+   a claim that 100,000 is itself fast.
+3. **Real-world latency is already measured, not estimated.** PR #13's live 30-minute
+   stability window measured `/getStorageLifecycle`'s full HTTP round trip (itself reading
+   an already-completed scan's cached `Status`, not triggering a fresh one) at a stable
+   9-17ms throughout, with the real device's four registered namespaces holding under 50
+   items combined.
+4. **`Manager.Scan`'s existing coalescing already prevents pile-up.** Only one scan is ever
+   in flight; an overlapping caller gets the current snapshot immediately instead of
+   queuing a second walk, so even a hypothetically slow scan cannot cause unbounded
+   concurrent scans.
+5. **Nothing synchronously waits on a scan.** `storageLifecycleUpdateLoop` runs on its own
+   dedicated goroutine, separate from the 5s health tick and from every other subsystem -
+   a slow scan delays only that goroutine's *own* next tick, never ADS-B/GPS/GDL90/health
+   processing. Automatic Flight Recording (see docs/automatic-flight-recording.md)
+   deliberately never triggers or waits on a fresh scan either: its storage check reads
+   `Manager.Status()`, the last completed scan's cached result, exactly like the dashboard
+   and diagnostics already do - this was a design requirement specifically because of this
+   section's conclusion, not a coincidence.
+
+If a future namespace's real item count or a future caller's timing requirement ever
+invalidates points 2-5 above, `context.Context` support should be added then, as its own
+focused, separately reviewed change - not preemptively, against no demonstrated need.
+
 ## Failure isolation
 
 A namespace-level scan error never aborts the whole `Inventory`, a manager-level scan error
