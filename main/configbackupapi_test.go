@@ -773,6 +773,17 @@ func TestHandleApplyConfigurationBackup_AddedAndActivatedProfile(t *testing.T) {
 		SourceVersion: doc.SourceVersion, SourceCommit: doc.SourceCommit, CreatedAtUTC: doc.CreatedAtUTC,
 		Configuration: doc.Configuration, CalibrationProfiles: doc.CalibrationProfiles,
 		ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID, AlertSettings: doc.AlertSettings,
+		// Carry over the downloaded backup's own AutoRecordSettings too,
+		// exactly like AlertSettings above - a real device-produced
+		// backup always has this section populated (loadAutoRecordSettings
+		// never returns the bare Go zero value; see
+		// autoRecordSettingsSectionFromCurrent's caller), so a document
+		// built here without it would not faithfully represent a real
+		// backup and would spuriously fail apply's stricter
+		// autorecord.Settings.Validate() (0 knots is not strictly less
+		// than 0 knots) - a test-construction gap, not a real restore
+		// scenario.
+		AutoRecordSettings: doc.AutoRecordSettings,
 	})
 	if err != nil {
 		t.Fatal(err)

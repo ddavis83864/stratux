@@ -321,3 +321,48 @@ func TestLegacyBackup_PreviewIsAccurate(t *testing.T) {
 		t.Fatal("expected the preview to show autoRecordSettings changing from the live device's enabled config down to the legacy backup's disabled default")
 	}
 }
+
+// --- an unpopulated (zero-value) AutoRecordSettings must still validate ---
+
+// TestUnpopulatedAutoRecordSettingsIsAccepted covers a document built by
+// a caller that never set BuildInputs.AutoRecordSettings at all (its Go
+// zero value: Enabled false, every threshold 0) - a real pattern in this
+// project's own existing test suite (BuildDocument calls that predate
+// this section and were never updated to populate it), and something a
+// future caller could always do again. This is distinct from the
+// verified-historical-legacy-shape path (legacy.go): this document
+// carries a full, correct autoRecordSettings checksum for its own
+// (zero-valued) content - it is a perfectly ordinary, internally-
+// consistent CURRENT-format document that simply never configured this
+// section, not a document claiming to predate it.
+//
+// The zero value would otherwise fail validateAutoRecordSettings' own
+// hysteresis check (0 is not strictly less than 0) despite representing
+// no actual risk: Enabled is false, so no threshold is ever read.
+func TestUnpopulatedAutoRecordSettingsIsAccepted(t *testing.T) {
+	in := testBuildInputs()
+	in.AutoRecordSettings = AutoRecordSettingsSection{} // deliberately unset, unlike testBuildInputs' own default
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); !res.OK() {
+		t.Fatalf("a document with an unpopulated (zero-value) autoRecordSettings section must still validate: %v", res.Errors)
+	}
+}
+
+// TestEnabledWithZeroThresholdsStillRejected proves the zero-value
+// tolerance above is narrow: Enabled:true together with all-zero
+// thresholds is NOT the zero value (Enabled is part of it) and must
+// still be rejected exactly as before.
+func TestEnabledWithZeroThresholdsStillRejected(t *testing.T) {
+	in := testBuildInputs()
+	in.AutoRecordSettings = AutoRecordSettingsSection{Enabled: true}
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); res.OK() {
+		t.Fatal("expected Enabled:true with all-zero thresholds to still be rejected")
+	}
+}

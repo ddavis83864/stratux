@@ -209,6 +209,23 @@ func validateAlertSettings(a AlertSettingsSection, res *ValidationResult) {
 // against the same documented bounds, exactly as validateAlertSettings
 // re-checks AlertSettings.Validate's rules.
 func validateAutoRecordSettings(a AutoRecordSettingsSection, res *ValidationResult) {
+	if a == (AutoRecordSettingsSection{}) {
+		// An entirely zero-valued section - never explicitly configured
+		// (e.g. a caller/test that built a Document without populating
+		// AutoRecordSettings at all, relying on Go's zero value; a
+		// document verified as the pre-autoRecordSettings historical
+		// shape is normalized to legacyDefaultAutoRecordSettings before
+		// this function ever runs, so it never reaches this branch).
+		// Enabled is necessarily false here (it's part of the zero
+		// value itself), so there is no live threshold configuration to
+		// validate - skip the bounds/hysteresis checks below, which an
+		// all-zero value can never satisfy (0 is not strictly less than
+		// 0) despite posing no actual risk: a disabled feature never
+		// reads these thresholds. Any OTHER value - including
+		// Enabled:true with all-zero thresholds - is not equal to the
+		// zero value and still goes through full validation below.
+		return
+	}
 	speeds := map[string]float64{
 		"autoRecordSettings.startGroundspeedKnots": a.StartGroundspeedKnots,
 		"autoRecordSettings.stopGroundspeedKnots":  a.StopGroundspeedKnots,
