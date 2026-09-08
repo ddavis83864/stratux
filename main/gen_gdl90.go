@@ -1710,6 +1710,15 @@ func gracefulShutdown() {
 
 	pprof.StopCPUProfile()
 
+	// If Automatic Flight Recording currently owns the active recording,
+	// finalize it through the Machine's own shutdown path first (updates
+	// its state/counters/cooldown correctly) - see
+	// main/autorecordrun.go's autoRecordHandleShutdown doc comment. The
+	// unconditional stopRecordingForShutdown() call below remains the
+	// correct, unchanged path for a manual recording, and is a harmless
+	// idempotent no-op if this already stopped the only active recording.
+	autoRecordHandleShutdown()
+
 	// Flush and close any active recording session cleanly rather than
 	// leaving its last file unflushed.
 	stopRecordingForShutdown()
@@ -1869,6 +1878,12 @@ func main() {
 	// no FIS-B cache. Must run after readSettings() (PersistentDataPath
 	// must already be final).
 	initStorageLifecycle()
+
+	// Initialize Automatic Flight Recording - see main/autorecordrun.go
+	// and docs/automatic-flight-recording.md. Disabled by default; must
+	// run after initPreflight/initPower/initStorageLifecycle, whose live
+	// status this feature's detection tick reads every second.
+	initAutoRecord()
 
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }

@@ -1381,6 +1381,13 @@ func managementInterface() {
 	// Read-only: there is no corresponding mutation/deletion endpoint.
 	http.HandleFunc("/getStorageLifecycle", handleGetStorageLifecycleRequest)
 
+	// Automatic Flight Recording - see main/autorecordapi.go and
+	// docs/automatic-flight-recording.md. Disabled by default.
+	http.HandleFunc("/getAutoRecordStatus", handleGetAutoRecordStatusRequest)
+	http.HandleFunc("/getAutoRecordSettings", handleGetAutoRecordSettingsRequest)
+	http.HandleFunc("/setAutoRecordSettings", handleSetAutoRecordSettingsRequest)
+	http.HandleFunc("/clearAutoRecordError", handleClearAutoRecordErrorRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
