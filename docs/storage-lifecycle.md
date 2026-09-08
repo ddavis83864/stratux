@@ -357,10 +357,13 @@ interface, ingests, persists, or serves any FIS-B product in this mission.**
 
 ## Test strategy
 
-112 tests in `storagelifecycle` (110 against a complete in-memory fake filesystem with
+114 tests in `storagelifecycle` (112 against a complete in-memory fake filesystem with
 per-call fault injection - see `fakefs_test.go` - plus 2 against a real `t.TempDir()`
 filesystem, exercising the real `osFS`/`NewOSFS()` implementation end to end) plus 11 in
-`main/storagelifecycleapi_test.go`. Coverage includes: namespace/path safety (traversal,
+`main/storagelifecycleapi_test.go` - 125 total, verified by direct `go test -list`
+enumeration (a prior mission's PR description undercounted this as 123, missing the two
+real-filesystem tests added after that count was taken - corrected here). Coverage
+includes: namespace/path safety (traversal,
 absolute paths, separator-containing names, overlapping roots, sibling-prefix false
 positives); inventory classification (managed/active/unmanaged, symlinks, unsupported file
 types, missing/permission-denied namespaces, deterministic ordering, directory-item sizing);
