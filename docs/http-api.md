@@ -108,7 +108,9 @@ Deletes all AHRS log files.
 Reboots the Raspberry Pi.
 
 #### `POST /shutdown`
-Shuts down the Raspberry Pi.
+Shuts down the Raspberry Pi immediately, with no confirmation step. See
+[Power and Controlled Shutdown](#power-and-controlled-shutdown) below for a manual,
+two-step confirmed alternative that also flushes an active recording first.
 
 #### `POST /restart`
 Restarts the Stratux software without rebooting the Pi.
@@ -209,6 +211,24 @@ validation, confirmation-token, and rollback design.
 | `/validateConfigurationBackup` | POST | Validate an uploaded document (JSON body) and return a preview of what it would change. No writes. `200` with `{preview, confirmationToken, expiresInSeconds}` on success; `400` malformed/invalid, `413` oversized. |
 | `/applyConfigurationBackup` | POST | `{"confirmationToken": "...", "backup": {...}}` - transactionally applies a previously validated document. `200` only after complete success; `400` invalid input, `409` stale preview/active recording/active OTA/concurrent restore, `410` expired or already-used token, `413` oversized. A failure includes a structured rollback result and never claims partial success. |
 | `/getConfigurationRestoreStatus` | GET | Current restore-operation state (`idle`/`validating`/`preview-ready`/`applying`/`verifying`/`rolling-back`/`complete`/`failed`) and the last result, if any. |
+
+---
+
+### Power and Controlled Shutdown
+
+Power/thermal-health reporting built on the Raspberry Pi's own `get_throttled` signal
+(no battery percentage or runtime estimate - this hardware has no trustworthy source for
+either), plus a manual, two-step confirmed shutdown flow, separate from the pre-existing
+unconfirmed `POST /shutdown` above. See
+[power-shutdown-resilience.md](power-shutdown-resilience.md) for the full design, including
+the throttle-bit meaning table and the previous-session marker's conservative wording.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getPowerHealth` | GET | Debounced power-health reading (severity, throttle booleans, capability-honesty notes) plus the previous-session clean/unclean assessment. |
+| `/getShutdownStatus` | GET | Current controlled-shutdown stage (`idle`/`confirmation_required`/`shutdown_requested`/`flushing`/`ready_to_power_off`/`command_issued`/`failed`). |
+| `/requestShutdown` | POST | Step 1: checked preconditions (no active OTA update or configuration restore), then issues a short-lived, single-use confirmation token. `200` with `{token, expiresAtMonotonic}`; `409` if blocked. |
+| `/confirmShutdown` | POST | Step 2: `{"token": "..."}` - flushes (stops and finalizes any active recording), syncs, responds, then powers the device off. `200` only after the response is sent; `400` invalid/expired/reused token; `409` a precondition newly failed since step 1. |
 
 ---
 
