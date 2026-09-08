@@ -543,3 +543,29 @@ func powerSessionChecks(in Input) []CheckResult {
 	}
 	return []CheckResult{newCheck("Power", "previous_session", "Previous session", StateCaution, SeverityInfo, in.PreviousSessionNote)}
 }
+
+// storageLifecycleChecks reports the storage-lifecycle inventory
+// foundation's own pressure state - see readiness.StorageLifecycleHealth.
+// Deliberately a single concise card (per this check's own mission
+// requirement to avoid overwhelming the pilot with implementation
+// detail): an unavailable inventory (still within startup grace, or the
+// feature simply not yet populated) is NOT_APPLICABLE, never a caution -
+// this is an unsupported-until-populated foundation, not a fault.
+// Genuinely critical pressure is blocking, matching this project's
+// existing "power_thermal"/storage treatment of real resource exhaustion.
+func storageLifecycleChecks(in Input) []CheckResult {
+	if !in.StorageLifecycleHasInventory {
+		return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateNotApplicable, SeverityInfo, "inventory not yet available")}
+	}
+	switch in.StorageLifecyclePressure {
+	case "CRITICAL":
+		return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateNotReady, SeverityBlocking, in.StorageLifecycleReason)}
+	case "HIGH", "ELEVATED", "UNKNOWN":
+		return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateCaution, SeverityCaution, in.StorageLifecycleReason)}
+	default:
+		if in.StorageLifecycleStale {
+			return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateCaution, SeverityCaution, "inventory is stale")}
+		}
+		return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateReady, SeverityInfo, "storage lifecycle nominal")}
+	}
+}

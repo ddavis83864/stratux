@@ -212,16 +212,20 @@ func buildPreflightReport() (report preflight.Report) {
 	powerPreviousSessionMu.Unlock()
 
 	in := preflight.Input{
-		Health:                      health,
-		UptimeSeconds:               uptimeSeconds,
-		Profile:                     profileSummaryForPreflight(),
-		Recording:                   recordingReadinessForPreflight(health.Storage.RecordingAllowed, health.Time.RecordingAllowed),
-		ManualAcks:                  acks,
-		BootSessionID:               sessionID,
-		GeneratedAtUTC:              generatedAtUTC,
-		PreviousSessionAvailable:    previousSession.Available,
-		PreviousSessionEndedCleanly: previousSession.EndedCleanly,
-		PreviousSessionNote:         previousSession.Note,
+		Health:                       health,
+		UptimeSeconds:                uptimeSeconds,
+		Profile:                      profileSummaryForPreflight(),
+		Recording:                    recordingReadinessForPreflight(health.Storage.RecordingAllowed, health.Time.RecordingAllowed),
+		ManualAcks:                   acks,
+		BootSessionID:                sessionID,
+		GeneratedAtUTC:               generatedAtUTC,
+		PreviousSessionAvailable:     previousSession.Available,
+		PreviousSessionEndedCleanly:  previousSession.EndedCleanly,
+		PreviousSessionNote:          previousSession.Note,
+		StorageLifecycleHasInventory: health.StorageLifecycle.HasInventory,
+		StorageLifecyclePressure:     health.StorageLifecycle.Pressure,
+		StorageLifecycleStale:        health.StorageLifecycle.Stale,
+		StorageLifecycleReason:       health.StorageLifecycle.Reason,
 	}
 	return preflight.BuildReport(in)
 }
