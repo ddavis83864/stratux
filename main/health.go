@@ -192,6 +192,14 @@ func updateHealth() {
 	throttle, _ := readiness.GetThrottled()       // zero-value (not throttled) on non-Pi dev builds
 	system := readiness.BuildSystemHealth(globalStatus.Version, globalStatus.Build, time.Duration(globalStatus.Uptime)*time.Nanosecond, float64(globalStatus.CPUTemp), throttle.Throttled(), throttle.Undervoltage(), failedUnits)
 
+	// Feed the same throttle reading into the debounced power.Monitor
+	// (see main/powerapi.go's GET /getPowerHealth) rather than invoking
+	// vcgencmd a second time - one sample per health tick is exactly what
+	// Monitor's RequiredConsecutive debounce policy is designed around.
+	powerMonitorMu.Lock()
+	powerMonitor.Observe(throttle)
+	powerMonitorMu.Unlock()
+
 	ensurePersistentDataUUID()
 	storage := readiness.CertifyPersistentStorage(PersistentDataPath, globalSettings.PersistentDataUUID, readiness.DefaultPersistentStorageThresholds())
 	overlay := readiness.CertifyPersistentStorage("/", "", readiness.DefaultPersistentStorageThresholds())

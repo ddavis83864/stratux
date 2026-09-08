@@ -32,6 +32,11 @@ hardware integration). User-facing how-tos live in the
   calibration profiles): export allowlist, checksums, the validate/preview/confirm/apply
   flow, transactional rollback, and what is deliberately excluded (credentials,
   recordings, diagnostics, OS configuration).
+- **[power-shutdown-resilience.md](power-shutdown-resilience.md)** — power/thermal-health
+  reporting built on the Raspberry Pi's own `get_throttled` signal, the honest capability
+  limits on typical USB-power-bank hardware (no battery percentage, no automatic shutdown),
+  the manual two-step confirmed controlled-shutdown flow, and the previous-session
+  clean/unclean marker.
 
 ## Interfaces (for EFB / app / tool developers)
 

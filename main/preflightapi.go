@@ -207,14 +207,21 @@ func buildPreflightReport() (report preflight.Report) {
 		generatedAtUTC = &t
 	}
 
+	powerPreviousSessionMu.Lock()
+	previousSession := powerPreviousSession
+	powerPreviousSessionMu.Unlock()
+
 	in := preflight.Input{
-		Health:         health,
-		UptimeSeconds:  uptimeSeconds,
-		Profile:        profileSummaryForPreflight(),
-		Recording:      recordingReadinessForPreflight(health.Storage.RecordingAllowed, health.Time.RecordingAllowed),
-		ManualAcks:     acks,
-		BootSessionID:  sessionID,
-		GeneratedAtUTC: generatedAtUTC,
+		Health:                      health,
+		UptimeSeconds:               uptimeSeconds,
+		Profile:                     profileSummaryForPreflight(),
+		Recording:                   recordingReadinessForPreflight(health.Storage.RecordingAllowed, health.Time.RecordingAllowed),
+		ManualAcks:                  acks,
+		BootSessionID:               sessionID,
+		GeneratedAtUTC:              generatedAtUTC,
+		PreviousSessionAvailable:    previousSession.Available,
+		PreviousSessionEndedCleanly: previousSession.EndedCleanly,
+		PreviousSessionNote:         previousSession.Note,
 	}
 	return preflight.BuildReport(in)
 }

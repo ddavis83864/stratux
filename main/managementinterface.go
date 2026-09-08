@@ -659,6 +659,7 @@ func handleShutdownRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func doReboot() {
+	markSessionClosed("reboot")
 	syscall.Sync()
 	exec.Command("systemctl", "reboot").Run()
 }
@@ -1364,6 +1365,16 @@ func managementInterface() {
 	http.HandleFunc("/validateConfigurationBackup", handleValidateConfigurationBackupRequest)
 	http.HandleFunc("/applyConfigurationBackup", handleApplyConfigurationBackupRequest)
 	http.HandleFunc("/getConfigurationRestoreStatus", handleGetConfigurationRestoreStatusRequest)
+
+	// Power/thermal health and controlled shutdown - see
+	// main/powerapi.go and docs/power-shutdown-resilience.md. Manual only:
+	// nothing here ever shuts the device down without both of
+	// requestShutdown and confirmShutdown being called, in order, with a
+	// short-lived single-use token.
+	http.HandleFunc("/getPowerHealth", handleGetPowerHealthRequest)
+	http.HandleFunc("/getShutdownStatus", handleGetShutdownStatusRequest)
+	http.HandleFunc("/requestShutdown", handleRequestShutdownRequest)
+	http.HandleFunc("/confirmShutdown", handleConfirmShutdownRequest)
 
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)

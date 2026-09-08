@@ -21,7 +21,10 @@ import (
 // MetadataSchemaVersion 3 added the ConfigBackup* fields (see
 // docs/configuration-backup-restore.md's "Recording integration"
 // section) - likewise purely additive.
-const MetadataSchemaVersion = 3
+// MetadataSchemaVersion 4 added the Power* fields (see
+// docs/power-shutdown-resilience.md's "Recording integration" section) -
+// likewise purely additive.
+const MetadataSchemaVersion = 4
 
 // metadataFileName is the fixed sidecar filename inside one recording's own
 // directory - not a timestamped name like the rotated *.jsonl sample files,
@@ -121,6 +124,19 @@ type SessionSnapshot struct {
 	ConfigBackupSchemaVersion    int    `json:"configBackupSchemaVersion,omitempty"`
 	ConfigBackupFingerprint      string `json:"configBackupFingerprint,omitempty"`
 	ConfigBackupRestoredThisBoot bool   `json:"configBackupRestoredThisBoot"`
+
+	// Power* fields are a small, session-level snapshot of the
+	// power/thermal-health subsystem's state at the moment this session
+	// started - see docs/power-shutdown-resilience.md's "Recording
+	// integration" section. Deliberately never the shutdown flow's
+	// outstanding confirmation token, and never a battery-percentage or
+	// runtime-estimate field, since this project has no trustworthy
+	// source for either on the hardware this feature ships for.
+	PowerSeverity               string `json:"powerSeverity,omitempty"`
+	PowerUndervoltageNow        bool   `json:"powerUndervoltageNow"`
+	PowerThrottledNow           bool   `json:"powerThrottledNow"`
+	PreviousSessionAvailable    bool   `json:"previousSessionAvailable"`
+	PreviousSessionEndedCleanly bool   `json:"previousSessionEndedCleanly"`
 }
 
 // SessionFinalization holds the fields that legitimately change after a

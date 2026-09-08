@@ -49,10 +49,16 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession) recordi
 	}
 	alertSchema, alertMaster, alertVisual, alertAudioArmed, alertSystem, alertMuted, alertCounts := alertingSnapshotForRecording()
 	cfgBackupSchema, cfgBackupFingerprint, cfgBackupRestored := configBackupSnapshotForRecording()
+	powerSeverity, powerUndervoltageNow, powerThrottledNow, previousSessionEndedCleanly, previousSessionAvailable := powerSnapshotForRecording()
 	return recording.SessionSnapshot{
 		ConfigBackupSchemaVersion:       cfgBackupSchema,
 		ConfigBackupFingerprint:         cfgBackupFingerprint,
 		ConfigBackupRestoredThisBoot:    cfgBackupRestored,
+		PowerSeverity:                   powerSeverity,
+		PowerUndervoltageNow:            powerUndervoltageNow,
+		PowerThrottledNow:               powerThrottledNow,
+		PreviousSessionAvailable:        previousSessionAvailable,
+		PreviousSessionEndedCleanly:     previousSessionEndedCleanly,
 		AlertingSchemaVersion:           alertSchema,
 		AlertingMasterEnabled:           alertMaster,
 		AlertingVisualEnabled:           alertVisual,

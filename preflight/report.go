@@ -139,6 +139,17 @@ type Input struct {
 
 	BootSessionID  string
 	GeneratedAtUTC *time.Time // nil when time is not currently trusted
+
+	// PreviousSessionAvailable/PreviousSessionEndedCleanly/
+	// PreviousSessionNote mirror power.PreviousSessionAssessment (see the
+	// power package) without this package importing it, the same
+	// import-avoidance pattern readiness.CalibrationProfileSummary uses
+	// for calprofile. PreviousSessionAvailable false means no assessment
+	// could be made (e.g. first boot with this feature) - not evidence of
+	// anything, and never treated as a caution.
+	PreviousSessionAvailable    bool
+	PreviousSessionEndedCleanly bool
+	PreviousSessionNote         string
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -184,6 +195,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, fanChecks(in)...)
 	automated = append(automated, recordingChecks(in)...)
 	automated = append(automated, fisbChecks(in)...)
+	automated = append(automated, powerSessionChecks(in)...)
 
 	manual := manualCheckResults(in)
 

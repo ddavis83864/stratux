@@ -522,3 +522,24 @@ func manualCheckResults(in Input) []CheckResult {
 	}
 	return out
 }
+
+// --- Power / previous session ------------------------------------------
+
+// powerSessionChecks reports whether the previous session recorded a
+// clean shutdown or reboot - see power.EvaluatePreviousSession's doc
+// comment for exactly what this can and cannot establish. Deliberately
+// never blocking and never StateNotReady: an unclear previous-session
+// close is ambiguous (it can also just mean this feature is new, or the
+// daemon was restarted by systemd) and must never fail preflight on its
+// own. This is a separate check from "System" -> "power_thermal" above,
+// which covers the live/historical throttle-register reading; this one
+// covers only the previous-session marker.
+func powerSessionChecks(in Input) []CheckResult {
+	if !in.PreviousSessionAvailable {
+		return []CheckResult{newCheck("Power", "previous_session", "Previous session", StateNotApplicable, SeverityInfo, "no previous-session record available")}
+	}
+	if in.PreviousSessionEndedCleanly {
+		return []CheckResult{newCheck("Power", "previous_session", "Previous session", StateReady, SeverityInfo, "previous session recorded a clean shutdown or reboot")}
+	}
+	return []CheckResult{newCheck("Power", "previous_session", "Previous session", StateCaution, SeverityInfo, in.PreviousSessionNote)}
+}
