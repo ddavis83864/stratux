@@ -1376,6 +1376,11 @@ func managementInterface() {
 	http.HandleFunc("/requestShutdown", handleRequestShutdownRequest)
 	http.HandleFunc("/confirmShutdown", handleConfirmShutdownRequest)
 
+	// Storage-lifecycle inventory foundation - see
+	// main/storagelifecycleapi.go and docs/storage-lifecycle.md.
+	// Read-only: there is no corresponding mutation/deletion endpoint.
+	http.HandleFunc("/getStorageLifecycle", handleGetStorageLifecycleRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {

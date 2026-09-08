@@ -232,6 +232,20 @@ the throttle-bit meaning table and the previous-session marker's conservative wo
 
 ---
 
+### Storage Lifecycle
+
+The shared, observational-only storage inventory/quota/retention-planning foundation for
+the upcoming automatic-recording and FIS-B weather-cache features. See
+[storage-lifecycle.md](storage-lifecycle.md) for the full ownership matrix and design.
+**Automatic recording, FIS-B caching, and automatic eviction/enforcement are not enabled -**
+this is the only endpoint this feature adds, and it is read-only.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/getStorageLifecycle` | GET | Current inventory/pressure snapshot: per-namespace managed/active/unmanaged counts and bytes, whole-system pressure, staleness, and scan-error count. |
+
+---
+
 ### OTA Update
 
 #### `POST /updateUpload`

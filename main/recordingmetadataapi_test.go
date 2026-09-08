@@ -31,7 +31,7 @@ func TestDiagnosticBundle_IncludesSanitizedRecordingMetadataSummary(t *testing.T
 		t.Fatalf("unexpected summary from a single completed recording: %+v", summary)
 	}
 
-	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", readiness.HealthReport{}, nil, nil, nil, "", nil, summary, nil, nil, nil)
+	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", readiness.HealthReport{}, nil, nil, nil, "", nil, summary, nil, nil, nil, nil)
 	data, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatalf("bundle with a recording metadata summary failed to marshal: %v", err)

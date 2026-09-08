@@ -124,6 +124,15 @@ type DiagnosticBundle struct {
 	// throttle booleans, severity, previous-session assessment, and
 	// shutdown stage.
 	PowerSummary interface{} `json:"PowerSummary,omitempty"`
+
+	// StorageLifecycleSummary is a bounded summary of the storage-
+	// lifecycle inventory foundation's current state (see the
+	// storagelifecycle package) at generation time, opaque to this
+	// package for the same import-direction reason as the summaries
+	// above. Namespace identifiers and counts/byte totals only - never a
+	// file name, a path beyond a namespace's own short identifier, or any
+	// file content.
+	StorageLifecycleSummary interface{} `json:"StorageLifecycleSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -151,7 +160,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -170,6 +179,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		AlertingSummary:            alertingSummary,
 		ConfigBackupSummary:        configBackupSummary,
 		PowerSummary:               powerSummary,
+		StorageLifecycleSummary:    storageLifecycleSummary,
 	}
 }
 

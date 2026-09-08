@@ -150,6 +150,15 @@ type Input struct {
 	PreviousSessionAvailable    bool
 	PreviousSessionEndedCleanly bool
 	PreviousSessionNote         string
+
+	// StorageLifecycle* mirrors readiness.StorageLifecycleHealth without
+	// this package importing storagelifecycle (the same avoidance
+	// pattern as PreviousSession* above and
+	// readiness.CalibrationProfileSummary for calprofile).
+	StorageLifecycleHasInventory bool
+	StorageLifecyclePressure     string // "NORMAL"/"ELEVATED"/"HIGH"/"CRITICAL"/"UNKNOWN"
+	StorageLifecycleStale        bool
+	StorageLifecycleReason       string
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -196,6 +205,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, recordingChecks(in)...)
 	automated = append(automated, fisbChecks(in)...)
 	automated = append(automated, powerSessionChecks(in)...)
+	automated = append(automated, storageLifecycleChecks(in)...)
 
 	manual := manualCheckResults(in)
 

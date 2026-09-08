@@ -1863,6 +1863,13 @@ func main() {
 	// id and as the shutdown-token boot-session binding).
 	initPower()
 
+	// Initialize the storage-lifecycle inventory foundation - see
+	// main/storagelifecycleapi.go and docs/storage-lifecycle.md.
+	// Observational only: no automatic eviction, no automatic recording,
+	// no FIS-B cache. Must run after readSettings() (PersistentDataPath
+	// must already be final).
+	initStorageLifecycle()
+
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 
@@ -1881,6 +1888,7 @@ func main() {
 	go managementInterface()
 	go healthUpdateLoop()
 	go traceLoggerWatchdog()
+	go storageLifecycleUpdateLoop()
 
 	crcInit() // Initialize CRC16 table.
 

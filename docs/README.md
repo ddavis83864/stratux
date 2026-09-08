@@ -37,6 +37,12 @@ hardware integration). User-facing how-tos live in the
   limits on typical USB-power-bank hardware (no battery percentage, no automatic shutdown),
   the manual two-step confirmed controlled-shutdown flow, and the previous-session
   clean/unclean marker.
+- **[storage-lifecycle.md](storage-lifecycle.md)** — the shared, observational-only storage
+  inventory/quota/retention-planning/atomic-write foundation for the upcoming automatic
+  recording and FIS-B weather-cache features: namespace ownership, pressure classification,
+  interrupted-write recovery, and the exact future contracts those two features will use.
+  Automatic recording, FIS-B caching, and automatic eviction are all explicitly not enabled
+  by this foundation.
 
 ## Interfaces (for EFB / app / tool developers)
 

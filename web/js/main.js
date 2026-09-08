@@ -70,6 +70,8 @@ var URL_SHUTDOWN_STATUS_GET  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getShutdown
 var URL_SHUTDOWN_REQUEST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/requestShutdown";
 var URL_SHUTDOWN_CONFIRM     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmShutdown";
 
+var URL_STORAGE_LIFECYCLE_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStorageLifecycle";
+
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
 var URL_GPS_WS              = "ws://" + URL_HOST_BASE + "/situation";
@@ -123,6 +125,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/power',
 			templateUrl: 'plates/power.html',
 			controller: 'PowerCtrl',
+			reloadOnSearch: false
+		})
+		.state('storage', {
+			url: '/storage',
+			templateUrl: 'plates/storage.html',
+			controller: 'StorageCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
