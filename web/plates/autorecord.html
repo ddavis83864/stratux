@@ -1,0 +1,86 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Auto Record</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Automatic Flight Recording</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				Automatic Flight Recording uses configurable GNSS movement thresholds and dwell
+				periods to start and stop supplemental recordings. Its event times are
+				approximate and are not authoritative taxi, takeoff, landing, block, Hobbs,
+				maintenance, or pilot-logbook times. The feature does not replace pilot
+				recordkeeping.
+			</p>
+			<p class="small text-muted">
+				Automatic Flight Recording is disabled by default and never deletes an existing
+				recording to create space.
+			</p>
+			<p class="small">
+				<a href="#/readiness">Readiness</a> &middot;
+				<a href="#/preflight">Preflight</a> &middot;
+				<a href="#/settings">Recordings</a>
+			</p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Status</span></div>
+		<div class="panel-body">
+			<p class="small text-danger" ng-show="StatusError">{{StatusError}}</p>
+			<div ng-show="Status">
+				<span class="label" ng-class="stateClass(Status.snapshot.State)">{{Status.snapshot.State}}</span>
+				<span class="small text-muted">&nbsp;{{Status.snapshot.Reason}}</span>
+				<table class="table small" style="margin-top:10px;">
+					<tr><td>Active recording</td><td>{{Status.snapshot.ActiveRecordingID || '(none)'}}</td></tr>
+					<tr><td>Storage decision</td><td>{{Status.snapshot.StorageDecision || 'n/a'}}</td></tr>
+					<tr><td>Last GPS ground speed</td><td>{{Status.snapshot.LastGroundSpeedKnots | number:1}} kt {{Status.snapshot.LastGPSValid ? '' : '(no valid fix)'}}</td></tr>
+					<tr><td>Candidate dwell</td><td>{{Status.snapshot.CandidateDwellSeconds | number:0}} s</td></tr>
+					<tr><td>Last error</td><td>{{Status.snapshot.LastError || '(none)'}}</td></tr>
+				</table>
+				<button class="btn btn-warning btn-sm" ng-click="clearError()" ng-show="Status.snapshot.State === 'ERROR'">Clear Error</button>
+				<table class="table small" style="margin-top:10px;">
+					<tr><th colspan="2">Counters (since daemon start)</th></tr>
+					<tr><td>Starts</td><td>{{Status.snapshot.Counters.Starts}}</td></tr>
+					<tr><td>Automatic stops</td><td>{{Status.snapshot.Counters.AutomaticStops}}</td></tr>
+					<tr><td>Manual overrides</td><td>{{Status.snapshot.Counters.ManualOverrides}}</td></tr>
+					<tr><td>Inhibited starts</td><td>{{Status.snapshot.Counters.InhibitedStarts}}</td></tr>
+					<tr><td>GPS-loss events</td><td>{{Status.snapshot.Counters.GPSLossEvents}}</td></tr>
+					<tr><td>Errors</td><td>{{Status.snapshot.Counters.Errors}}</td></tr>
+				</table>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Settings">
+		<div class="panel-heading"><span class="panel_label">Settings</span></div>
+		<div class="panel-body">
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.enabled"/> Automatic recording enabled</label></div>
+			<p class="small text-muted">
+				A start candidate begins once groundspeed reaches the start threshold, and only
+				actually starts a recording after it holds continuously for the full start
+				dwell. The stop threshold must be strictly lower than the start threshold.
+			</p>
+			<table class="table table-condensed">
+				<tr><th></th><th>Groundspeed (kt)</th><th>Dwell (s)</th></tr>
+				<tr><td>Start</td><td><input type="number" ng-model="Settings.startGroundspeedKnots" min="0" max="500" step="0.5"/></td><td><input type="number" ng-model="Settings.startDwellSeconds" min="0" max="7200"/></td></tr>
+				<tr><td>Stop</td><td><input type="number" ng-model="Settings.stopGroundspeedKnots" min="0" max="500" step="0.5"/></td><td><input type="number" ng-model="Settings.stopDwellSeconds" min="0" max="7200"/></td></tr>
+			</table>
+			<div class="form-group">
+				<label>GPS-loss grace (s) - a recording is never automatically stopped merely because GPS became unavailable; this only affects how the status page describes the wait.</label>
+				<input type="number" class="form-control" ng-model="Settings.gpsLossGraceSeconds" min="0" max="7200"/>
+			</div>
+			<div class="form-group">
+				<label>Restart cooldown (s) - how long after a stop before a new automatic start may begin again.</label>
+				<input type="number" class="form-control" ng-model="Settings.restartCooldownSeconds" min="0" max="7200"/>
+			</div>
+			<div class="form-group">
+				<label>Minimum recording duration (s, 0 = no minimum) - defers an otherwise-satisfied stop until the recording has been active at least this long.</label>
+				<input type="number" class="form-control" ng-model="Settings.minimumRecordingDurationSeconds" min="0" max="7200"/>
+			</div>
+			<button class="btn btn-primary" ng-click="saveSettings()">Save Settings</button>
+			<span class="small" ng-show="Message">{{Message}}</span>
+		</div>
+	</div>
+</div>
