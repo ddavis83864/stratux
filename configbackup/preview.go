@@ -187,6 +187,7 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 
 	preview.HasChanges = len(preview.ConfigurationChanges) > 0 ||
 		len(preview.AlertSettingsChanges) > 0 ||
+		len(preview.AutoRecordSettingsChanges) > 0 ||
 		len(preview.AddedProfiles) > 0 ||
 		len(preview.UpdatedProfiles) > 0 ||
 		preview.ActiveProfileChange != nil
