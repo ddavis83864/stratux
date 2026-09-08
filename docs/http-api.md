@@ -67,6 +67,14 @@ Example:
 { "UAT_Enabled": true, "ES_Enabled": true, "PPM": -5 }
 ```
 
+The request body must be exactly one JSON object containing only recognized
+setting names with correctly-typed values, and no more than 20 fields in a
+single request. A request that fails any of these checks (an unrecognized
+field, a wrong-typed value, a malformed or oversized body, or more fields
+than a real update ever needs — for example the full document `/getSettings`
+returns) is rejected with a `4xx` status and none of it is applied; it is
+never partially applied.
+
 #### `POST /setRegion`
 Sets the region. Accepts JSON: `{"Region": "US"}` or `{"Region": "EU"}`. This applies the region change at runtime (UAT band selection, OGN behavior); note that it does **not** itself write `stratux.conf` — persistence is handled by the region-change path, not an explicit settings save in the handler.
 
