@@ -1,0 +1,61 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Storage</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Storage Lifecycle</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Automatic cleanup is not enabled. Nothing shown on this page is
+				ever deleted automatically. Completed recordings, calibration
+				profiles, and configuration state are never automatically
+				deleted by this feature.
+			</p>
+			<p class="small text-danger" ng-show="StorageError">{{StorageError}}</p>
+
+			<div ng-show="Storage">
+				<span class="label" ng-class="pressureClass(Storage.pressure)">{{Storage.pressure || 'UNKNOWN'}}</span>
+				<span class="small text-muted" ng-show="!Storage.hasInventory">&nbsp;- inventory not yet available</span>
+				<span class="small text-muted" ng-show="Storage.hasInventory">
+					&nbsp;- last scanned {{Storage.lastScanAgeSeconds | number:0}}s ago
+					<span ng-show="Storage.stale" class="text-warning">(stale)</span>
+				</span>
+
+				<table class="table small" style="margin-top:10px;">
+					<tr><td>Protected data</td><td>{{Storage.protectedTotalBytes | number:0}} bytes</td></tr>
+					<tr><td>Unmanaged entries</td><td>{{Storage.unmanagedTotalCount}} ({{Storage.unmanagedTotalBytes | number:0}} bytes)</td></tr>
+					<tr><td>Scan errors</td><td>{{Storage.scanErrorCount}}</td></tr>
+					<tr><td>Automatic enforcement</td><td>{{Storage.enforcementEnabled ? 'enabled' : 'disabled'}}</td></tr>
+				</table>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Storage && Storage.hasInventory">
+		<div class="panel-heading"><span class="panel_label">Namespaces</span></div>
+		<div class="panel-body">
+			<div class="table-responsive">
+				<table class="table small">
+					<thead>
+						<tr>
+							<th>Namespace</th>
+							<th>Managed</th>
+							<th>Active</th>
+							<th>Unmanaged</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr ng-repeat="id in namespaceIds()">
+							<td>{{id}}</td>
+							<td>{{Storage.namespaces[id].managedCount}} ({{Storage.namespaces[id].managedBytes | number:0}} bytes)</td>
+							<td>{{Storage.namespaces[id].activeCount}} ({{Storage.namespaces[id].activeBytes | number:0}} bytes)</td>
+							<td>{{Storage.namespaces[id].unmanagedCount}} ({{Storage.namespaces[id].unmanagedBytes | number:0}} bytes)</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+			<p class="small" ng-repeat="note in Storage.notes">{{note}}</p>
+		</div>
+	</div>
+</div>
