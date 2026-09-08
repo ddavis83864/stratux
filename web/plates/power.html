@@ -1,0 +1,78 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Power</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Power and Thermal Health</span></div>
+		<div class="panel-body">
+			<p class="small text-muted" ng-repeat="note in Health.notes">{{note}}</p>
+			<p class="small text-danger" ng-show="HealthError">{{HealthError}}</p>
+			<div ng-show="Health">
+				<span class="label" ng-class="severityClass(Health.severity)">{{Health.severity}}</span>
+				&nbsp;{{Health.reason}}
+				<table class="table small" style="margin-top:10px;">
+					<tr><td>Under-voltage right now</td><td>{{Health.undervoltageNow ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Throttled right now</td><td>{{Health.throttledNow ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Under-voltage occurred this boot</td><td>{{Health.undervoltageOccurred ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Throttled occurred this boot</td><td>{{Health.throttledOccurred ? 'yes' : 'no'}}</td></tr>
+				</table>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Previous Session</span></div>
+		<div class="panel-body">
+			<div ng-show="Health && !Health.previousSessionAvailable">
+				<p class="small text-muted">No previous-session record is available yet.</p>
+			</div>
+			<div ng-show="Health && Health.previousSessionAvailable">
+				<span class="label" ng-class="Health.previousSessionEndedCleanly ? 'label-success' : 'label-warning'">
+					{{Health.previousSessionEndedCleanly ? 'clean' : 'unconfirmed'}}
+				</span>
+				<p class="small" style="margin-top:8px;">{{Health.previousSessionNote}}</p>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Shutdown</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Powers the device off. This requires two separate, explicit
+				confirmations and cannot happen by accident. It is blocked while
+				an update or a configuration restore is in progress, and any
+				active recording is flushed and closed first.
+			</p>
+
+			<div ng-show="Shutdown.done">
+				<p class="text-success">Shutdown confirmed - the device is powering off now.</p>
+			</div>
+
+			<div ng-hide="Shutdown.done">
+				<p class="small text-danger" ng-show="Shutdown.error">{{Shutdown.error}}</p>
+
+				<div ng-hide="Shutdown.token">
+					<button class="btn btn-danger" ng-click="prepareShutdown()" ng-disabled="Shutdown.busy">
+						{{Shutdown.busy ? 'Preparing...' : 'Prepare Shutdown'}}
+					</button>
+				</div>
+
+				<div ng-show="Shutdown.token" class="well well-sm">
+					<p class="text-danger"><strong>This will power the device off.</strong> Any active recording will be stopped and finalized first. The device will need to be power-cycled to start again.</p>
+					<div class="checkbox">
+						<label>
+							<input type="checkbox" ng-model="Shutdown.confirmChecked"/>
+							I understand this will power off the device now.
+						</label>
+					</div>
+					<button class="btn btn-danger" ng-click="confirmShutdown()" ng-disabled="!Shutdown.confirmChecked || Shutdown.busy">
+						{{Shutdown.busy ? 'Shutting down...' : 'Confirm Shutdown'}}
+					</button>
+					<button class="btn btn-default" ng-click="cancelShutdown()" ng-disabled="Shutdown.busy">Cancel</button>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>

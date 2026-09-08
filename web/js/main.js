@@ -65,6 +65,11 @@ var URL_PREFLIGHT_ACK        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/acknowledge
 var URL_PREFLIGHT_CLEAR      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/clearPreflightCheck";
 var URL_PREFLIGHT_RESET      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/resetPreflightChecks";
 
+var URL_POWER_HEALTH_GET     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getPowerHealth";
+var URL_SHUTDOWN_STATUS_GET  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getShutdownStatus";
+var URL_SHUTDOWN_REQUEST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/requestShutdown";
+var URL_SHUTDOWN_CONFIRM     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmShutdown";
+
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
 var URL_GPS_WS              = "ws://" + URL_HOST_BASE + "/situation";
@@ -112,6 +117,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/configbackup',
 			templateUrl: 'plates/configbackup.html',
 			controller: 'ConfigBackupCtrl',
+			reloadOnSearch: false
+		})
+		.state('power', {
+			url: '/power',
+			templateUrl: 'plates/power.html',
+			controller: 'PowerCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
