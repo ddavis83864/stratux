@@ -87,7 +87,7 @@ func TestFixture_HealthyDualBand(t *testing.T) {
 	timeHealth, timeState := healthyTime()
 	ahrs, baro, fan := noHardwareFixtures()
 
-	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown})
+	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown}, AutoRecordHealth{State: StateNotInstalled})
 
 	if r.Overall != StateReady {
 		t.Errorf("healthy dual-band report Overall = %q, want READY", r.Overall)
@@ -131,7 +131,7 @@ func TestFixture_NoSignalIsNotAFailure(t *testing.T) {
 	overlay := healthyStorage()
 	timeHealth, timeState := healthyTime()
 	ahrs, baro, fan := noHardwareFixtures()
-	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown})
+	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown}, AutoRecordHealth{State: StateNotInstalled})
 	if r.Overall != StateReady {
 		t.Errorf("a fully healthy system with simply no current RF traffic must roll up to READY, got %q", r.Overall)
 	}
@@ -151,7 +151,7 @@ func TestFixture_Degraded(t *testing.T) {
 	timeHealth, timeState := healthyTime()
 	ahrs, baro, fan := noHardwareFixtures()
 
-	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown})
+	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown}, AutoRecordHealth{State: StateNotInstalled})
 
 	if r.Storage.State != StateDegraded {
 		t.Errorf("92%%-full storage State = %q, want DEGRADED", r.Storage.State)
@@ -176,7 +176,7 @@ func TestFixture_MissingHardwareDoesNotFailOrExposeFields(t *testing.T) {
 	timeHealth, timeState := healthyTime()
 	ahrs, baro, fan := noHardwareFixtures()
 
-	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown})
+	r := BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeState, ahrs, baro, fan, StorageLifecycleHealth{State: StateUnknown}, AutoRecordHealth{State: StateNotInstalled})
 
 	for name, s := range map[string]ComponentState{"AHRS": r.AHRS.State, "Baro": r.Baro.State, "Fan": r.Fan.State} {
 		if s != StateNotInstalled {

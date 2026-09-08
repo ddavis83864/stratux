@@ -226,6 +226,9 @@ func buildPreflightReport() (report preflight.Report) {
 		StorageLifecyclePressure:     health.StorageLifecycle.Pressure,
 		StorageLifecycleStale:        health.StorageLifecycle.Stale,
 		StorageLifecycleReason:       health.StorageLifecycle.Reason,
+		AutoRecordEnabled:            health.AutoRecord.Enabled,
+		AutoRecordMachineState:       health.AutoRecord.MachineState,
+		AutoRecordReason:             health.AutoRecord.Reason,
 	}
 	return preflight.BuildReport(in)
 }

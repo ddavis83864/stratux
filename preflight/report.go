@@ -159,6 +159,13 @@ type Input struct {
 	StorageLifecyclePressure     string // "NORMAL"/"ELEVATED"/"HIGH"/"CRITICAL"/"UNKNOWN"
 	StorageLifecycleStale        bool
 	StorageLifecycleReason       string
+
+	// AutoRecord* mirrors readiness.AutoRecordHealth without this
+	// package importing autorecord (the same avoidance pattern as
+	// StorageLifecycle* above).
+	AutoRecordEnabled      bool
+	AutoRecordMachineState string // one of autorecord.State's own values, or "" if not yet initialized
+	AutoRecordReason       string
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -206,6 +213,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, fisbChecks(in)...)
 	automated = append(automated, powerSessionChecks(in)...)
 	automated = append(automated, storageLifecycleChecks(in)...)
+	automated = append(automated, autoRecordChecks(in)...)
 
 	manual := manualCheckResults(in)
 
