@@ -25,11 +25,22 @@ Read-only inspection of the live device (`/var/lib/stratux-data`) found:
 | `diagnostics/` | `readiness`/`main/diagnosticsapi.go` | flat `.json` files, already bounded (`diagnosticsMaxRetain = 10`) | `diagnostics` (`CriticalityBounded`) |
 | `recordings/` | `main/recordingapi.go` | one directory per recording, each holding a sample `.jsonl` file and an optional `metadata.json` sidecar | `recordings` (`CriticalityImportant`) |
 | `exports/` | `main/recordingapi.go` | flat export files (`.csv`/`.gpx`/`.kml`), one per exported recording | `exports` (`CriticalityImportant` - see below) |
-| `alert-settings.json` | `main/alertsettings.go` | a single bare file at the partition root | **not registered** - see limitations |
-| `power-session.json` | `main/powerapi.go` | a single bare file at the partition root | **not registered** - see limitations |
-| `updates/` (`backup/`, `staged/`) | `ota` (`main/ota.go`) | nested subdirectories, its own existing bounded retention (`otaMaxRetainedPackages = 3`) | **not registered** - see limitations |
-| `health/` | none found in the current codebase | empty directory | unmanaged/unknown - left untouched, not registered as a namespace |
+| `alert-settings.json` | `main/alertsettings.go` | a single bare file at the partition root | **not inventoried** - see limitations |
+| `power-session.json` | `main/powerapi.go` | a single bare file at the partition root | **not inventoried** - see limitations |
+| `updates/` (`backup/`, `staged/`) | `ota` (`main/ota.go`) | nested subdirectories, its own existing bounded retention (`otaMaxRetainedPackages = 3`) | **not inventoried** - see limitations |
+| `health/` | none found in the current codebase | empty directory | **not inventoried** - no owning subsystem found, not registered |
 | `lost+found/` | ext4 itself | reserved, root-only (`700`) | not application data - never inspected |
+
+**Precision note**: "not inventoried" here is a stronger statement than "reported as
+unmanaged." `Scanner.Scan` only ever calls `FS.ReadDir` on a *registered namespace's own
+`Root`* (`Registry.Namespaces()`) - it never lists `/var/lib/stratux-data` itself. None of
+`alert-settings.json`, `power-session.json`, `updates/`, or `health/` lives inside any of
+the four registered namespace roots (`calibration-profiles/`, `diagnostics/`,
+`recordings/`, `exports/`), so none of them is ever listed, classified, or counted by any
+scan - they do not appear as `StatusUnmanaged` entries either, because `StatusUnmanaged`
+only applies to an entry the scanner actually observed inside a namespace it scanned. They
+are simply outside this feature's field of view entirely, and this feature performs no
+filesystem operation of any kind against them.
 
 ### Why `exports/` is `CriticalityImportant`, not `CriticalityCache`
 
@@ -405,8 +416,10 @@ the Power/Shutdown-Resilience feature's own identical precedent for the same rea
 15. Confirm every pre-existing recording, diagnostic, and calibration profile is unchanged.
 16. Regression-check 978/1090/GPS/GDL90/AHRS/barometer/fan/alerts.
 17. Rollback plan: revert to the previously validated baseline commit and redeploy via the
-    established OTA state machine; this feature adds no schema migration and no destructive
-    write path, so rollback carries no data-loss risk of its own.
+    established OTA state machine. No data mutation is expected in the initial
+    observational deployment. Automatic eviction and production plan execution are
+    disabled. Existing data remains protected, but deployment validation is still required
+    to confirm inventory and integration behavior on real hardware.
 
 ## Rollback plan
 
@@ -414,7 +427,12 @@ This feature is entirely additive (new package, new read-only endpoint, new dash
 additive fields on `HealthReport`/`DiagnosticBundle`/`preflight.Input`) and performs no
 destructive operation in production. Rolling back means reverting to the prior deployed
 commit and redeploying through the established OTA state machine - no data migration, no
-cleanup, and no risk of data loss either direction.
+cleanup, and no schema change either direction.
+
+No data mutation is expected in the initial observational deployment. Automatic eviction
+and production plan execution are disabled. Existing data remains protected, but
+deployment validation is still required to confirm inventory and integration behavior on
+real hardware.
 
 ## Known limitations
 
