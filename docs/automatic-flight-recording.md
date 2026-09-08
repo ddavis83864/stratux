@@ -351,6 +351,15 @@ existing restore transaction - a restore never changes any existing
 recording's own recorded origin (manual/automatic), only the *going-
 forward* configuration.
 
+A backup created before this feature existed still restores successfully
+- see `docs/configuration-backup-restore.md`'s "Legacy backup
+compatibility" section: its checksums are verified against the exact
+historical shape that produced them, and the missing
+`autoRecordSettings` section is then filled in disabled, with the
+standard default thresholds - never left as an invalid zero value, and
+never carrying over whatever the feature happens to be configured as on
+the live device at restore time.
+
 ## Dashboard
 
 A settings panel (enable/disable, the six numeric thresholds, a live

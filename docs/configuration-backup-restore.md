@@ -159,6 +159,72 @@ in the real flow: once at `/validateConfigurationBackup`, and again, from scratc
 the top of `/applyConfigurationBackup` (never trusting the earlier preview to still
 describe reality).
 
+## Legacy backup compatibility
+
+A Configuration Backup document created by an earlier version of this package - one
+that never knew about a field this build's `Document` shape now has - must still
+restore, with the missing field defaulted safely, rather than being rejected outright
+just because it cannot possibly carry a checksum for something it never serialized.
+
+Today this covers exactly one historical shape: schema 2 as it existed from PR #9
+(this package's original merge) through commit `5b8509fc` (PR #13's merge,
+immediately before Automatic Flight Recording added the `autoRecordSettings`
+section) - the only Configuration Backup shape that has ever actually existed on this
+project's `master` branch (`alertSettings` was present from this package's very first
+commit, so there is no earlier "before `alertSettings`" schema-2 shape; schema 1 was
+superseded by a deliberate, documented, non-additive break before this feature ever
+shipped a real document, and `MinimumCompatibleSchemaVersion` already rejects it
+before legacy-compatibility logic ever runs).
+
+**How verification works** (`configbackup/legacy.go`): `Validate` first checks
+whether the uploaded document's checksums are *exactly* consistent with having been
+produced by this one known historical shape - not "close enough," and never "some
+checksums are missing so skip those": the historical shape's own section-checksum key
+set must equal the document's key set exactly (not a subset or superset),
+`autoRecordSettings` must be exactly its zero value, and every checksum - each
+section's, and the whole historical-shape document's own - is independently
+recomputed from the document's other fields, using a permanently-frozen struct that
+mirrors exactly what commit `5b8509fc`'s code would have serialized, and compared. Any
+discrepancy anywhere means the document is not this historical shape; it is then
+evaluated as a current-format document by the existing, unchanged checksum
+verification instead - either way, a corrupt or tampered document is still rejected
+exactly as before. This is a finite, closed registry of exactly one historical shape,
+never a general "try every combination until something matches" bypass.
+
+**Defaulting happens only after successful verification.** Once a document is
+confirmed to be this historical shape, `NormalizeDocument` fills in
+`AutoRecordSettings` with the same disabled, standard-threshold default
+`autorecord.DefaultSettings()` already uses everywhere else on a device that has never
+configured the feature - never the bare zero value (which would itself fail this
+package's own hysteresis check) and never anything that could start automatic
+recording, alter an active manual recording, reserve storage, or touch an existing
+recording file. `main/`'s glue calls `NormalizeDocument` exactly once, immediately
+after `Validate` reports success, before using the document for preview or apply -
+the document's own `contentChecksum`/`sectionChecksums` (used to bind the confirmation
+token) are untouched by normalization, so they still name exactly the bytes that were
+uploaded and validated.
+
+A document that is genuinely current-format (already carries an `autoRecordSettings`
+checksum) never even reaches the historical-shape check - its key set does not match,
+so it always goes through the ordinary rebuild-and-compare path unchanged.
+
+**Re-exporting after a legacy restore produces the current format** - the normalized
+settings feed back into `BuildDocument` like any other live settings would, so the
+resulting document carries a real `autoRecordSettings` section and checksum from that
+point on.
+
+**This is narrowly scoped, not a general checksum bypass**: it recognizes exactly one
+frozen historical shape by exact structural and checksum match, never skips
+verification for a document merely because some checksum is absent, and the
+documented checksum limitation (detects accidental corruption, never authenticates
+against deliberate modification) applies identically to a legacy document as to a
+current one - a deliberately edited legacy document with an honestly recomputed
+checksum still passes, exactly as a deliberately edited current document would.
+
+See `configbackup/legacy_test.go` and `configbackup/testdata/README.md` for the full
+compatibility test suite and exactly how the authentic historical fixture was
+generated (literally run from commit `5b8509fc`'s own code, never hand-simulated).
+
 ## Preview
 
 `configbackup.ComputePreview(doc, current)` diffs a validated document against a live
