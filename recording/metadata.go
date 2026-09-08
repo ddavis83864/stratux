@@ -24,7 +24,13 @@ import (
 // MetadataSchemaVersion 4 added the Power* fields (see
 // docs/power-shutdown-resilience.md's "Recording integration" section) -
 // likewise purely additive.
-const MetadataSchemaVersion = 4
+// MetadataSchemaVersion 5 added the AutoRecord* fields (see
+// docs/automatic-flight-recording.md's "Recording integration" section) -
+// likewise purely additive. These fields never assert taxi, takeoff,
+// landing, block, Hobbs, or logbook time - only the automatic-recording
+// feature's own conservative, hedged detection state and configuration at
+// the moment this session started or stopped.
+const MetadataSchemaVersion = 5
 
 // metadataFileName is the fixed sidecar filename inside one recording's own
 // directory - not a timestamped name like the rotated *.jsonl sample files,
@@ -137,6 +143,36 @@ type SessionSnapshot struct {
 	PowerThrottledNow           bool   `json:"powerThrottledNow"`
 	PreviousSessionAvailable    bool   `json:"previousSessionAvailable"`
 	PreviousSessionEndedCleanly bool   `json:"previousSessionEndedCleanly"`
+
+	// AutoRecord* fields are a small, session-level snapshot of Automatic
+	// Flight Recording's own state at the moment this session started -
+	// see docs/automatic-flight-recording.md's "Recording integration"
+	// section. AutoRecordInitiationMode is "manual" for every recording
+	// started the existing way (through /startRecording) and "automatic"
+	// only for one this feature itself started; the remaining
+	// AutoRecord* fields are empty/zero for a manually-started recording.
+	// None of these fields are ever taxi, takeoff, landing, block, Hobbs,
+	// or logbook time - AutoRecordTriggerReasonCode is one of
+	// autorecord.ReasonCode's own machine-readable values (e.g.
+	// "start_requested"), not a flight-phase label.
+	AutoRecordInitiationMode        string  `json:"autoRecordInitiationMode,omitempty"`
+	AutoRecordTriggerReasonCode     string  `json:"autoRecordTriggerReasonCode,omitempty"`
+	AutoRecordPolicySchemaVersion   int     `json:"autoRecordPolicySchemaVersion,omitempty"`
+	AutoRecordStartGroundspeedKnots float64 `json:"autoRecordStartGroundspeedKnots,omitempty"`
+	AutoRecordStartDwellSeconds     float64 `json:"autoRecordStartDwellSeconds,omitempty"`
+	AutoRecordStopGroundspeedKnots  float64 `json:"autoRecordStopGroundspeedKnots,omitempty"`
+	AutoRecordStopDwellSeconds      float64 `json:"autoRecordStopDwellSeconds,omitempty"`
+	// AutoRecordStorageDecision mirrors storagelifecycle.RecordingSpaceDecision
+	// (allowed/caution/denied/unknown) as observed at start - "denied"/
+	// "unknown" never actually appear here, since the Machine would not
+	// have started in the first place (see autorecord.Machine.startBlocked);
+	// captured anyway for an honest, complete record of what was seen.
+	AutoRecordStorageDecision string `json:"autoRecordStorageDecision,omitempty"`
+	// AutoRecordContinuationOfRecordingID is set only when this session
+	// is a recovered continuation segment - see docs/automatic-flight-recording.md's
+	// "Restart and crash recovery" section. Empty for every ordinary
+	// session, automatic or manual.
+	AutoRecordContinuationOfRecordingID string `json:"autoRecordContinuationOfRecordingId,omitempty"`
 }
 
 // SessionFinalization holds the fields that legitimately change after a
@@ -160,6 +196,34 @@ type SessionFinalization struct {
 	// activity, an interrupted recording (finalization never ran), or a
 	// legacy recording predating this feature.
 	AlertEvents []alerting.Event `json:"alertEvents,omitempty"`
+
+	// AutoRecordStopMode records why/how this recording stopped, for a
+	// session Automatic Flight Recording started - one of "automatic"
+	// (stationary dwell satisfied), "manual" (the owner stopped it early
+	// via the existing manual control), "shutdown" (a confirmed
+	// controlled shutdown finalized it), or "feature_disabled" (the
+	// feature was turned off while this recording was active - see
+	// autorecord.Machine's own FINALIZING/feature_disabled_while_recording
+	// state). Empty for a manually-started recording. Never set together
+	// with Interrupted true - see AutoRecordInterrupted's own doc comment.
+	AutoRecordStopMode string `json:"autoRecordStopMode,omitempty"`
+	// AutoRecordInterrupted is true only when this session's own
+	// Finalization was never written by a normal stop (Complete stays
+	// false) but a later boot's recovery pass positively identified it as
+	// an automatic recording left running by a crash or power loss - see
+	// docs/automatic-flight-recording.md's "Restart and crash recovery"
+	// section. This is the one case SessionFinalization is ever written
+	// with Complete still false: recovery marks a session Interrupted
+	// without fabricating a stop time, duration, or sample count it
+	// cannot know.
+	AutoRecordInterrupted bool `json:"autoRecordInterrupted,omitempty"`
+	// AutoRecordContinuedByRecordingID is set only when recovery started
+	// a new, linked continuation segment for still-satisfied motion
+	// criteria after this interrupted session was found - the forward
+	// counterpart to SessionSnapshot.AutoRecordContinuationOfRecordingID
+	// on the successor segment. Never a blind append to this session's
+	// own sample files.
+	AutoRecordContinuedByRecordingID string `json:"autoRecordContinuedByRecordingId,omitempty"`
 }
 
 // metadataPath returns the fixed sidecar path inside a recording directory
