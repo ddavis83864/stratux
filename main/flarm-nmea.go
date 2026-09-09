@@ -528,7 +528,7 @@ func parseFlarmPFLAU(message []string) {
 	}
 	var thisMsg msg
 	thisMsg.MessageClass = MSGCLASS_OGN
-	thisMsg.TimeReceived = stratuxClock.Time
+	thisMsg.TimeReceived = stratuxClock.Time()
 	msgLogAppend(thisMsg)
 	
 	if !isGPSValid() {
@@ -585,8 +585,8 @@ func parseFlarmPFLAU(message []string) {
 	ti.BearingDist_valid = true
 	ti.Position_valid = true
 	ti.ExtrapolatedPosition = false
-	ti.Last_seen = stratuxClock.Time
-	ti.Last_alt = stratuxClock.Time
+	ti.Last_seen = stratuxClock.Time()
+	ti.Last_alt = stratuxClock.Time()
 	// update traffic database
 	traffic[key] = ti
 
@@ -606,7 +606,7 @@ func parseFlarmPFLAA(message []string) {
 	}
 	var thisMsg msg
 	thisMsg.MessageClass = MSGCLASS_OGN
-	thisMsg.TimeReceived = stratuxClock.Time
+	thisMsg.TimeReceived = stratuxClock.Time()
 	// thisMsg.Data = ...?
 	msgLogAppend(thisMsg)
 	
@@ -681,8 +681,8 @@ func parseFlarmPFLAA(message []string) {
 
 	ti.Position_valid = true
 	ti.ExtrapolatedPosition = false
-	ti.Last_seen = stratuxClock.Time
-	ti.Last_alt = stratuxClock.Time
+	ti.Last_seen = stratuxClock.Time()
+	ti.Last_alt = stratuxClock.Time()
 
 	ti.Emitter_category = nmeaAircraftTypeToGdl90(acType)
 

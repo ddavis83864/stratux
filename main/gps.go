@@ -721,7 +721,7 @@ func calcGPSAttitude() bool {
 	}
 
 	// check if GPS data was put in the structure more than three seconds ago -- this shouldn't happen unless something is wrong.
-	if (stratuxClock.Milliseconds - myGPSPerfStats[index].stratuxTime) > 3000 {
+	if (stratuxClock.Milliseconds() - myGPSPerfStats[index].stratuxTime) > 3000 {
 		myGPSPerfStats[index].gpsTurnRate = 0
 		myGPSPerfStats[index].gpsPitch = 0
 		myGPSPerfStats[index].gpsRoll = 0
@@ -894,7 +894,7 @@ func calcGPSAttitude() bool {
 		mySituation.GPSTurnRate = 0
 
 		// Output format:GPSAtttiude,seconds,nmeaTime,msg_type,GS,Course,Alt,VV,filtered_GS,filtered_course,turn rate,filtered_vv,pitch, roll,load_factor
-		buf := fmt.Sprintf("GPSAttitude,%.1f,%.2f,%s,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\n", float64(stratuxClock.Milliseconds)/1000, myGPSPerfStats[index].nmeaTime, myGPSPerfStats[index].msgType, myGPSPerfStats[index].gsf, myGPSPerfStats[index].coursef, myGPSPerfStats[index].alt, myGPSPerfStats[index].vv, v_x/1.687810, headingAvg, myGPSPerfStats[index].gpsTurnRate, v_z, myGPSPerfStats[index].gpsPitch, myGPSPerfStats[index].gpsRoll, myGPSPerfStats[index].gpsLoadFactor)
+		buf := fmt.Sprintf("GPSAttitude,%.1f,%.2f,%s,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\n", float64(stratuxClock.Milliseconds())/1000, myGPSPerfStats[index].nmeaTime, myGPSPerfStats[index].msgType, myGPSPerfStats[index].gsf, myGPSPerfStats[index].coursef, myGPSPerfStats[index].alt, myGPSPerfStats[index].vv, v_x/1.687810, headingAvg, myGPSPerfStats[index].gpsTurnRate, v_z, myGPSPerfStats[index].gpsPitch, myGPSPerfStats[index].gpsRoll, myGPSPerfStats[index].gpsLoadFactor)
 		if globalSettings.DEBUG {
 			log.Printf("%s", buf) // FIXME. Send to sqlite log or other file?
 		}
@@ -1008,7 +1008,7 @@ func calcGPSAttitude() bool {
 
 	if globalSettings.DEBUG {
 		// Output format:GPSAtttiude,seconds,nmeaTime,msg_type,GS,Course,Alt,VV,filtered_GS,filtered_course,turn rate,filtered_vv,pitch, roll,load_factor
-		buf := fmt.Sprintf("GPSAttitude,%.1f,%.2f,%s,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\n", float64(stratuxClock.Milliseconds)/1000, myGPSPerfStats[index].nmeaTime, myGPSPerfStats[index].msgType, myGPSPerfStats[index].gsf, myGPSPerfStats[index].coursef, myGPSPerfStats[index].alt, myGPSPerfStats[index].vv, v_x/1.687810, headingAvg, myGPSPerfStats[index].gpsTurnRate, v_z, myGPSPerfStats[index].gpsPitch, myGPSPerfStats[index].gpsRoll, myGPSPerfStats[index].gpsLoadFactor)
+		buf := fmt.Sprintf("GPSAttitude,%.1f,%.2f,%s,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f,%0.3f\n", float64(stratuxClock.Milliseconds())/1000, myGPSPerfStats[index].nmeaTime, myGPSPerfStats[index].msgType, myGPSPerfStats[index].gsf, myGPSPerfStats[index].coursef, myGPSPerfStats[index].alt, myGPSPerfStats[index].vv, v_x/1.687810, headingAvg, myGPSPerfStats[index].gpsTurnRate, v_z, myGPSPerfStats[index].gpsPitch, myGPSPerfStats[index].gpsRoll, myGPSPerfStats[index].gpsLoadFactor)
 		log.Printf("%s", buf) // FIXME. Send to sqlite log or other file?
 	}
 
@@ -1105,7 +1105,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 	/*defer func() {
 		tmpSituation := mySituation
 		if strings.Contains(l, "GGA,") || strings.Contains(l, "RMC,") {
-			tmpSituation.GPSLatitude += float32(stratuxClock.Milliseconds) / 1000.0 / 60.0 / 30.0
+			tmpSituation.GPSLatitude += float32(stratuxClock.Milliseconds()) / 1000.0 / 60.0 / 30.0
 		}
 
 		tmpSituation.GPSTrueCourse = 0
@@ -1119,7 +1119,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 	// Local variables for GPS attitude estimation
 	thisGpsPerf := gpsPerf                              // write to myGPSPerfStats at end of function IFF
 	thisGpsPerf.coursef = -999.9                        // default value of -999.9 indicates invalid heading to regression calculation
-	thisGpsPerf.stratuxTime = stratuxClock.Milliseconds // used for gross indexing
+	thisGpsPerf.stratuxTime = stratuxClock.Milliseconds() // used for gross indexing
 	updateGPSPerf := false                              // change to true when position or vector info is read
 
 	l_valid, validNMEAcs := validateNMEAChecksum(l)
@@ -1132,7 +1132,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 	ognPublishNmea(l)
 	x := strings.Split(l_valid, ",")
 
-	mySituation.GPSLastValidNMEAMessageTime = stratuxClock.Time
+	mySituation.GPSLastValidNMEAMessageTime = stratuxClock.Time()
 	mySituation.GPSLastValidNMEAMessage = l
 
 	if (x[0] == "GNVTG") || (x[0] == "GPVTG") { // Ground track information.
@@ -1160,7 +1160,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 			// Negligible movement. Don't update course, but do use the slow speed.
 			//TODO: use average course over last n seconds?
 		}
-		tmpSituation.GPSLastGroundTrackTime = stratuxClock.Time
+		tmpSituation.GPSLastGroundTrackTime = stratuxClock.Time()
 
 		// We've made it this far, so that means we've processed "everything" and can now make the change to mySituation.
 		mySituation = tmpSituation
@@ -1248,7 +1248,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 		tmpSituation.GPSHeightAboveEllipsoid = tmpSituation.GPSGeoidSep + tmpSituation.GPSAltitudeMSL
 
 		// Timestamp.
-		tmpSituation.GPSLastFixLocalTime = stratuxClock.Time
+		tmpSituation.GPSLastFixLocalTime = stratuxClock.Time()
 
 		updateGPSPerf = true
 		thisGpsPerf.msgType = x[0]
@@ -1331,7 +1331,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 			// the configured plausible-date bounds - see
 			// docs/time-trust.md.
 			if err == nil && gpsTime.After(time.Date(2016, time.January, 0, 0, 0, 0, 0, time.UTC)) {
-				tmpSituation.GPSLastGPSTimeStratuxTime = stratuxClock.Time
+				tmpSituation.GPSLastGPSTimeStratuxTime = stratuxClock.Time()
 				tmpSituation.GPSTime = gpsTime
 				stratuxClock.SetRealTimeReference(gpsTime)
 
@@ -1349,9 +1349,9 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 					Parseable:       true,
 					AcceptableFix:   true,
 					UTC:             gpsTime,
-					ReceivedAt:      stratuxClock.Time,
+					ReceivedAt:      stratuxClock.Time(),
 				}
-				decision := timeTrust.ObserveGNSS(sample, stratuxClock.Time, time.Now().UTC(), isRecordingActive())
+				decision := timeTrust.ObserveGNSS(sample, stratuxClock.Time(), time.Now().UTC(), isRecordingActive())
 				switch decision.Action {
 				case readiness.ClockActionStepOnce, readiness.ClockActionPeriodicCorrection:
 					setStr := decision.NewUTC.Format("20060102 15:04:05.000") + " UTC"
@@ -1402,7 +1402,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 			tmpSituation.GPSLongitude = -tmpSituation.GPSLongitude
 		}
 
-		tmpSituation.GPSLastFixLocalTime = stratuxClock.Time
+		tmpSituation.GPSLastFixLocalTime = stratuxClock.Time()
 
 		// ground speed in kts (field 7)
 		groundspeed, err := strconv.ParseFloat(x[7], 32)
@@ -1430,7 +1430,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 		}
 		updateGPSPerf = true
 		thisGpsPerf.msgType = x[0]
-		tmpSituation.GPSLastGroundTrackTime = stratuxClock.Time
+		tmpSituation.GPSLastGroundTrackTime = stratuxClock.Time()
 
 		// We've made it this far, so that means we've processed "everything" and can now make the change to mySituation.
 		mySituation = tmpSituation
@@ -1523,9 +1523,9 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 					//log.Printf("Creating new satellite %s from GSA message\n", svStr) // DEBUG
 				}
 				thisSatellite.InSolution = true
-				thisSatellite.TimeLastSolution = stratuxClock.Time
-				thisSatellite.TimeLastSeen = stratuxClock.Time    // implied, since this satellite is used in the position solution
-				thisSatellite.TimeLastTracked = stratuxClock.Time // implied, since this satellite is used in the position solution
+				thisSatellite.TimeLastSolution = stratuxClock.Time()
+				thisSatellite.TimeLastSeen = stratuxClock.Time()    // implied, since this satellite is used in the position solution
+				thisSatellite.TimeLastTracked = stratuxClock.Time() // implied, since this satellite is used in the position solution
 
 				Satellites[thisSatellite.SatelliteID] = thisSatellite // Update constellation with this satellite
 			}
@@ -1604,7 +1604,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 		//fmt.Println("gst hacc: ", hacc, ", vacc: ", vacc)
 
 		tmpSituation := mySituation
-		tmpSituation.GPSLastAccuracyTime = stratuxClock.Time
+		tmpSituation.GPSLastAccuracyTime = stratuxClock.Time()
 		tmpSituation.GPSHorizontalAccuracy = float32(hacc)
 		tmpSituation.GPSVerticalAccuracy = float32(vacc)
 		tmpSituation.GPSNACp = calculateNACp(tmpSituation.GPSHorizontalAccuracy)
@@ -1700,7 +1700,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				thisSatellite.Type = uint8(svType)
 				//log.Printf("Creating new satellite %s\n", svStr) // DEBUG
 			}
-			thisSatellite.TimeLastTracked = stratuxClock.Time
+			thisSatellite.TimeLastTracked = stratuxClock.Time()
 
 			elev, err = strconv.Atoi(x[5+4*i]) // elevation
 			if err != nil {                    // some firmwares leave this blank if there's no position fix. Represent as -999.
@@ -1720,7 +1720,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				thisSatellite.InSolution = false // resets the "InSolution" status if the satellite disappears out of solution due to no signal. FIXME
 				//log.Printf("Satellite %s is no longer in solution due to cno parse error - GSV\n", svStr) // DEBUG
 			} else if cno > 0 {
-				thisSatellite.TimeLastSeen = stratuxClock.Time // Is this needed?
+				thisSatellite.TimeLastSeen = stratuxClock.Time() // Is this needed?
 			}
 			if cno > 127 { // make sure strong signals don't overflow. Normal range is 0-99 so it shouldn't, but take no chances.
 				cno = 127
@@ -1733,7 +1733,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				if mySituation.GPSFixQuality == 2 {
 					if thisSatellite.Signal > 16 {
 						thisSatellite.InSolution = true
-						thisSatellite.TimeLastSolution = stratuxClock.Time
+						thisSatellite.TimeLastSolution = stratuxClock.Time()
 					}
 				} else { // quality == 0 or 1
 					thisSatellite.InSolution = false
@@ -1781,7 +1781,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 			mySituation.muBaro.Lock()
 			mySituation.BaroPressureAltitude = float32(pressureAlt * 3.28084) // meters to feet
 			mySituation.BaroVerticalSpeed = float32(vspeed * 196.85) // m/s in ft/min
-			mySituation.BaroLastMeasurementTime = stratuxClock.Time
+			mySituation.BaroLastMeasurementTime = stratuxClock.Time()
 			mySituation.BaroSourceType = BARO_TYPE_OGNTRACKER
 			mySituation.muBaro.Unlock()
 		}
@@ -1803,9 +1803,9 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 				globalStatus.GPS_detected_type = tracker.getGpsHardwareType()
 				gpsTimeOffsetPpsMs = tracker.gpsTimeOffsetPps()
 				tracker.requestTrackerConfig(serialPort)
-				timelimit := stratuxClock.Time.Add(5 * time.Second)
+				timelimit := stratuxClock.Time().Add(5 * time.Second)
 				go func() {
-					for stratuxClock.Time.Before(timelimit) && serialPort != nil && detectedTracker == tracker {
+					for stratuxClock.Time().Before(timelimit) && serialPort != nil && detectedTracker == tracker {
 						if tracker.isConfigRead() {
 							tracker.writeInitialConfig(serialPort)
 							break
@@ -1844,7 +1844,7 @@ func processNMEALineLow(l string, fakeGpsTimeToCurr bool) (sentenceUsed bool) {
 		if !isTempPressValid() || (mySituation.BaroSourceType != BARO_TYPE_BMP280 && mySituation.BaroSourceType != BARO_TYPE_OGNTRACKER) {
 			mySituation.muBaro.Lock()
 			mySituation.BaroPressureAltitude = float32(pressureAlt) // meters to feet
-			mySituation.BaroLastMeasurementTime = stratuxClock.Time
+			mySituation.BaroLastMeasurementTime = stratuxClock.Time()
 			mySituation.BaroSourceType = BARO_TYPE_NMEA
 			mySituation.muBaro.Unlock()
 			return true
@@ -1960,7 +1960,7 @@ func baroAltGuesser() {
 				if valid {
 					gnssBaroDiff := float64(myAlt) * slope + intercept
 					mySituation.muBaro.Lock()
-					mySituation.BaroLastMeasurementTime = stratuxClock.Time
+					mySituation.BaroLastMeasurementTime = stratuxClock.Time()
 					mySituation.BaroPressureAltitude = mySituation.GPSHeightAboveEllipsoid - float32(gnssBaroDiff)
 					mySituation.BaroSourceType = BARO_TYPE_ADSBESTIMATE
 					//fmt.Printf(" %f * x + %f \n", slope, intercept)
@@ -2191,7 +2191,7 @@ func gpsAttitudeSender() {
 					mySituation.AHRSPitch = myGPSPerfStats[index].gpsPitch
 					mySituation.AHRSRoll = myGPSPerfStats[index].gpsRoll
 					mySituation.AHRSGyroHeading = float64(mySituation.GPSTrueCourse)
-					mySituation.AHRSLastAttitudeTime = stratuxClock.Time
+					mySituation.AHRSLastAttitudeTime = stratuxClock.Time()
 
 					makeAHRSGDL90Report()
 					makeAHRSSimReport()

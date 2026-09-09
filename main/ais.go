@@ -83,7 +83,7 @@ func aisListen() {
 func parseAisMessage(data string) {
 	var thisMsg msg
 	thisMsg.MessageClass = MSGCLASS_AIS
-	thisMsg.TimeReceived = stratuxClock.Time
+	thisMsg.TimeReceived = stratuxClock.Time()
 	thisMsg.Data = data
 	globalStatus.AIS_messages_total++
 	msgLogAppend(thisMsg)
@@ -134,8 +134,8 @@ func importAISTrafficMessage(msg *aisnmea.VdmPacket) {
 
 	ti.Icao_addr = header.UserID
 	ti.Timestamp = time.Now().UTC()
-	ti.Last_seen = stratuxClock.Time
-	ti.Last_alt = stratuxClock.Time
+	ti.Last_seen = stratuxClock.Time()
+	ti.Last_alt = stratuxClock.Time()
 
 	// Handle ShipStaticData
 	if header.MessageID == 5 {

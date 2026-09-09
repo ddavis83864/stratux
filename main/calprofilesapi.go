@@ -110,6 +110,17 @@ func initCalibrationProfiles() {
 // mirror refreshed from the active profile at startup and on every
 // activation/calibration - see docs/aircraft-calibration-profiles.md's
 // "why globalSettings still exists" note. Caller must hold profilesMu.
+//
+// Concurrency note: this function writes directly to globalSettings
+// without taking globalSettingsMu (introduced by this hotfix for the two
+// originally-reported races - monotonic.go and handleSettingsSetRequest).
+// Its own callers are calibration-profile HTTP handlers and Configuration
+// Backup's apply/rollback path, none of which were part of either
+// originally-reported race; broadening globalSettingsMu's coverage to
+// this write path is deliberately left out of this narrowly-scoped
+// hotfix and documented here as a candidate for separate future review,
+// consistent with this hotfix's stated scope (see globalSettingsMu's own
+// doc comment in gen_gdl90.go).
 func applyProfileToGlobalSettingsLocked(p calprofile.Profile) {
 	globalSettings.IMUMapping = p.IMUMapping
 	globalSettings.SensorQuaternion = p.SensorQuaternion

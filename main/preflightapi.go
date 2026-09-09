@@ -88,11 +88,11 @@ func newPreflightSessionID() string {
 // initPreflight constructs the manual-acknowledgement store and session
 // identity. Must run before initNetwork()/managementInterface() start
 // serving requests, and after stratuxClock is initialized (main()'s very
-// first statement) since the store's clock source is stratuxClock.Time -
+// first statement) since the store's clock source is stratuxClock.Time() -
 // see main/gen_gdl90.go's main() for the exact call site.
 func initPreflight() {
 	sessionID := newPreflightSessionID()
-	store := preflight.NewManualAckStore(sessionID, func() time.Time { return stratuxClock.Time })
+	store := preflight.NewManualAckStore(sessionID, func() time.Time { return stratuxClock.Time() })
 	preflightMu.Lock()
 	preflightSessionID = sessionID
 	preflightAckStore = store
@@ -182,12 +182,12 @@ func buildPreflightReport() (report preflight.Report) {
 		}
 	}()
 
-	// stratuxClock.Time starts at the Go zero time.Time and advances
+	// stratuxClock.Time() starts at the Go zero time.Time and advances
 	// exactly 10ms per tick from the moment NewMonotonic() runs (main()'s
 	// very first statement) - so its elapsed time since the zero value
 	// *is* process uptime, with no separate "process start" timestamp to
 	// track. See main/monotonic.go.
-	mono := stratuxClock.Time
+	mono := stratuxClock.Time()
 	uptimeSeconds := mono.Sub(time.Time{}).Seconds()
 	globalHealthMutex.Lock()
 	health := globalHealth

@@ -1,19 +1,24 @@
 # Storage Lifecycle Foundation
 
 > **Status: foundation only, observational.** This document describes the `storagelifecycle`
-> package and its integration into the daemon. **Automatic recording is not enabled.
-> FIS-B weather caching is not enabled. Automatic eviction/enforcement is not enabled.**
-> This foundation does not automatically delete completed recordings, calibration
-> profiles, configuration state, backups, or unknown files. See "Status of this release"
-> below.
+> package and its integration into the daemon. **This package's own scan/quota/retention-
+> planning logic performs no automatic eviction or enforcement** - it never deletes
+> completed recordings, calibration profiles, configuration state, backups, or unknown
+> files. See "Status of this release" below. (Automatic Flight Recording itself has since
+> shipped separately on top of this foundation - see
+> [automatic-flight-recording.md](automatic-flight-recording.md) - and is enabled, opt-in,
+> disabled by default. A rolling FIS-B weather cache built on this same foundation remains
+> unmerged; see its own pull request for current status.)
 
 ## Why this exists
 
-Two upcoming features - automatic flight recording and a rolling FIS-B weather cache -
-both need the same underlying capability: know what is on the persistent partition, know
-how much of it belongs to whom, decide (without guessing) what could safely be reclaimed
-under pressure, and write new files in a way that survives an interrupted write. Building
-that once, as a shared, pure, heavily-tested package, is the entire scope of this change.
+Two features that needed this foundation - automatic flight recording (now merged
+separately, see [automatic-flight-recording.md](automatic-flight-recording.md)) and a
+rolling FIS-B weather cache (still unmerged) - both need the same underlying capability:
+know what is on the persistent partition, know how much of it belongs to whom, decide
+(without guessing) what could safely be reclaimed under pressure, and write new files in a
+way that survives an interrupted write. Building that once, as a shared, pure,
+heavily-tested package, is the entire scope of this change.
 
 ## Storage ownership matrix
 
@@ -387,9 +392,12 @@ interface, ingests, persists, or serves any FIS-B product in this mission.**
 
 ## Status of this release
 
-- Automatic recording: **not enabled.** No flight-detection, no automatic start, no change
-  to the existing manual `/startRecording` behavior.
-- FIS-B weather caching: **not enabled.** No product is ingested, persisted, or served.
+- Automatic recording: shipped separately, after this foundation, as its own opt-in,
+  disabled-by-default feature - see [automatic-flight-recording.md](automatic-flight-recording.md).
+  This foundation package itself still performs no flight-detection or automatic start on
+  its own.
+- FIS-B weather caching: **not merged.** No product is ingested, persisted, or served on
+  the default branch.
 - Automatic eviction/enforcement: **not enabled.** `Manager` has no `Execute`-a-plan method
   at all - `RetentionPlan`/`RecoveryPlan` are always produced and never automatically acted
   on in production. The only filesystem-mutating production code path in this whole feature

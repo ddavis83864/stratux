@@ -68,7 +68,7 @@ func getDHCPLeases() (map[string]string, error) {
 		if err != nil {
 			addSingleSystemErrorf("fs-write", "Write error on '%s', your EFB may have issues receiving weather and traffic.", dhcp_lease_dir)
 		}
-		dhcpLeaseDirectoryLastTest = stratuxClock.Time
+		dhcpLeaseDirectoryLastTest = stratuxClock.Time()
 	}
 	dat, err := ioutil.ReadFile(dhcp_lease_file)
 	ret := make(map[string]string)
@@ -701,8 +701,8 @@ func sleepMonitor() {
 		// Look for echo replies, mark it as received.
 		if msg.Type == ipv4.ICMPTypeEchoReply {
 			for _, conn := range getNetworkConnsByIp(ip) {
-				conn.LastPingResponse = stratuxClock.Time
-				conn.LastPongResponse = stratuxClock.Time
+				conn.LastPingResponse = stratuxClock.Time()
+				conn.LastPongResponse = stratuxClock.Time()
 			}
 			continue // No further processing needed.
 		}
@@ -725,7 +725,7 @@ func sleepMonitor() {
 		ipAndPort := ip + ":" + strconv.Itoa(int(port))
 		conn := getNetworkConn(ipAndPort)
 		if conn != nil {
-			conn.LastUnreachable = stratuxClock.Time
+			conn.LastUnreachable = stratuxClock.Time()
 		}
 	}
 }

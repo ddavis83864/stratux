@@ -162,7 +162,7 @@ func tempAndPressureSender() {
 
 		// Update the Situation data.
 		mySituation.muBaro.Lock()
-		mySituation.BaroLastMeasurementTime = stratuxClock.Time
+		mySituation.BaroLastMeasurementTime = stratuxClock.Time()
 		mySituation.BaroTemperature = float32(temp)
 		mySituation.BaroPressureAltitude = float32(altitude)
 		if altLast < -2000 {
@@ -336,7 +336,7 @@ func sensorAttitudeSender() {
 			}
 
 			// Make the IMU sensor measurements.
-			t = stratuxClock.Time
+			t = stratuxClock.Time()
 			m.T = float64(t.UnixNano()/1000) / 1e6
 			_, m.B1, m.B2, m.B3, m.A1, m.A2, m.A3, m.M1, m.M2, m.M3, mpuError, magError = myIMUReader.Read()
 			m.SValid = mpuError == nil

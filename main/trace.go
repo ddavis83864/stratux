@@ -69,7 +69,7 @@ func (tracer *TraceLogger) Record(context string, data []byte) {
 		if tracer.fileHandle == nil || tracer.isReplaying {
 			return
 		}
-		ts := stratuxClock.Time.Format(time.RFC3339Nano)
+		ts := stratuxClock.Time().Format(time.RFC3339Nano)
 		tracer.csvWriter.Write([]string {ts, context, string(data)})
 	}()
 }
@@ -167,7 +167,7 @@ func (tracer *TraceLogger) Replay(fname string, speedMultiplier float64, traceSk
 }
 
 func injectTraceMessage(context string, ts time.Time, data []byte) {
-	toWait := float64(ts.Sub(stratuxClock.Time).Nanoseconds())
+	toWait := float64(ts.Sub(stratuxClock.Time()).Nanoseconds())
 	time.Sleep(time.Duration(toWait) * time.Nanosecond)
 
 	if context == CONTEXT_AIS {

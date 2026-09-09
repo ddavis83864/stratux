@@ -132,7 +132,7 @@ func monoToWallOptional(monoT, mono, wallNow time.Time) readiness.OptionalTime {
 // UNKNOWN component rather than failing the whole update.
 func updateHealth() {
 	now := time.Now().UTC()
-	mono := stratuxClock.Time
+	mono := stratuxClock.Time()
 
 	uatBand := bandStatusFromGlobalStatus(
 		globalStatus.UAT_Enabled, globalStatus.UAT_Detected, globalStatus.UAT_Assigned,

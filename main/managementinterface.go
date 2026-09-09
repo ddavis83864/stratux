@@ -300,7 +300,9 @@ func handleSatellitesRequest(w http.ResponseWriter, r *http.Request) {
 func handleSettingsGetRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
+	globalSettingsMu.RLock()
 	settingsJSON, err := json.Marshal(&globalSettings)
+	globalSettingsMu.RUnlock()
 	if err != nil {
 		log.Printf("%s", err)
 	}
@@ -349,6 +351,7 @@ func handleRegionSet(w http.ResponseWriter, r *http.Request) {
 			} else if err != nil {
 				log.Printf("handleRegionSet:error: %s\n", err.Error())
 			} else {
+				globalSettingsMu.Lock()
 				for key, val := range msg {
 					// log.Printf("handleRegionSet:json: testing for key:%s of type %s\n", key, reflect.TypeOf(val))
 					switch key {
@@ -367,6 +370,7 @@ func handleRegionSet(w http.ResponseWriter, r *http.Request) {
 						log.Printf("handleRegionSet:json: unrecognized key:%s\n", key)
 					}
 				}
+				globalSettingsMu.Unlock()
 				//				saveSettings()
 			}
 		}
@@ -430,11 +434,28 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Validate every key before applying any of them, so a request that
 	// fails validation leaves globalSettings completely untouched rather
-	// than partially mutated.
+	// than partially mutated. Pure over msg alone (never reads
+	// globalSettings), so it deliberately runs before the lock below -
+	// two concurrent requests validating independently in parallel is
+	// fine; only the actual mutation needs to be serialized.
 	if err := validateSettingsMessage(msg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": err.Error()})
 		return
 	}
+
+	// Held for the rest of this handler - mutation, save, and the
+	// network/tracker/fancontrol reconfiguration that reads the settings
+	// this same request just applied, through the final response
+	// snapshot. A native go test -race reproduction found a genuine
+	// write-write race here between two concurrent /setSettings calls
+	// (see the hotfix that introduced globalSettingsMu for full
+	// analysis); holding one coarse lock for this handler's whole body
+	// is deliberate - this endpoint is rare and human-triggered (a
+	// dashboard Save click), never a hot path, so there is no practical
+	// cost to serializing it completely rather than risking a subtler
+	// bug from a finer-grained locking scheme.
+	globalSettingsMu.Lock()
+	defer globalSettingsMu.Unlock()
 
 	reconfigureTracker := false
 	reconfigureFancontrol := false

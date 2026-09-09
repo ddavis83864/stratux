@@ -111,7 +111,7 @@ var (
 )
 
 func monotonicSeconds() float64 {
-	return stratuxClock.Time.Sub(time.Time{}).Seconds()
+	return stratuxClock.Time().Sub(time.Time{}).Seconds()
 }
 
 func newConfigBackupToken() string {
@@ -130,7 +130,15 @@ func newConfigBackupToken() string {
 // (see buildConfigBackupDocument), never what this function reports about
 // the live device to itself (diffing, fingerprinting, rollback
 // snapshots).
+//
+// Concurrency: both of this function's callers (gatherConfigBackupCurrentState,
+// applyConfigBackupTransaction's originalConfig snapshot) call it without
+// profilesMu held, so taking globalSettingsMu here is always the only lock
+// in play - no lock-order concern with the "globalSettingsMu is always
+// innermost" rule (see its own doc comment in gen_gdl90.go).
 func configurationSectionFromGlobalSettings() configbackup.ConfigurationSection {
+	globalSettingsMu.RLock()
+	defer globalSettingsMu.RUnlock()
 	return configbackup.ConfigurationSection{
 		DarkMode:                 globalSettings.DarkMode,
 		UATEnabled:               globalSettings.UAT_Enabled,
@@ -173,11 +181,20 @@ func configurationSectionFromGlobalSettings() configbackup.ConfigurationSection 
 
 // applyConfigurationSectionToGlobalSettings overwrites every allowlisted
 // field in globalSettings from c. Caller is responsible for calling
-// saveSettings() afterward and for any locking this project's existing
-// settings-mutation handlers already do (none, today - see
-// docs/configuration-backup-restore.md's "Locking and concurrency" note
-// on globalSettings' pre-existing lack of a dedicated mutex).
+// saveSettings() afterward. Locking is now handled internally (this
+// function takes globalSettingsMu itself - see below); the pre-existing
+// gap this doc comment used to describe (docs/configuration-backup-restore.md's
+// "Locking and concurrency" note) is what this hotfix closes.
+//
+// Concurrency: both call sites (applyConfigBackupTransaction's rollback
+// closure and its main forward-apply path) already hold profilesMu when
+// they call this function, so globalSettingsMu always nests inside
+// profilesMu here - safe under the "globalSettingsMu is always innermost"
+// rule (see its own doc comment in gen_gdl90.go). This function itself
+// never acquires profilesMu, so it introduces no cycle.
 func applyConfigurationSectionToGlobalSettings(c configbackup.ConfigurationSection) {
+	globalSettingsMu.Lock()
+	defer globalSettingsMu.Unlock()
 	globalSettings.DarkMode = c.DarkMode
 	globalSettings.UAT_Enabled = c.UATEnabled
 	globalSettings.ES_Enabled = c.ESEnabled

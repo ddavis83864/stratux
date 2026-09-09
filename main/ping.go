@@ -375,7 +375,7 @@ func mavLinkFormat(x []byte) {
 			ti = val
 		} else {
 			// New
-			ti.Last_seen = stratuxClock.Time
+			ti.Last_seen = stratuxClock.Time()
 		}
 		if mavLink.heading != 0 {
 			ti.Track = float32(mavLink.heading / 100)
@@ -410,7 +410,7 @@ func mavLinkFormat(x []byte) {
 				}
 				ti.Position_valid = true
 				ti.ExtrapolatedPosition = false
-				ti.Last_seen = stratuxClock.Time
+				ti.Last_seen = stratuxClock.Time()
 				ti.Timestamp = time.Now().UTC()
 			}
 		} else {
@@ -422,8 +422,8 @@ func mavLinkFormat(x []byte) {
 			// Low signal may involve into a freeze location, update only if it really changes
 			if ti.Alt != altitudeFoot {
 				ti.Alt = altitudeFoot
-				ti.Last_alt = stratuxClock.Time
-				ti.Last_seen = stratuxClock.Time
+				ti.Last_alt = stratuxClock.Time()
+				ti.Last_seen = stratuxClock.Time()
 				ti.Timestamp = time.Now().UTC()
 			}
 		} else {
@@ -435,7 +435,7 @@ func mavLinkFormat(x []byte) {
 		if mavLink.hor_velocity > 0 {
 			ti.Speed = uint16(float32(mavLink.hor_velocity) * 36 / 1852)
 			ti.Speed_valid = true
-			ti.Last_speed = stratuxClock.Time
+			ti.Last_speed = stratuxClock.Time()
 		} else {
 			ti.Speed_valid = false
 			signalLevelSimulated -= 5
