@@ -19,6 +19,12 @@ hardware integration). User-facing how-tos live in the
 - **[ota.md](ota.md)** — the `.deb` OTA update mechanism: the overlay-disable marker's proven
   persistent location (with mount/device evidence), and the deterministic, resumable install
   state machine built on it.
+- **[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md)** — the live health model for the
+  ICM-20948 AHRS, BMP280 barometer, and dual-fan PWM controller, wired into the readiness
+  model above.
+- **[aircraft-calibration-profiles.md](aircraft-calibration-profiles.md)** — persistent,
+  named AHRS calibration profiles so the same Stratux can move between aircraft without
+  overwriting a single global calibration.
 - **[preflight-readiness.md](preflight-readiness.md)** — the simplified, supplemental preflight
   checklist built on top of the readiness health model: state definitions, the blocking-vs-
   caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
@@ -38,11 +44,15 @@ hardware integration). User-facing how-tos live in the
   the manual two-step confirmed controlled-shutdown flow, and the previous-session
   clean/unclean marker.
 - **[storage-lifecycle.md](storage-lifecycle.md)** — the shared, observational-only storage
-  inventory/quota/retention-planning/atomic-write foundation for the upcoming automatic
-  recording and FIS-B weather-cache features: namespace ownership, pressure classification,
-  interrupted-write recovery, and the exact future contracts those two features will use.
-  Automatic recording, FIS-B caching, and automatic eviction are all explicitly not enabled
-  by this foundation.
+  inventory/quota/retention-planning/atomic-write foundation used by
+  [automatic-flight-recording.md](automatic-flight-recording.md) (now merged) and, in an
+  unmerged pull request, a rolling FIS-B weather cache: namespace ownership, pressure
+  classification, and interrupted-write recovery. This foundation package itself performs
+  no automatic eviction.
+- **[automatic-flight-recording.md](automatic-flight-recording.md)** — the opt-in,
+  disabled-by-default detection state machine that can start/stop the existing manual
+  recording subsystem on the operator's behalf from conservative, GNSS-derived movement
+  thresholds.
 
 ## Interfaces (for EFB / app / tool developers)
 
