@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/stratux/stratux/autorecord"
+	"github.com/stratux/stratux/readiness"
 	"github.com/stratux/stratux/recording"
 )
 
@@ -35,6 +36,13 @@ import (
 // new GPS information, and coarser would add needless start/stop-dwell
 // latency.
 const autoRecordTickInterval = 1 * time.Second
+
+// autoRecordMountWaitTimeout bounds autoRecordAwaitMountAndReload's
+// retries - see initAutoRecord's doc comment for the race this closes.
+// Matches this project's own fstab x-systemd.device-timeout for
+// PersistentDataPath, since that is already this project's own estimate
+// of how long that mount may reasonably take.
+const autoRecordMountWaitTimeout = 5 * time.Second
 
 var (
 	autoRecordMu            sync.Mutex
@@ -51,6 +59,25 @@ var (
 // itself; the very first tick, one second later, is the earliest any
 // automatic action can occur, and only if Settings.Enabled is already
 // true and a qualifying dwell then completes.
+//
+// stratux.service has no systemd-level ordering dependency on
+// PersistentDataPath actually being mounted (its fstab entry is
+// deliberately "nofail", so boot never blocks on it) - on a boot where
+// that mount takes any noticeable time (observed on real hardware: ext4
+// journal recovery alone took over a second), stratuxrun can begin
+// executing, and this function's settings load below can run, before the
+// mount completes. loadAutoRecordSettings has no way to distinguish that
+// transient state from a genuinely first-ever run (both look like a
+// missing file) and safely defaults to disabled either way - but unlike
+// every other caller of that function, this one caches the result into
+// autoRecordSettingsCache for the rest of the process's life, so a
+// once-wrong read here silently and permanently discards a real, valid,
+// enabled settings file the owner configured, until they explicitly
+// change a setting again. Closed below without delaying the rest of
+// daemon startup: attempt the load synchronously as before (zero added
+// cost in the near-universal case where the mount is already ready), and
+// only if the mount was not yet ready for that attempt, correct the
+// cache asynchronously the moment it becomes available.
 func initAutoRecord() {
 	autoRecordMu.Lock()
 	autoRecordSettingsCache = loadAutoRecordSettings()
@@ -59,6 +86,10 @@ func initAutoRecord() {
 	stopCh := autoRecordStopCh
 	autoRecordMu.Unlock()
 
+	if !autoRecordMountReady() {
+		go autoRecordAwaitMountAndReload(autoRecordMountWaitTimeout)
+	}
+
 	// Bounded, read-only-except-for-one-sidecar recovery pass - see
 	// main/autorecordrecovery.go. Runs before the detection loop starts,
 	// but never itself starts or stops a recording.
@@ -66,6 +97,48 @@ func initAutoRecord() {
 
 	go autoRecordLoop(stopCh)
 	log.Printf("autorecord: initialized (enabled=%v)\n", autoRecordSettingsCache.Enabled)
+}
+
+// autoRecordMountReady is a var (mirrors autoRecordSettingsPath's own
+// pattern) purely so tests can substitute a fake mount-readiness signal
+// without depending on a real mount - never reassigned in production.
+// Reports whether PersistentDataPath is currently mounted as its real
+// ext4 filesystem, as opposed to resolving to an empty directory on the
+// overlay root because the real mount has not completed yet - see
+// initAutoRecord's doc comment.
+var autoRecordMountReady = func() bool {
+	mnt, err := readiness.FindMount(PersistentDataPath)
+	return err == nil && mnt.Mounted && mnt.FSType == PersistentDataFSType
+}
+
+// autoRecordAwaitMountAndReload retries autoRecordMountReady every
+// 100ms, up to timeout, and re-loads settings the instant it succeeds,
+// correcting a cache that initAutoRecord's own one-time synchronous load
+// could only have populated from an empty, not-yet-mounted directory. A
+// logged, safe give-up - never a panic or a retry loop that runs forever
+// - if the mount never becomes ready in time; the daemon already started
+// with the documented safe (disabled) default and stays that way until
+// an explicit settings change. timeout is a parameter (production always
+// passes autoRecordMountWaitTimeout) solely so a test can bound it much
+// shorter than the real timeout.
+func autoRecordAwaitMountAndReload(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if !autoRecordMountReady() {
+			continue
+		}
+		reloaded := loadAutoRecordSettings()
+		autoRecordMu.Lock()
+		stale := autoRecordSettingsCache
+		autoRecordSettingsCache = reloaded
+		autoRecordMu.Unlock()
+		if stale != reloaded {
+			log.Printf("autorecord: persistent-data mount became ready after startup - reloaded settings (enabled=%v)\n", reloaded.Enabled)
+		}
+		return
+	}
+	log.Printf("autorecord: persistent-data mount still not ready %s after startup - keeping the safe default (enabled=%v)\n", timeout, autoRecordSettingsCache.Enabled)
 }
 
 // autoRecordLoop is this feature's one dedicated goroutine - it never
