@@ -56,6 +56,7 @@ var (
 	fisbCachePressureRejected  uint64 // atomic
 	fisbCacheOversizedRejected uint64 // atomic
 	fisbCacheCapacityRejected  uint64 // atomic
+	fisbCacheShutdownRejected  uint64 // atomic
 	fisbCacheStartupRecovered  bool
 	fisbCacheRecoveryError     bool
 	fisbCacheNonFatalErrors    bool
@@ -95,6 +96,88 @@ var (
 // possibility of a lock-order cycle between them.
 var fisbCacheDiskMu sync.Mutex
 
+// --- Asynchronous cleanup worker ---------------------------------------
+//
+// Every disk-mutating capacity/retention decision this feature ever
+// makes runs on ONE dedicated goroutine (fisbCacheCleanupWorker), never
+// on the live UAT/978 decode path and never inline inside an HTTP
+// handler. fisbCacheEnqueue/reserveAndEnqueue (fisbcachereserve.go) -
+// the one function called directly from main/gen_gdl90.go's decode loop
+// - never evicts; when capacity is not immediately available it rejects
+// the offer and calls fisbCacheRequestCleanup, a non-blocking,
+// coalescing signal, then returns immediately. See
+// docs/fisb-weather-cache.md's "Synchronous admission bounds" section
+// for the full model this establishes.
+
+// fisbCacheCleanupSignal is a buffered(1), coalescing, non-blocking
+// signal channel: "capacity or settings changed - please re-evaluate
+// whether anything needs evicting." At most one pending signal can ever
+// sit in this channel - a second request while one is already pending
+// is a harmless, intentional no-op (see fisbCacheRequestCleanup): the
+// eventual pass re-reads whatever the CURRENT state is when it actually
+// runs, never a stale snapshot from when either request was made, so
+// coalescing never loses information a caller needed acted on.
+var fisbCacheCleanupSignal chan struct{}
+
+// fisbCacheCleanupRunning is true for the duration of one cleanup pass -
+// exposed via the status API so an operator can distinguish "idle,
+// nothing to do" from "actively evicting right now."
+var fisbCacheCleanupRunning atomic.Bool
+
+// fisbCacheCleanupRequested/fisbCacheCleanupRuns together give an honest,
+// directly observable measure of coalescing: every fisbCacheRequestCleanup
+// call increments Requested, regardless of whether it actually triggers
+// a new pass or coalesces into one already pending; Runs only increments
+// once a pass actually executes. Requested > Runs is expected and fine
+// under sustained pressure - it is coalescing working as designed, not
+// lost work.
+var (
+	fisbCacheCleanupRequested uint64 // atomic
+	fisbCacheCleanupRuns      uint64 // atomic
+)
+
+// fisbCacheRequestCleanup asks the asynchronous cleanup worker to run a
+// pass soon - a non-blocking, coalescing send, NEVER a wait. Safe to
+// call from any goroutine, including the live UAT/978 decode path itself
+// (fisbCacheEnqueue calls this when a capture is rejected for lack of
+// capacity) and an HTTP handler goroutine (handleSetFISBCacheSettingsRequest
+// calls this after a settings change, rather than running the
+// enforcement pass inline - see that handler's own doc comment for why).
+func fisbCacheRequestCleanup() {
+	atomic.AddUint64(&fisbCacheCleanupRequested, 1)
+	select {
+	case fisbCacheCleanupSignal <- struct{}{}:
+	default:
+	}
+}
+
+// fisbCacheCleanupWorker is this feature's ONE dedicated goroutine for
+// every disk-mutating capacity/retention decision - the sole caller of
+// fisbCacheRunRetention (see that function's own doc comment). Runs a
+// pass whenever signaled (fisbCacheRequestCleanup - a capacity
+// rejection, a settings change, startup recovery finishing, or the
+// capture worker's own post-admission backstop - see each call site's
+// own doc comment) OR on the periodic fisbCacheRetentionInterval tick (a
+// backstop for pure time-based expiry, which needs no new admission or
+// request to become due). At most one pass ever executes at a time, by
+// construction: this is the only goroutine that ever calls
+// fisbCacheRunRetention, so two passes can never run concurrently with
+// each other.
+func fisbCacheCleanupWorker() {
+	ticker := time.NewTicker(fisbCacheRetentionInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-fisbCacheCleanupSignal:
+		case <-ticker.C:
+		}
+		fisbCacheCleanupRunning.Store(true)
+		fisbCacheRunRetention()
+		atomic.AddUint64(&fisbCacheCleanupRuns, 1)
+		fisbCacheCleanupRunning.Store(false)
+	}
+}
+
 // fisbCacheHandleShutdown stops this feature from admitting any further
 // capture into the queue - called once from gracefulShutdown (see
 // main/gen_gdl90.go). Never closes fisbCacheQueue itself (an in-flight
@@ -121,6 +204,7 @@ func initFISBCache() {
 	fisbCacheSettingsCache = loadFISBCacheSettings()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
+	fisbCacheCleanupSignal = make(chan struct{}, 1)
 	fisbCacheFS = storagelifecycle.NewOSFS()
 	fisbCacheAtomicWriter = storagelifecycle.NewAtomicWriter(fisbCacheFS)
 	settingsSnapshot := fisbCacheSettingsCache
@@ -135,7 +219,7 @@ func initFISBCache() {
 
 	go fisbCacheCaptureWorker()
 	go fisbCacheStartupRecovery()
-	go fisbCacheRetentionLoop()
+	go fisbCacheCleanupWorker()
 
 	log.Printf("fisbcache: initialized (enabled=%v persistenceEnabled=%v)\n", settingsSnapshot.Enabled, settingsSnapshot.PersistenceEnabled)
 }
@@ -235,6 +319,7 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 	settings := fisbCacheSettingsCache
 	fisbCacheMu.Unlock()
 	if shuttingDown {
+		atomic.AddUint64(&fisbCacheShutdownRejected, 1)
 		return
 	}
 	// A single entry whose own payload alone already exceeds the
@@ -298,15 +383,17 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 // already returned by the time this runs).
 //
 // Synchronous admission bounds: by the time an item reaches this worker
-// at all, fisbCacheEnqueue's own reservation has already, synchronously,
-// made room for it - see fisbcachereserve.go. This function still runs
-// fisbCacheRunRetention immediately after each Admit, before persisting,
-// as a defense-in-depth backstop (usually a no-op given the reservation
-// already made room) that also re-validates against whatever the CURRENT
-// settings are at commit time, not whatever they were when the
-// reservation was originally made - see docs/fisb-weather-cache.md's
-// "Synchronous admission bounds" section for why this closes the gap a
-// settings tightening could otherwise leave for an already-reserved item.
+// at all, fisbCacheEnqueue's own reservation has already, synchronously
+// and purely in-memory, made room for it - see fisbcachereserve.go. This
+// worker itself still requests a cleanup pass (fisbCacheRequestCleanup,
+// never a direct fisbCacheRunRetention call - this goroutine, like the
+// live decode goroutine, never performs disk-mutating eviction itself)
+// immediately after each Admit, before persisting - usually a no-op
+// given the reservation already made room, but this is also what
+// self-corrects an already-reserved item against a settings tightening
+// that happened after the reservation was made but before it was
+// committed - see docs/fisb-weather-cache.md's "Synchronous admission
+// bounds" section.
 func fisbCacheCaptureWorker() {
 	for range fisbCachePending.wake {
 		for {
@@ -336,7 +423,7 @@ func fisbCacheProcessOneCaptureItem(key fisbcache.Key, item fisbCaptureItem) {
 	if result != fisbcache.AdmitAccepted && result != fisbcache.AdmitSuperseded {
 		return
 	}
-	fisbCacheRunRetention()
+	fisbCacheRequestCleanup()
 
 	fisbCacheMu.Lock()
 	persistenceEnabled := fisbCacheSettingsCache.Enabled && fisbCacheSettingsCache.PersistenceEnabled
@@ -393,50 +480,34 @@ func fisbCachePersist(e fisbcache.Entry, payload string) error {
 // simply means no persisted entry is re-admitted this boot) rather than
 // serving anything it cannot trust.
 //
-// Synchronous admission bounds: recovery finishes by running the same
-// budget-enforcement pass (fisbCacheRunRetention) every live admission
-// does, once, after every recoverable entry has been re-admitted - so a
-// persisted set that is larger than the CURRENTLY configured budget
-// (e.g. settings were tightened since these files were written) is
-// trimmed back to budget before recovery ever reports itself complete,
-// not left to whatever the next periodic retention tick happens to be.
+// Synchronous admission bounds: recovery finishes by requesting the same
+// cleanup pass (fisbCacheRequestCleanup) every live admission does, once,
+// after every recoverable entry has been re-admitted - so a persisted
+// set larger than the CURRENTLY configured budget (e.g. settings were
+// tightened since these files were written) is trimmed back to budget
+// promptly, asynchronously, rather than left to whatever the next
+// periodic tick happens to be.
 //
-// Known, narrow limitation: this function's own quarantine deletes below
-// (an exact per-file Remove for a corrupt/future-dated/unaged/expired
-// persisted file) are individually serialized against a concurrent live
-// write via fisbCacheDiskMu, but the DECISION to quarantine a given file
-// is still made from content read moments earlier, outside that lock -
-// so a live capture that persists a fresh replacement for the exact same
-// product in the narrow window between this loop reading a stale/corrupt
-// file and deciding to quarantine it could still have that fresh file
-// wrongly removed. This is a real, but startup-window-only and
-// low-probability, gap - recovery runs once, briefly, at boot, and it
-// requires a live capture for the exact same product to land in that
-// specific narrow window. Documented here rather than silently claimed
-// closed; closing it fully would require re-validating each file's
-// content again immediately before removal, under fisbCacheDiskMu -
-// judged not worth the added complexity for this one narrow, self-
-// healing case (a wrongly-quarantined-then-immediately-superseded entry
-// only ever loses at most one stale, about-to-be-replaced copy, and the
-// live capture's own in-memory Store entry - which is what every current
-// consumer of this feature actually reads - is entirely unaffected,
-// since recovery's quarantine path never touches the Store for a key it
-// did not itself Admit).
-// fisbCacheQuarantineRemove deletes exactly path (a single, already-
-// identified corrupt/untrustworthy persisted file) while holding
-// fisbCacheDiskMu - see fisbCacheDiskMu's own doc comment and
-// fisbCacheStartupRecovery's "known, narrow limitation" note for what
-// this does and does not close. A failure here is intentionally
-// swallowed (matching this call site's original behavior exactly): a
-// quarantine file this feature could not remove is, at worst, one extra
-// file the next retention/enforcement pass or a future recovery will
-// reconsider - never a reason to abort recovery itself.
-func fisbCacheQuarantineRemove(path string) {
-	fisbCacheDiskMu.Lock()
-	defer fisbCacheDiskMu.Unlock()
-	_ = fisbCacheFS.Remove(path)
-}
-
+// This function used to document a known, narrow race here: its own
+// quarantine deletes were individually serialized against a concurrent
+// live write via fisbCacheDiskMu, but the DECISION to quarantine a given
+// file was made from content read moments earlier, outside that lock -
+// so a live capture that persisted a fresh replacement for the exact
+// same product in the narrow window between this loop reading a stale/
+// corrupt file and deciding to quarantine it could have that fresh file
+// wrongly removed. This is now fully closed:
+// fisbCacheQuarantineIfStillWarranted re-reads and re-classifies each
+// file's CURRENT content, against its OWN freshly-fetched now/nowMono
+// (never this scan's own, by-then-stale nowUTC/nowMono above - see that
+// function's own doc comment for why reusing a stale reference time
+// would silently reintroduce this exact race under a different guise),
+// immediately before removing it, while holding fisbCacheDiskMu the
+// entire time - the same lock a concurrent fisbCachePersist for that
+// exact path also requires, so whichever side wins the race for the lock
+// completes entirely before the other starts, and this function's own
+// re-check can never observe a state a concurrent write is still in the
+// middle of changing. See
+// TestFISBCacheStartupRecovery_QuarantineNeverDestroysAConcurrentReplacement.
 func fisbCacheStartupRecovery() {
 	deadline := time.Now().Add(fisbCacheStartupRecoveryTimeout)
 	for !fisbCacheTrustedTimeState() {
@@ -479,49 +550,43 @@ func fisbCacheStartupRecovery() {
 		if !e.IsRegular || e.IsSymlink {
 			continue
 		}
-		raw, err := fisbReadFileBounded(fisbCacheNamespace.Root + "/" + e.Name)
+		path := fisbCacheNamespace.Root + "/" + e.Name
+		raw, err := fisbReadFileBounded(path)
 		if err != nil {
 			nonFatal = true
 			continue
 		}
-		entry, _, err := fisbcache.DecodePersistedEntry(raw, nowUTC)
-		if err != nil {
-			// Invalid/corrupt/future-dated per DecodePersistedEntry's own
-			// strict validation - quarantine by removing only this exact
-			// file (never anything else in this namespace).
-			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
+		decision := fisbCacheClassifyRecoveryFile(raw, nowUTC, nowMono)
+		switch decision.reason {
+		case fisbCacheRecoveryOK:
+			if fisbCacheStore.Admit(decision.entry) == fisbcache.AdmitAccepted {
+				recovered++
+			}
+		case fisbCacheRecoveryCorrupt:
+			// Invalid per DecodePersistedEntry's own strict validation -
+			// quarantine by removing only this exact file (never
+			// anything else in this namespace).
+			fisbCacheQuarantineIfStillWarranted(path)
 			nonFatal = true
-			continue
-		}
-		if entry.ReceivedAtUTC.IsZero() {
-			// Age can never be proven for an entry that was never recorded
-			// with a trusted receive time - expire conservatively rather
-			// than guess (see docs/fisb-weather-cache.md).
-			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
-			continue
-		}
-		age := nowUTC.Sub(entry.ReceivedAtUTC)
-		if age < 0 {
+		case fisbCacheRecoveryUnknownAge:
+			// Age can never be proven for an entry that was never
+			// recorded with a trusted receive time - expire
+			// conservatively rather than guess (see
+			// docs/fisb-weather-cache.md).
+			fisbCacheQuarantineIfStillWarranted(path)
+		case fisbCacheRecoveryFutureDated:
 			// A recorded receive time in the future relative to the
 			// current trusted clock is never trustworthy either.
-			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
+			fisbCacheQuarantineIfStillWarranted(path)
 			nonFatal = true
-			continue
-		}
-		entry.ReceivedAtMonotonic = nowMono - age.Seconds()
-		if fisbcache.Freshness(entry, fisbcache.PolicyFor(entry.Key), nowMono) == fisbcache.FreshnessExpired {
-			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
-			continue
-		}
-		if fisbCacheStore.Admit(entry) == fisbcache.AdmitAccepted {
-			recovered++
+		case fisbCacheRecoveryExpired:
+			fisbCacheQuarantineIfStillWarranted(path)
 		}
 	}
 
 	// Bound recovery's own contribution to the configured budget
-	// synchronously, before this boot's very first status snapshot could
-	// ever report it - see this function's own doc comment.
-	fisbCacheRunRetention()
+	// promptly - see this function's own doc comment.
+	fisbCacheRequestCleanup()
 
 	log.Printf("fisbcache: startup recovery complete (%d entries re-admitted)\n", recovered)
 	fisbCacheMu.Lock()
@@ -530,19 +595,115 @@ func fisbCacheStartupRecovery() {
 	fisbCacheMu.Unlock()
 }
 
-// --- Retention ---------------------------------------------------------
+// fisbCacheRecoveryReason names why fisbCacheClassifyRecoveryFile did (or
+// did not) recommend quarantining a persisted file - kept distinct from
+// a plain bool so callers can preserve the exact nonFatal-tracking
+// distinctions fisbCacheStartupRecovery's own state machine always has
+// (a corrupt or future-dated file counts as a non-fatal recovery error;
+// an honestly-unknown-age or genuinely-expired one does not - it is
+// simply, unremarkably, not kept).
+type fisbCacheRecoveryReason int
 
-// fisbCacheRetentionLoop periodically evicts expired and, if over budget,
-// oldest-received entries - see fisbcache.PlanEviction. A scan/execution
-// failure never panics or stops this loop, matching this project's other
-// periodic-loop failure-isolation convention (e.g.
-// storageLifecycleUpdateLoop).
-func fisbCacheRetentionLoop() {
-	ticker := time.NewTicker(fisbCacheRetentionInterval)
-	defer ticker.Stop()
-	for range ticker.C {
-		fisbCacheRunRetention()
+const (
+	fisbCacheRecoveryOK fisbCacheRecoveryReason = iota
+	fisbCacheRecoveryCorrupt
+	fisbCacheRecoveryUnknownAge
+	fisbCacheRecoveryFutureDated
+	fisbCacheRecoveryExpired
+)
+
+// fisbCacheRecoveryDecision is one file's recovery classification, as
+// computed by fisbCacheClassifyRecoveryFile - identical logic whether
+// this is the FIRST pass (fisbCacheStartupRecovery's own loop, from
+// content read once, outside fisbCacheDiskMu) or the RE-CHECK
+// immediately before a quarantine delete
+// (fisbCacheQuarantineIfStillWarranted, from a FRESH read, inside
+// fisbCacheDiskMu) - using the exact same function for both is what
+// guarantees the re-check can never disagree with the original decision
+// for a reason THIS function's own logic could introduce, only because
+// the file's real content genuinely changed in between.
+type fisbCacheRecoveryDecision struct {
+	reason fisbCacheRecoveryReason
+	entry  fisbcache.Entry // meaningful only when reason == fisbCacheRecoveryOK
+}
+
+// fisbCacheClassifyRecoveryFile is fisbCacheStartupRecovery's entire
+// per-file decision, pure and side-effect-free: decode, then age/
+// freshness checks, in the exact order and with the exact bridged-
+// monotonic-time computation fisbCacheStartupRecovery's own loop always
+// used. Factored out so it can be run TWICE against the SAME file - once
+// cheaply while scanning (outside any lock), and once more, right before
+// an actual delete, while holding fisbCacheDiskMu - see
+// fisbCacheQuarantineIfStillWarranted.
+func fisbCacheClassifyRecoveryFile(raw []byte, nowUTC time.Time, nowMono float64) fisbCacheRecoveryDecision {
+	entry, _, err := fisbcache.DecodePersistedEntry(raw, nowUTC)
+	if err != nil {
+		return fisbCacheRecoveryDecision{reason: fisbCacheRecoveryCorrupt}
 	}
+	if entry.ReceivedAtUTC.IsZero() {
+		return fisbCacheRecoveryDecision{reason: fisbCacheRecoveryUnknownAge}
+	}
+	age := nowUTC.Sub(entry.ReceivedAtUTC)
+	if age < 0 {
+		return fisbCacheRecoveryDecision{reason: fisbCacheRecoveryFutureDated}
+	}
+	entry.ReceivedAtMonotonic = nowMono - age.Seconds()
+	if fisbcache.Freshness(entry, fisbcache.PolicyFor(entry.Key), nowMono) == fisbcache.FreshnessExpired {
+		return fisbCacheRecoveryDecision{reason: fisbCacheRecoveryExpired}
+	}
+	return fisbCacheRecoveryDecision{reason: fisbCacheRecoveryOK, entry: entry}
+}
+
+// fisbCacheQuarantineIfStillWarranted deletes path ONLY if a FRESH read
+// of its CURRENT content, re-classified from scratch
+// (fisbCacheClassifyRecoveryFile) while holding fisbCacheDiskMu, is
+// STILL quarantine-worthy - this is what fully closes the recovery race
+// fisbCacheStartupRecovery's own doc comment used to only document as a
+// known, narrow limitation: a live capture that persists a fresh,
+// legitimate replacement for the exact same product in the window
+// between the original (stale, outside-the-lock) read and this call
+// must never have that fresh file destroyed just because the STALE read
+// that triggered this call happened to look corrupt/expired/
+// future-dated. A read failure (the file is already gone, or newly
+// unreadable for some other reason) is treated as "nothing left here to
+// wrongly destroy," not as a reason to error - matching this call site's
+// original, always-best-effort behavior.
+//
+// Deliberately fetches its OWN fresh nowUTC/nowMono here, rather than
+// reusing the caller's (necessarily older, possibly much older across a
+// slow directory scan) values: a genuinely fresh concurrent write's own
+// ReceivedAtUTC is set from real wall-clock time at the moment it was
+// captured, which can only ever be AT OR AFTER whatever nowUTC recovery's
+// scan captured before that write happened - reusing the scan's frozen,
+// now-stale nowUTC here would make the classifier see that fresh entry's
+// receive time as being in ITS OWN future and misclassify it as
+// future-dated, defeating this entire re-check's purpose. If trusted
+// time is not currently available (a pathological, narrow case: time
+// trust degraded in the brief window since recovery's own earlier wait
+// already confirmed it), this conservatively skips the delete entirely
+// rather than risk classifying against an untrustworthy nowUTC - a later
+// pass (the next periodic cleanup tick, or a future boot's own recovery)
+// will reconsider this file once trusted time is available again.
+func fisbCacheQuarantineIfStillWarranted(path string) {
+	fisbCacheDiskMu.Lock()
+	defer fisbCacheDiskMu.Unlock()
+
+	raw, err := fisbReadFileBounded(path)
+	if err != nil {
+		return
+	}
+	nowUTC := fisbCacheTrustedNowUTC()
+	if nowUTC.IsZero() {
+		return
+	}
+	nowMono := monotonicSeconds()
+	if fisbCacheClassifyRecoveryFile(raw, nowUTC, nowMono).reason != fisbCacheRecoveryOK {
+		_ = fisbCacheFS.Remove(path)
+	}
+	// else: a concurrent write replaced this file with legitimate
+	// content since the earlier, stale read that triggered this call -
+	// leave it alone entirely, exactly as if this call had never
+	// happened.
 }
 
 // fisbCacheEvictKeyIfUnchanged deletes k's persisted file and its Store
@@ -606,16 +767,16 @@ func fisbCacheEvictKeyIfUnchanged(k fisbcache.Key, expected fisbcache.Entry) (de
 // fisbCacheRunRetention is this feature's one budget/retention
 // enforcement pass - plan (fisbcache.PlanEviction, pure, against a single
 // Snapshot) then execute (fisbCacheEvictKeyIfUnchanged, per key, safe
-// against anything that changed since that snapshot was taken). Called
-// from four places, all safe to run concurrently with each other and
-// with fisbCachePersist: fisbCacheCaptureWorker (synchronously, after
-// every single admission - see that function's own doc comment for why
-// this is what makes the disk-overhead bound strict rather than merely
-// eventual), fisbCacheStartupRecovery (once, at the end), the periodic
-// fisbCacheRetentionLoop (a backstop for pure time-based expiry, which
-// needs no new admission to become due), and
-// handleSetFISBCacheSettingsRequest (so a tightened budget takes effect
-// immediately rather than waiting for the next periodic tick).
+// against anything that changed since that snapshot was taken). This is
+// the ONLY function in this feature that performs disk deletion for
+// capacity/retention reasons, and fisbCacheCleanupWorker is its ONLY
+// caller - every other site that used to call this directly (the
+// capture path's own post-admission check, fisbCacheStartupRecovery,
+// handleSetFISBCacheSettingsRequest) now calls fisbCacheRequestCleanup
+// instead, which only ever signals this same worker asynchronously; see
+// fisbCacheCleanupWorker's own doc comment for why this guarantees at
+// most one pass ever runs at a time, and never on the live capture
+// goroutine.
 func fisbCacheRunRetention() {
 	fisbCacheMu.Lock()
 	settings := fisbCacheSettingsCache

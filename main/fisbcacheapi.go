@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/stratux/stratux/fisbcache"
@@ -77,8 +78,12 @@ type fisbCacheStatusResponse struct {
 	PressureRejected   uint64                           `json:"pressureRejected"`
 	OversizedRejected  uint64                           `json:"oversizedRejected"`
 	CapacityRejected   uint64                           `json:"capacityRejected"`
+	ShutdownRejected   uint64                           `json:"shutdownRejected"`
 	LastCleanupUTC     time.Time                        `json:"lastCleanupUtc,omitempty"`
 	LastCleanupCount   int                              `json:"lastCleanupCount"`
+	CleanupRunning     bool                             `json:"cleanupRunning"`
+	CleanupRequested   uint64                           `json:"cleanupRequested"`
+	CleanupRuns        uint64                           `json:"cleanupRuns"`
 	StoragePressure    string                           `json:"storagePressure"`
 	Notes              []string                         `json:"notes"`
 }
@@ -165,12 +170,16 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		ReservedEntries:    reservedEntries,
 		ProjectedBytes:     projectedBytes,
 		ProjectedEntries:   projectedEntries,
-		DroppedWrites:      fisbCacheDroppedWrites,
-		PressureRejected:   fisbCachePressureRejected,
-		OversizedRejected:  fisbCacheOversizedRejected,
-		CapacityRejected:   fisbCacheCapacityRejected,
+		DroppedWrites:      atomic.LoadUint64(&fisbCacheDroppedWrites),
+		PressureRejected:   atomic.LoadUint64(&fisbCachePressureRejected),
+		OversizedRejected:  atomic.LoadUint64(&fisbCacheOversizedRejected),
+		CapacityRejected:   atomic.LoadUint64(&fisbCacheCapacityRejected),
+		ShutdownRejected:   atomic.LoadUint64(&fisbCacheShutdownRejected),
 		LastCleanupUTC:     lastCleanupUTC,
 		LastCleanupCount:   lastCleanupCount,
+		CleanupRunning:     fisbCacheCleanupRunning.Load(),
+		CleanupRequested:   atomic.LoadUint64(&fisbCacheCleanupRequested),
+		CleanupRuns:        atomic.LoadUint64(&fisbCacheCleanupRuns),
 		StoragePressure:    pressure,
 		Notes:              fisbCacheNotes(),
 	}
@@ -281,14 +290,20 @@ func handleSetFISBCacheSettingsRequest(w http.ResponseWriter, r *http.Request) {
 	fisbCacheSettingsCache = s
 	fisbCacheMu.Unlock()
 	// A tightened budget (lower maxCacheBytes/maxEntries) must take effect
-	// immediately, not up to fisbCacheRetentionInterval later - run the
-	// same enforcement pass every admission already runs synchronously.
-	// Harmless, cheap no-op when the new settings are not actually
-	// tighter than what is currently cached (fisbCacheRunRetention's own
-	// PlanEviction is a pure function of the current Snapshot - see its
-	// own doc comment).
+	// promptly, not up to fisbCacheRetentionInterval later - REQUEST the
+	// same enforcement pass every admission already requests
+	// (fisbCacheRequestCleanup: a non-blocking, coalescing signal to the
+	// dedicated fisbCacheCleanupWorker goroutine). This handler must
+	// never perform the disk work itself: an HTTP handler goroutine
+	// running an unbounded eviction pass inline would block this
+	// response on however much disk I/O a large settings tightening
+	// happens to require - see fisbCacheCleanupWorker's own doc comment.
+	// This response therefore returns success before that enforcement
+	// pass has necessarily run or completed; the status endpoint's own
+	// cleanupRequested/cleanupRunning/cleanupRuns fields let a caller
+	// observe its actual progress.
 	if fisbCacheStore != nil {
-		fisbCacheRunRetention()
+		fisbCacheRequestCleanup()
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "settings": s})
 }

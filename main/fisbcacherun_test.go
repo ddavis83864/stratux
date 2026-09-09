@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -218,6 +219,76 @@ func TestFISBCacheStartupRecovery_AlreadyExpiredEntryRemovedNotReadmitted(t *tes
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("expected the already-expired entry's file removed during recovery, stat error = %v", err)
+	}
+}
+
+// TestFISBCacheStartupRecovery_QuarantineNeverDestroysAConcurrentReplacement
+// proves Race 3 (docs/fisb-weather-cache.md's "Concurrency" section) is
+// fully closed: a file that LOOKED quarantine-worthy at the moment
+// recovery's own scan read and classified it (here: already expired)
+// must survive if a concurrent live write replaces it with a genuinely
+// fresh, non-expired copy of the SAME product before the actual delete
+// runs - exactly mirroring
+// TestFISBCacheEvictKeyIfUnchanged_RefusesStalePlanEvenAfterConcurrentReplacementIsPersisted's
+// proof shape for retention/reservation eviction's own analogous race.
+func TestFISBCacheStartupRecovery_QuarantineNeverDestroysAConcurrentReplacement(t *testing.T) {
+	dir := withTestFISBCacheStorage(t)
+	withTrustedTimeForTest(t)
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheMu.Unlock()
+
+	key := makeFISBTestKey("KRACE")
+	path := filepath.Join(dir, fisbCacheEntryFileName(key))
+
+	// A stale, already-expired copy - exactly what recovery's directory
+	// scan will read moments before quarantining it.
+	staleUTC := time.Now().UTC().Add(-6 * time.Hour) // METAR's 3h ExpireLimit, well past it
+	stale := fisbcache.Entry{Key: key, ReceivedAtMonotonic: 0, ReceivedAtUTC: staleUTC}
+	if err := fisbCachePersist(stale, "METAR KRACE 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The exact read-and-classify step fisbCacheStartupRecovery's own
+	// scan loop performs, "outside the lock," moments before any
+	// quarantine call.
+	nowUTC := fisbCacheTrustedNowUTC()
+	nowMono := monotonicSeconds()
+	raw, err := fisbReadFileBounded(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision := fisbCacheClassifyRecoveryFile(raw, nowUTC, nowMono); decision.reason != fisbCacheRecoveryExpired {
+		t.Fatalf("test precondition failed: expected the stale entry to classify as expired, got reason=%v", decision.reason)
+	}
+
+	// Simulate exactly what a concurrent live capture does in the narrow
+	// window between that read and the eventual quarantine call: persist
+	// a genuinely fresh, non-expired copy of the SAME product.
+	const freshPayload = "METAR KRACE 091953Z AUTO 00000KT 10SM CLR 16/10 A3001"
+	fresh := fisbcache.Entry{Key: key, ReceivedAtMonotonic: monotonicSeconds(), ReceivedAtUTC: time.Now().UTC()}
+	if err := fisbCachePersist(fresh, freshPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	// The quarantine call itself - fisbCacheQuarantineIfStillWarranted
+	// fetches its OWN fresh now/nowMono internally (never the caller's,
+	// and never the stale nowUTC/nowMono captured above), which is
+	// exactly what lets it see the fresh write as fresh rather than
+	// future-dated relative to a stale reference time - see that
+	// function's own doc comment.
+	fisbCacheQuarantineIfStillWarranted(path)
+
+	rawAfter, err := fisbReadFileBounded(path)
+	if err != nil {
+		t.Fatalf("expected the fresh entry's file to survive, got %v", err)
+	}
+	_, payload, err := fisbcache.DecodePersistedEntry(rawAfter, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("expected the surviving file to still decode cleanly: %v", err)
+	}
+	if payload != freshPayload {
+		t.Errorf("expected the surviving file's payload to be the FRESH write %q, got %q (a stale quarantine decision wrongly won)", freshPayload, payload)
 	}
 }
 
@@ -635,7 +706,17 @@ func TestFISBCache_ConcurrentAdmitPersistAndRetentionNeverDivergesStoreFromDisk(
 	}
 }
 
-func TestFISBCacheStartupRecovery_EnforcesBudgetBeforeReportingComplete(t *testing.T) {
+// TestFISBCacheStartupRecovery_RequestsCleanupThatEnforcesBudget proves
+// recovery's contribution to the configured budget is corrected once
+// cleanup actually runs - recovery itself only REQUESTS a cleanup pass
+// (fisbCacheRequestCleanup, asynchronous, non-blocking - see that
+// function's own doc comment) rather than enforcing the budget inline
+// before reporting complete, so this test asserts the request was made,
+// then invokes fisbCacheRunRetention directly (standing in for the real
+// fisbCacheCleanupWorker goroutine, which recovery never starts or waits
+// on) to prove that pass converges the Store and disk to the
+// now-tighter budget.
+func TestFISBCacheStartupRecovery_RequestsCleanupThatEnforcesBudget(t *testing.T) {
 	dir := withTestFISBCacheStorage(t)
 	withTrustedTimeForTest(t)
 	fisbCacheMu.Lock()
@@ -662,24 +743,42 @@ func TestFISBCacheStartupRecovery_EnforcesBudgetBeforeReportingComplete(t *testi
 		}
 	}
 
+	beforeRequested := atomic.LoadUint64(&fisbCacheCleanupRequested)
 	fisbCacheStartupRecovery()
+	if got := atomic.LoadUint64(&fisbCacheCleanupRequested); got <= beforeRequested {
+		t.Errorf("expected fisbCacheStartupRecovery to request a cleanup pass, count did not increase (before=%d after=%d)", beforeRequested, got)
+	}
+
+	// Recovery only requested cleanup above; run the pass directly here,
+	// standing in for the real asynchronous worker.
+	fisbCacheRunRetention()
 
 	if fisbCacheStore.Len() > 2 {
-		t.Errorf("expected recovery to enforce the now-tighter MaxEntries=2 budget before reporting complete, got Store.Len()=%d", fisbCacheStore.Len())
+		t.Errorf("expected the now-tighter MaxEntries=2 budget enforced once cleanup runs, got Store.Len()=%d", fisbCacheStore.Len())
 	}
-	// The Store and disk must agree - recovery's own enforcement pass
-	// must have deleted the files for whatever it evicted, not merely
-	// dropped them from the in-memory index.
+	// The Store and disk must agree - the enforcement pass must have
+	// deleted the files for whatever it evicted, not merely dropped them
+	// from the in-memory index.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) > 2 {
-		t.Errorf("expected at most 2 files remaining on disk after recovery's own budget enforcement, got %d", len(entries))
+		t.Errorf("expected at most 2 files remaining on disk after cleanup's own budget enforcement, got %d", len(entries))
 	}
 }
 
-func TestHandleSetFISBCacheSettings_TighteningBudgetEvictsImmediatelyNotAfterATick(t *testing.T) {
+// TestHandleSetFISBCacheSettings_TighteningBudgetRequestsCleanupNotInlineEviction
+// proves this handler never performs disk-mutating enforcement itself
+// (Phase 4's "settings reduction may request cleanup but must not
+// perform unbounded disk work in an HTTP handler" requirement): the
+// Store may still exceed the just-tightened budget the instant this
+// request returns, but the handler must have REQUESTED a cleanup pass
+// (fisbCacheRequestCleanup - see that function's own doc comment).
+// Running that pass afterward (standing in for the real
+// fisbCacheCleanupWorker goroutine, which this test never starts) then
+// proves it converges the Store to the new budget.
+func TestHandleSetFISBCacheSettings_TighteningBudgetRequestsCleanupNotInlineEviction(t *testing.T) {
 	withFISBCacheTestEnv(t)
 
 	// Admit and persist 5 entries under a generous starting budget.
@@ -700,6 +799,7 @@ func TestHandleSetFISBCacheSettings_TighteningBudgetEvictsImmediatelyNotAfterATi
 		t.Fatalf("test precondition failed: expected 5 entries admitted, got %d", fisbCacheStore.Len())
 	}
 
+	beforeRequested := atomic.LoadUint64(&fisbCacheCleanupRequested)
 	body := `{"schemaVersion":1,"enabled":true,"persistenceEnabled":true,"replayEnabled":false,"maxCacheBytes":268435456,"maxEntries":2}`
 	req := httptest.NewRequest(http.MethodPost, "/setFISBCacheSettings", strings.NewReader(body))
 	rr := httptest.NewRecorder()
@@ -707,8 +807,16 @@ func TestHandleSetFISBCacheSettings_TighteningBudgetEvictsImmediatelyNotAfterATi
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
+	if got := atomic.LoadUint64(&fisbCacheCleanupRequested); got <= beforeRequested {
+		t.Errorf("expected the settings handler to request a cleanup pass, count did not increase (before=%d after=%d)", beforeRequested, got)
+	}
+
+	// The handler must not have performed the enforcement itself - run
+	// the pass directly here, standing in for the real asynchronous
+	// worker.
+	fisbCacheRunRetention()
 
 	if fisbCacheStore.Len() > 2 {
-		t.Errorf("expected the tightened maxEntries=2 budget enforced synchronously by the settings handler itself, got Store.Len()=%d immediately after the request returned", fisbCacheStore.Len())
+		t.Errorf("expected the tightened maxEntries=2 budget enforced once cleanup runs, got Store.Len()=%d", fisbCacheStore.Len())
 	}
 }

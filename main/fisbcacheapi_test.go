@@ -432,6 +432,14 @@ func TestFISBCachePurge_ReusedTokenRejected(t *testing.T) {
 	}
 }
 
+// TestFISBCachePurge_CancelInvalidatesToken also stands in for this
+// feature's "cancellation" fault-injection coverage: ReplaceProduct
+// (fisbcachestorage.go) hardcodes context.Background() for every write,
+// so there is no real, reachable context-cancellation path in this
+// feature's write pipeline to fault-inject against. The purge flow's own
+// explicit cancel step is the one genuine "abandon an in-progress
+// operation before it completes" pathway this feature exposes - proven
+// here.
 func TestFISBCachePurge_CancelInvalidatesToken(t *testing.T) {
 	withFISBCacheTestEnv(t)
 	withFISBCachePurgeStateReset(t)

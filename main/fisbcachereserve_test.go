@@ -13,7 +13,8 @@ requires:
 	projected committed entries, including accepted queued/in-flight work,
 	    <= configured maximum entries
 	temporary atomic-write overhead <= one explicitly derived hard bound
-	queue memory <= one explicitly derived hard bound
+	queue payload bytes (application-retained, not Go runtime/RSS memory)
+	    <= one explicitly derived hard bound
 */
 package main
 
@@ -30,121 +31,63 @@ import (
 	"github.com/stratux/stratux/storagelifecycle"
 )
 
-// --- fisbCachePlanReservation: projection math in isolation --------------
+// --- fisbCacheReservationFits: projection math in isolation - a PURE,
+// in-memory check, never eviction planning or execution (see
+// fisbcachereserve.go's own doc comment for why eviction was removed
+// from this whole call path entirely) ------------------------------------
 
-func TestFisbCachePlanReservation_FitsWithoutEviction(t *testing.T) {
+func TestFisbCacheReservationFits_FitsWithinBudget(t *testing.T) {
 	committed := map[fisbcache.Key]fisbcache.Entry{
 		makeFISBTestKey("KSEA"): {Key: makeFISBTestKey("KSEA"), SizeBytes: 100, ReceivedAtMonotonic: 10},
 	}
-	fits, evict := fisbCachePlanReservation(committed, nil, makeFISBTestKey("KPDX"), 50, 1000, 10, 100)
-	if !fits {
-		t.Fatal("expected it to already fit")
-	}
-	if len(evict) != 0 {
-		t.Errorf("expected no eviction needed, got %v", evict)
+	if !fisbCacheReservationFits(committed, nil, makeFISBTestKey("KPDX"), 50, 1000, 10) {
+		t.Fatal("expected it to fit")
 	}
 }
 
-func TestFisbCachePlanReservation_EvictsOldestToMakeRoom(t *testing.T) {
+func TestFisbCacheReservationFits_RejectsWhenOverByteBudget(t *testing.T) {
 	old := fisbcache.Entry{Key: makeFISBTestKey("KOLD"), SizeBytes: 100, ReceivedAtMonotonic: 1}
-	fresh := fisbcache.Entry{Key: makeFISBTestKey("KFRESH"), SizeBytes: 100, ReceivedAtMonotonic: 100}
-	committed := map[fisbcache.Key]fisbcache.Entry{old.Key: old, fresh.Key: fresh}
-
-	// Budget 250 bytes; committed already uses 200; a new 100-byte
-	// candidate needs 50 more than remains - evicting the OLDER entry
-	// (100 bytes) is exactly enough.
-	fits, evict := fisbCachePlanReservation(committed, nil, makeFISBTestKey("KNEW"), 100, 250, 10, 200)
-	if !fits {
-		t.Fatalf("expected it to fit after eviction, got evict=%v", evict)
+	committed := map[fisbcache.Key]fisbcache.Entry{old.Key: old}
+	// committed already uses 100 of a 150-byte budget; a new 100-byte
+	// candidate would push the total to 200 > 150 - must be rejected
+	// outright, never evict `old` to make room (this file never evicts).
+	if fisbCacheReservationFits(committed, nil, makeFISBTestKey("KNEW"), 100, 150, 10) {
+		t.Fatal("expected this to be rejected - over the byte budget, and this function must never evict to make room")
 	}
-	if len(evict) != 1 || evict[0] != old.Key {
-		t.Errorf("expected exactly the oldest key evicted, got %v", evict)
+	// `old` must be completely untouched - still exactly as it was.
+	if got, ok := committed[old.Key]; !ok || got != old {
+		t.Errorf("expected committed state left entirely untouched, got %+v (ok=%v)", got, ok)
 	}
 }
 
-func TestFisbCachePlanReservation_StillDoesNotFitAfterEvictingEverything(t *testing.T) {
-	committed := map[fisbcache.Key]fisbcache.Entry{
-		makeFISBTestKey("KA"): {Key: makeFISBTestKey("KA"), SizeBytes: 10, ReceivedAtMonotonic: 1},
-	}
-	// A 1000-byte candidate against a 500-byte budget can never fit no
-	// matter what committed state is evicted.
-	fits, evict := fisbCachePlanReservation(committed, nil, makeFISBTestKey("KHUGE"), 1000, 500, 10, 100)
-	if fits {
-		t.Fatal("expected this to never fit")
-	}
-	if len(evict) != 1 || evict[0] != makeFISBTestKey("KA") {
-		t.Errorf("expected every eligible committed entry named in evictKeys, got %v", evict)
-	}
-}
-
-func TestFisbCachePlanReservation_NeverEvictsAKeyThatIsAlreadyReserved(t *testing.T) {
-	reservedKey := makeFISBTestKey("KRESERVED")
-	oldCommittedForReservedKey := fisbcache.Entry{Key: reservedKey, SizeBytes: 100, ReceivedAtMonotonic: 1}
-	committed := map[fisbcache.Key]fisbcache.Entry{reservedKey: oldCommittedForReservedKey}
-	reserved := map[fisbcache.Key]int64{reservedKey: 100} // a fresher update for the same key is already queued
-
-	// Budget so tight that, if `reservedKey`'s OLD committed value were
-	// eligible for eviction, it would be the obvious (only) candidate -
-	// but it must never appear in evictKeys, since `reserved` already
-	// accounts for its eventual (different) value.
-	_, evict := fisbCachePlanReservation(committed, reserved, makeFISBTestKey("KNEW"), 50, 120, 10, 100)
-	for _, k := range evict {
-		if k == reservedKey {
-			t.Fatalf("must never evict a key that is already separately reserved, got evict=%v", evict)
-		}
-	}
-}
-
-func TestFisbCachePlanReservation_ByteBudgetAlreadyConsumedByReservedEvictsAllEligible(t *testing.T) {
-	committed := map[fisbcache.Key]fisbcache.Entry{
-		makeFISBTestKey("KA"): {Key: makeFISBTestKey("KA"), SizeBytes: 10, ReceivedAtMonotonic: 1},
-		makeFISBTestKey("KB"): {Key: makeFISBTestKey("KB"), SizeBytes: 10, ReceivedAtMonotonic: 2},
-	}
-	// reserved alone (200) already exceeds maxBytes (150) before the
-	// candidate (10) is even added - adjustedMaxBytes goes non-positive,
-	// which must mean "evict everything eligible," never "no limit."
-	reserved := map[fisbcache.Key]int64{makeFISBTestKey("KOTHER"): 200}
-	fits, evict := fisbCachePlanReservation(committed, reserved, makeFISBTestKey("KNEW"), 10, 150, 100, 50)
-	if fits {
-		t.Fatal("expected this not to fit - reserved alone already exceeds the budget")
-	}
-	if len(evict) != 2 {
-		t.Errorf("expected both eligible committed entries evicted, got %v", evict)
-	}
-}
-
-func TestFisbCachePlanReservation_EntryBudgetAlreadyConsumedByReservedEvictsAllEligible(t *testing.T) {
+func TestFisbCacheReservationFits_RejectsWhenOverEntryBudget(t *testing.T) {
 	committed := map[fisbcache.Key]fisbcache.Entry{
 		makeFISBTestKey("KA"): {Key: makeFISBTestKey("KA"), SizeBytes: 1, ReceivedAtMonotonic: 1},
 	}
-	reserved := map[fisbcache.Key]int64{
-		makeFISBTestKey("KR1"): 1, makeFISBTestKey("KR2"): 1, makeFISBTestKey("KR3"): 1,
-	}
-	// maxEntries=3, reserved already holds 3 distinct keys - adding the
-	// candidate alone (a 4th) already exceeds maxEntries regardless of
-	// what committed holds, so every eligible committed entry must be
-	// named for eviction (evicting it still will not be ENOUGH, but this
-	// function's job is only to name what is eligible, not to guess
-	// whether it will be sufficient - the caller checks `fits`).
-	fits, evict := fisbCachePlanReservation(committed, reserved, makeFISBTestKey("KNEW"), 1, 1<<20, 3, 100)
-	if fits {
-		t.Fatal("expected this not to fit - reserved+candidate alone already exceeds maxEntries")
-	}
-	if len(evict) != 1 || evict[0] != makeFISBTestKey("KA") {
-		t.Errorf("expected the one eligible committed entry evicted, got %v", evict)
+	if fisbCacheReservationFits(committed, nil, makeFISBTestKey("KNEW"), 1, 1<<20, 1) {
+		t.Fatal("expected this to be rejected - maxEntries=1 already satisfied by the one committed entry")
 	}
 }
 
-func TestFisbCachePlanReservation_ZeroOrNegativeBudgetsMeanNoLimit(t *testing.T) {
+func TestFisbCacheReservationFits_ReservedValueCountsTowardTheBudget(t *testing.T) {
+	// A key already reserved (queued/in-flight) contributes to the
+	// projected total exactly like a committed one - the fits check must
+	// account for it even though it is not yet in Store.
+	reserved := map[fisbcache.Key]int64{makeFISBTestKey("KOTHER"): 90}
+	if fisbCacheReservationFits(nil, reserved, makeFISBTestKey("KNEW"), 20, 100, 10) {
+		t.Fatal("expected this to be rejected - reserved (90) + candidate (20) = 110 > 100")
+	}
+	if !fisbCacheReservationFits(nil, reserved, makeFISBTestKey("KNEW"), 10, 100, 10) {
+		t.Fatal("expected this to fit - reserved (90) + candidate (10) = 100 <= 100")
+	}
+}
+
+func TestFisbCacheReservationFits_ZeroOrNegativeBudgetsMeanNoLimit(t *testing.T) {
 	committed := map[fisbcache.Key]fisbcache.Entry{
 		makeFISBTestKey("KA"): {Key: makeFISBTestKey("KA"), SizeBytes: 1 << 30, ReceivedAtMonotonic: 1},
 	}
-	fits, evict := fisbCachePlanReservation(committed, nil, makeFISBTestKey("KNEW"), 1<<30, 0, 0, 100)
-	if !fits {
+	if !fisbCacheReservationFits(committed, nil, makeFISBTestKey("KNEW"), 1<<30, 0, 0) {
 		t.Fatal("expected maxBytes<=0 and maxEntries<=0 to both mean 'no limit', matching fisbcache.PlanEviction's own convention")
-	}
-	if len(evict) != 0 {
-		t.Errorf("expected no eviction when both budgets are disabled, got %v", evict)
 	}
 }
 
@@ -584,10 +527,18 @@ func TestHandleConfirmFISBCachePurge_ClearsQueuedReservations(t *testing.T) {
 // docs/fisb-weather-cache.md's "Synchronous admission bounds" section:
 // a reservation accepted under a looser budget, followed by a settings
 // tightening BEFORE that reservation is processed, still results in a
-// committed state that respects the NEW, tighter budget the moment it
-// is actually committed - fisbCacheRunRetention's post-Admit backstop
-// re-validates against whatever settings are current at COMMIT time, not
-// whatever was current when the reservation was made.
+// committed state that respects the NEW, tighter budget once cleanup
+// actually runs - fisbCacheRunRetention re-validates against whatever
+// settings are current when IT runs, not whatever was current when the
+// reservation was made. Commit itself (fisbCacheProcessOneCaptureItem)
+// no longer enforces this inline - it only REQUESTS a cleanup pass
+// (fisbCacheRequestCleanup, asynchronous - see that function's own doc
+// comment) - so this test drains the reservation to commit, then invokes
+// fisbCacheRunRetention directly (standing in for the real
+// fisbCacheCleanupWorker goroutine, which this test never starts - see
+// drainFISBPendingSynchronously's own doc comment for why tests prefer
+// the synchronous, worker-free path) to prove that WHEN cleanup runs, it
+// correctly self-corrects.
 func TestFISBCacheProcessOneCaptureItem_SettingsTighteningDuringOutstandingReservationSelfCorrects(t *testing.T) {
 	withTestFISBCacheStorage(t)
 	fisbCacheMu.Lock()
@@ -614,8 +565,11 @@ func TestFISBCacheProcessOneCaptureItem_SettingsTighteningDuringOutstandingReser
 	fisbCacheMu.Unlock()
 
 	drainFISBPendingSynchronously(t)
+	// Commit only REQUESTED cleanup above; run the pass directly here,
+	// standing in for the real asynchronous worker.
+	fisbCacheRunRetention()
 
 	if got := fisbCacheStore.Len(); got > 1 {
-		t.Errorf("expected the now-tighter maxEntries=1 budget enforced at commit time, got Store.Len()=%d", got)
+		t.Errorf("expected the now-tighter maxEntries=1 budget enforced once cleanup runs, got Store.Len()=%d", got)
 	}
 }

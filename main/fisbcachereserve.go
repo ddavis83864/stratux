@@ -1,6 +1,8 @@
 /*
 fisbcachereserve.go: strict, synchronous, PRE-ENQUEUE capacity reservation
-for the Rolling FIS-B Weather Cache.
+for the Rolling FIS-B Weather Cache - decided ENTIRELY in memory, with
+ZERO filesystem I/O, so it can safely run synchronously on the live
+UAT/978 decode goroutine.
 
 This corrects the prior design's remaining gap: fisbCacheRunRetention
 (fisbcacherun.go) already brought committed (persisted + in-memory Store)
@@ -8,10 +10,7 @@ state back under budget synchronously, immediately after each admission -
 but "after admission" is still after the item was already queued and
 already occupying a Store slot. Nothing accounted for what was sitting in
 the queue, or being actively written by the worker, when deciding whether
-a NEW capture could be admitted at all. A burst of many distinct products
-could still queue up well past what the configured budget could ever
-actually hold, all before a single one of them was ever evaluated against
-that budget.
+a NEW capture could be admitted at all.
 
 This file makes capacity a RESERVATION, decided synchronously at
 fisbCacheEnqueue time, before an item ever occupies a queue slot:
@@ -21,15 +20,34 @@ fisbCacheEnqueue time, before an item ever occupies a queue slot:
     item per product Key, so a second capture for a still-queued key
     always SUPERSEDES its reservation rather than adding a second,
     separate one.
-  - fisbCachePlanReservation computes whether admitting one more
+  - fisbCacheReservationFits computes whether admitting one more
     candidate fits within the configured budget once every currently
     committed (persisted/Store) entry AND every currently reserved
-    (queued or in-flight, not yet Admit-decided) entry is accounted for
-  - and, if it does not fit as offered, which committed entries would
-    need to be evicted, synchronously, right now, to make room for it.
+    (queued or in-flight, not yet Admit-decided) entry is accounted for.
+    This is a PURE, in-memory computation over two already-in-memory
+    snapshots (fisbCacheStore.Snapshot(), an in-memory map copy under
+    Store's own mutex - no disk access whatsoever) - never a disk
+    operation, and never followed by one here.
 
-See docs/fisb-weather-cache.md's "Synchronous admission bounds" section
-for the full model and the exact invariants this establishes and proves.
+Critically, THIS FILE NEVER EVICTS. An earlier design had
+reserveAndEnqueue itself evict committed entries (real file deletions,
+via fisbCacheEvictKeyIfUnchanged) synchronously, right here, to make an
+offered capture fit - but reserveAndEnqueue runs on the live UAT/978
+decode goroutine (fisbCacheEnqueue is called directly from
+main/gen_gdl90.go's parseInput, the same call chain that updates live
+stats and forwards to GDL90/the /weatherraw websocket), and file
+deletion is genuine filesystem I/O this project's own established
+"never block the live decoder" contract for this feature explicitly
+forbids on that path. When a candidate does not fit, this file's own
+reserveAndEnqueue now does exactly two things: reject the offer
+(fisbReserveReasonCapacity) and signal the asynchronous cleanup worker
+(fisbCacheRequestCleanup, main/fisbcacherun.go) to make room - a
+non-blocking, coalescing send, never a wait. A later retransmission of
+the same product is admitted normally once cleanup has actually freed
+the room. See docs/fisb-weather-cache.md's "Synchronous admission
+bounds" section for the full model, the exact invariants this
+establishes and proves, and TestFISBCacheEnqueue_NeverPerformsFilesystemIO
+(main/fisbcachecapturepath_test.go) for the regression proof.
 */
 package main
 
@@ -48,8 +66,9 @@ import (
 // project's own observed 978 uplink rate (which realistically touches
 // far fewer than this many DISTINCT products within one worker-drain
 // cycle), small enough that even a completely stalled worker can never
-// let this feature's own in-process memory grow past a small, fixed
-// bound (see "queue memory," docs/fisb-weather-cache.md).
+// let this feature's own application-retained queue payload bytes grow
+// past a small, fixed bound (see "Queue payload bytes,"
+// docs/fisb-weather-cache.md).
 const fisbCachePendingCapacity = 256
 
 // fisbReserveReason names why reserveAndEnqueue refused a reservation -
@@ -121,13 +140,18 @@ func (q *fisbPendingQueue) reservedBytesExcluding(key fisbcache.Key) map[fisbcac
 
 // reserveAndEnqueue attempts to reserve capacity for one candidate
 // capture and, if successful, adds/updates its queued reservation - all
-// as one atomic operation relative to every other reserveAndEnqueue/pop/
-// releaseInFlight/clear call. If the projected total (committed + every
-// other reservation + this one) does not already fit, it evicts
-// COMMITTED entries (oldest-received/expired-first, via the same safe,
-// concurrency-correct fisbCacheEvictKeyIfUnchanged primitive retention
-// uses - see fisbcacherun.go) to make room, synchronously, before ever
-// admitting the reservation - never after.
+// as one atomic, purely in-memory operation relative to every other
+// reserveAndEnqueue/pop/releaseInFlight/clear call. It NEVER performs any
+// filesystem operation - see this file's own doc comment for exactly
+// why. If the projected total (committed + every other reservation +
+// this one) does not already fit, the offer is rejected outright
+// (fisbReserveReasonCapacity) and the asynchronous cleanup worker is
+// signaled (fisbCacheRequestCleanup) to make room for a FUTURE offer -
+// this one is not retried, delayed, or queued to wait for room; a
+// retransmitted copy of the same product is what actually gets admitted
+// once cleanup has freed the room, exactly like this project's other
+// drop-and-count-rather-than-block admission gates
+// (fisbCacheDroppedWrites, fisbCachePressureRejected).
 func (q *fisbPendingQueue) reserveAndEnqueue(key fisbcache.Key, item fisbCaptureItem, settings FISBCacheSettings) (accepted bool, reason fisbReserveReason) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -138,37 +162,19 @@ func (q *fisbPendingQueue) reserveAndEnqueue(key fisbcache.Key, item fisbCapture
 		return false, fisbReserveReasonStructuralFull
 	}
 
+	// Both calls below are pure in-memory reads - fisbCacheStore.Snapshot()
+	// copies Store's own already-in-memory map under its own mutex (no
+	// disk access at all, ever - Store holds only metadata, never
+	// payload content or file handles); reservedBytesExcluding reads
+	// this type's own already-in-memory maps, which q.mu (held for this
+	// entire function) already makes a consistent, race-free view.
 	committed := fisbCacheStore.Snapshot()
 	reserved := q.reservedBytesExcluding(key)
 	candidateSize := int64(len(item.payload))
-	now := monotonicSeconds()
 
-	fits, evictKeys := fisbCachePlanReservation(committed, reserved, key, candidateSize, settings.MaxCacheBytes, settings.MaxEntries, now)
-	if !fits && len(evictKeys) == 0 {
+	if !fisbCacheReservationFits(committed, reserved, key, candidateSize, settings.MaxCacheBytes, settings.MaxEntries) {
+		fisbCacheRequestCleanup()
 		return false, fisbReserveReasonCapacity
-	}
-	if len(evictKeys) > 0 {
-		for _, k := range evictKeys {
-			// A safe no-op (not an error) if a concurrent change already
-			// invalidated this exact plan for k - see
-			// fisbCacheEvictKeyIfUnchanged's own doc comment.
-			fisbCacheEvictKeyIfUnchanged(k, committed[k])
-		}
-		// Re-verify against the REAL resulting state - deliberately
-		// fisbCacheReservationFits (a plain as-is check), never another
-		// call to fisbCachePlanReservation here: a second planning call
-		// would derive a FRESH plan from whatever is still in the
-		// refreshed snapshot and report fits=true by simulating ITS
-		// removal too, even if the eviction just attempted above
-		// silently failed to actually remove anything (a real,
-		// concurrency-driven case - see fisbCacheReservationFits' own
-		// doc comment for the exact scenario this was found and fixed
-		// against). Only a real, verified, already-reflected-in-Store
-		// change is ever trusted to have freed room.
-		committed = fisbCacheStore.Snapshot()
-		if !fisbCacheReservationFits(committed, reserved, key, candidateSize, settings.MaxCacheBytes, settings.MaxEntries) {
-			return false, fisbReserveReasonCapacity
-		}
 	}
 
 	if !alreadyPending && !alreadyInFlight {
@@ -301,9 +307,11 @@ func (q *fisbPendingQueue) reservedSnapshotLocked() map[fisbcache.Key]int64 {
 // always wins over a stale committed one for the same key, since
 // committing it will supersede whatever is currently persisted) and sums
 // the result. This is the same "projected final state" computation
-// fisbCachePlanReservation performs internally for one specific
-// candidate reservation, exposed here on its own (no candidate) for the
-// status API to report directly as projectedBytes/projectedEntries.
+// fisbCacheReservationFits performs internally, with one additional
+// candidate folded in, for a single reservation decision - exposed here
+// on its own (no candidate) both for the status API to report directly
+// as projectedBytes/projectedEntries and for fisbCacheReservationFits
+// itself to build on (see that function's own doc comment).
 func fisbCacheProjectedTotals(committed map[fisbcache.Key]fisbcache.Entry, reserved map[fisbcache.Key]int64) (bytes int64, entries int) {
 	seen := make(map[fisbcache.Key]bool, len(committed)+len(reserved))
 	for k, sz := range reserved {
@@ -354,23 +362,12 @@ func fisbCacheProjectedSnapshotAtomic(q *fisbPendingQueue) (bytes int64, entries
 // --- projection ----------------------------------------------------------
 
 // fisbCacheReservationFits reports whether candidateKey (size
-// candidateSize) already fits within maxBytes/maxEntries given the
-// CURRENT, as-is committed/reserved state - no further eviction planning
-// or simulation, unlike fisbCachePlanReservation. This is deliberately
-// the ONLY function reserveAndEnqueue trusts to verify a reservation
-// after it has actually, really executed an eviction: calling
-// fisbCachePlanReservation again there would re-derive a fresh eviction
-// plan from whatever committed entries are STILL present and report
-// fits=true by simulating THEIR removal too - even if the eviction this
-// function's caller just attempted silently failed (see
-// fisbCacheEvictKeyIfUnchanged's own doc comment: a stale or otherwise-
-// unactionable plan is a safe no-op, not an error, so nothing forces the
-// named key to actually be gone). Trusting a fresh plan's own optimistic
-// simulation there - instead of just checking what is REALLY in
-// `committed` right now - would silently let a reservation through
-// without ever actually having freed the room it needed. See
-// docs/fisb-weather-cache.md's "Synchronous admission bounds" section
-// for the concurrent scenario this was found and fixed against.
+// candidateSize) fits within maxBytes/maxEntries given the CURRENT,
+// as-is committed/reserved state - a pure, in-memory computation, never
+// eviction planning or execution. This is the ONLY capacity check
+// reserveAndEnqueue ever performs - see this file's own doc comment for
+// why eviction itself can never happen here (this runs on the live
+// UAT/978 decode goroutine).
 func fisbCacheReservationFits(committed map[fisbcache.Key]fisbcache.Entry, reserved map[fisbcache.Key]int64, candidateKey fisbcache.Key, candidateSize int64, maxBytes int64, maxEntries int) bool {
 	bytes, entries := fisbCacheProjectedTotalsWithCandidate(committed, reserved, candidateKey, candidateSize)
 	return (maxBytes <= 0 || bytes <= maxBytes) && (maxEntries <= 0 || entries <= maxEntries)
@@ -378,10 +375,7 @@ func fisbCacheReservationFits(committed map[fisbcache.Key]fisbcache.Entry, reser
 
 // fisbCacheProjectedTotalsWithCandidate is fisbCacheProjectedTotals plus
 // one additional candidate key/size, forced to win over both a stale
-// committed value and a stale reserved value for the same key (mirrors
-// fisbCachePlanReservation's own internal `projected` closure - factored
-// out so fisbCacheReservationFits can share the exact same merge logic
-// without duplicating it).
+// committed value and a stale reserved value for the same key.
 func fisbCacheProjectedTotalsWithCandidate(committed map[fisbcache.Key]fisbcache.Entry, reserved map[fisbcache.Key]int64, candidateKey fisbcache.Key, candidateSize int64) (bytes int64, entries int) {
 	seen := make(map[fisbcache.Key]bool, len(committed)+len(reserved)+1)
 	add := func(k fisbcache.Key, sz int64) {
@@ -400,129 +394,4 @@ func fisbCacheProjectedTotalsWithCandidate(committed map[fisbcache.Key]fisbcache
 		add(k, e.SizeBytes)
 	}
 	return
-}
-
-// fisbCachePlanReservation computes whether admitting candidateKey (size
-// candidateSize) fits within maxBytes/maxEntries once `committed`
-// (fisbCacheStore.Snapshot()) and `reserved` (every OTHER currently
-// queued/in-flight key's own reserved size - never candidateKey itself)
-// are combined into one PROJECTED final state: for each distinct key
-// across committed ∪ reserved ∪ {candidateKey}, its contributing size is
-// `reserved`'s value if reserved (a reservation's own value always wins
-// over a stale committed one for the same key, since committing it will
-// supersede whatever is currently persisted), else candidateSize if it
-// IS candidateKey, else its own committed size.
-//
-// If that already fits, returns (true, nil). If not, it evicts from a
-// pool of committed entries that are neither candidateKey nor already
-// separately reserved (evicting a reserved key's current, about-to-be-
-// superseded committed file would be pointless and wasteful - `reserved`
-// already accounts for its eventual value), oldest-received/expired
-// first via fisbcache.PlanEviction, adjusting that function's own
-// maxBytes/maxEntries parameters downward by whatever reserved+candidate
-// have already claimed. Returns (true, evictKeys) if evicting exactly
-// evictKeys would make it fit; (false, evictKeys) if evicting every
-// eligible committed entry (already the full contents of evictKeys) still
-// would not be enough.
-func fisbCachePlanReservation(committed map[fisbcache.Key]fisbcache.Entry, reserved map[fisbcache.Key]int64, candidateKey fisbcache.Key, candidateSize int64, maxBytes int64, maxEntries int, now float64) (fits bool, evictKeys []fisbcache.Key) {
-	projected := func(evicted map[fisbcache.Key]bool) (bytes int64, entries int) {
-		seen := make(map[fisbcache.Key]bool, len(committed)+len(reserved)+1)
-		add := func(k fisbcache.Key, sz int64) {
-			if seen[k] {
-				return
-			}
-			seen[k] = true
-			bytes += sz
-			entries++
-		}
-		add(candidateKey, candidateSize)
-		for k, sz := range reserved {
-			add(k, sz)
-		}
-		for k, e := range committed {
-			if evicted[k] {
-				continue
-			}
-			add(k, e.SizeBytes)
-		}
-		return
-	}
-
-	withinBudget := func(bytes int64, entries int) bool {
-		return (maxBytes <= 0 || bytes <= maxBytes) && (maxEntries <= 0 || entries <= maxEntries)
-	}
-
-	if b, n := projected(nil); withinBudget(b, n) {
-		return true, nil
-	}
-
-	evictable := make(map[fisbcache.Key]fisbcache.Entry, len(committed))
-	for k, e := range committed {
-		if k == candidateKey {
-			continue
-		}
-		if _, isReserved := reserved[k]; isReserved {
-			continue
-		}
-		evictable[k] = e
-	}
-
-	var reservedBytesSum int64
-	for _, sz := range reserved {
-		reservedBytesSum += sz
-	}
-	adjustedMaxBytes, evictAllBytes := fisbReservationAdjustedByteBudget(maxBytes, reservedBytesSum+candidateSize)
-	adjustedMaxEntries, evictAllEntries := fisbReservationAdjustedEntryBudget(maxEntries, len(reserved)+1)
-
-	var plan []fisbcache.Key
-	if evictAllBytes || evictAllEntries {
-		for k := range evictable {
-			plan = append(plan, k)
-		}
-	} else {
-		plan = fisbcache.PlanEviction(evictable, adjustedMaxBytes, adjustedMaxEntries, now)
-	}
-
-	evicted := make(map[fisbcache.Key]bool, len(plan))
-	for _, k := range plan {
-		evicted[k] = true
-	}
-	b, n := projected(evicted)
-	return withinBudget(b, n), plan
-}
-
-// fisbReservationAdjustedByteBudget shrinks maxBytes by `claimed`
-// (everything already reserved, plus the new candidate) to get the
-// budget remaining for eligible committed entries. Mirrors
-// fisbcache.PlanEviction's own "<=0 means no limit" convention for
-// maxBytes<=0 (budget disabled outright - nothing to evict for the byte
-// reason). Critically, does NOT reuse that same convention for an
-// adjusted value that goes non-positive because claimed>=maxBytes: that
-// means the byte budget is already fully consumed by reserved+candidate
-// alone, i.e. EVERY eligible committed entry must be evicted - the
-// opposite of "no limit" - so this reports evictAll=true instead of
-// silently handing PlanEviction a non-positive value it would otherwise
-// misinterpret as unlimited.
-func fisbReservationAdjustedByteBudget(maxBytes, claimed int64) (adjusted int64, evictAll bool) {
-	if maxBytes <= 0 {
-		return 0, false
-	}
-	adjusted = maxBytes - claimed
-	if adjusted <= 0 {
-		return 0, true
-	}
-	return adjusted, false
-}
-
-// fisbReservationAdjustedEntryBudget is fisbReservationAdjustedByteBudget's
-// exact entry-count counterpart.
-func fisbReservationAdjustedEntryBudget(maxEntries, claimed int) (adjusted int, evictAll bool) {
-	if maxEntries <= 0 {
-		return 0, false
-	}
-	adjusted = maxEntries - claimed
-	if adjusted <= 0 {
-		return 0, true
-	}
-	return adjusted, false
 }

@@ -10,7 +10,8 @@ requires of the FIS-B cache's strict, pre-enqueue capacity reservation:
 	projected committed entries, including accepted queued/in-flight work,
 	    <= configured maximum entries
 	temporary atomic-write overhead <= one explicitly derived hard bound
-	queue memory <= one explicitly derived hard bound
+	queue payload bytes (application-retained, not Go runtime/RSS memory)
+	    <= one explicitly derived hard bound
 
 Each invariant gets its own, explicitly-named test below so a reviewer
 (or a future change) can see exactly which test covers which numbered
@@ -77,10 +78,12 @@ func TestInvariant_CommittedBytesAndEntriesNeverExceedConfiguredMaximum(t *testi
 // from the prior one: not just "eventually committed converges," but
 // "projected (committed + everything currently queued/in-flight) never
 // exceeds budget, checked WHILE a burst is still in flight, not only
-// after it settles." fisbCacheEnqueue's own reservation is synchronous -
-// it returns only once any needed eviction has already been executed -
-// so checking immediately after EVERY single enqueue call, in a tight
-// loop with no worker running at all (nothing draining the queue),
+// after it settles." fisbCacheEnqueue's own reservation decision is
+// synchronous and immediate - it returns only once the fits-check itself
+// has run, granting or rejecting outright, NEVER evicting to make room
+// (see "Synchronous admission bounds," docs/fisb-weather-cache.md) - so
+// checking immediately after EVERY single enqueue call, in a tight loop
+// with no worker running at all (nothing draining the queue),
 // deterministically captures the worst-case mid-burst state without
 // racing against goroutine scheduling.
 func TestInvariant_ProjectedBytesAndEntriesNeverExceedConfiguredMaximumMidBurst(t *testing.T) {
@@ -238,13 +241,20 @@ func TestInvariant_TemporaryAtomicWriteOverheadHasAnExplicitHardBound(t *testing
 }
 
 // TestInvariant_QueueMemoryHasAnExplicitHardBound covers invariant 6:
-// this feature's own in-process memory footprint for queued/in-flight
-// work (as opposed to disk) is bounded by fisbCachePendingCapacity
-// (structural, distinct-key slots) times the maximum any single payload
-// can ever be (fisbcache's own maxPersistedPayloadBytes) - proven here
-// by actually filling a pending queue to its structural capacity with
-// maximum-sized payloads and confirming the (n+1)th distinct key is
-// rejected, never silently accepted past that bound.
+// this feature's own application-retained PAYLOAD BYTES for queued/
+// in-flight work (as opposed to disk) - the sum of len(payload) across
+// every fisbCaptureItem fisbPendingQueue is currently holding, per its
+// own queuedBytes/inFlightBytes accounting - is bounded by
+// fisbCachePendingCapacity (structural, distinct-key slots) times the
+// maximum any single payload can ever be (fisbcache's own
+// maxPersistedPayloadBytes). This is deliberately NOT a claim about this
+// feature's total Go runtime footprint or process RSS (struct/map/string
+// overhead, goroutine stacks, and GC bookkeeping are real memory this
+// bound does not measure) - see docs/fisb-weather-cache.md's "Queue
+// payload bytes" bullet for the precise, honest scope of this bound.
+// Proven here by actually filling a pending queue to its structural
+// capacity with maximum-sized payloads and confirming the (n+1)th
+// distinct key is rejected, never silently accepted past that bound.
 func TestInvariant_QueueMemoryHasAnExplicitHardBound(t *testing.T) {
 	withTestFISBCacheStorage(t)
 	fisbCacheMu.Lock()
@@ -268,7 +278,7 @@ func TestInvariant_QueueMemoryHasAnExplicitHardBound(t *testing.T) {
 	_, inFlight, queuedBytes, inFlightBytes := q.stats()
 	explicitHardBound := int64(maxKeys) * int64(maxPayload)
 	if got := queuedBytes + inFlightBytes; got > explicitHardBound {
-		t.Fatalf("queue memory (%d bytes) exceeds its own explicit hard bound (%d = %d keys x %d bytes)", got, explicitHardBound, maxKeys, maxPayload)
+		t.Fatalf("queue payload bytes (%d) exceeds its own explicit hard bound (%d = %d keys x %d bytes)", got, explicitHardBound, maxKeys, maxPayload)
 	}
 	if inFlight != 0 {
 		t.Fatalf("test precondition failed: expected nothing in-flight yet, got %d", inFlight)
