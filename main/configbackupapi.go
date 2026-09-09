@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stratux/stratux/autorecord"
 	"github.com/stratux/stratux/calprofile"
 	"github.com/stratux/stratux/configbackup"
 	"github.com/stratux/stratux/ota"
@@ -273,6 +274,40 @@ func applyAlertSettingsSection(base AlertSettings, section configbackup.AlertSet
 	return base
 }
 
+// --- autorecord.Settings <-> configbackup.AutoRecordSettingsSection ----
+
+func autoRecordSettingsSectionFromCurrent(s autorecord.Settings) configbackup.AutoRecordSettingsSection {
+	return configbackup.AutoRecordSettingsSection{
+		Enabled:                         s.Enabled,
+		StartGroundspeedKnots:           s.StartGroundspeedKnots,
+		StartDwellSeconds:               s.StartDwellSeconds,
+		StopGroundspeedKnots:            s.StopGroundspeedKnots,
+		StopDwellSeconds:                s.StopDwellSeconds,
+		GPSLossGraceSeconds:             s.GPSLossGraceSeconds,
+		RestartCooldownSeconds:          s.RestartCooldownSeconds,
+		MinimumRecordingDurationSeconds: s.MinimumRecordingDurationSeconds,
+	}
+}
+
+// applyAutoRecordSettingsSection returns base (the CURRENT settings - so
+// SchemaVersion is preserved exactly as-is) with every field overwritten
+// from section. Unlike applyAlertSettingsSection, there is no operational/
+// time-bound field to exclude - see AutoRecordSettingsSection's own doc
+// comment. Applying a restored section never changes any existing
+// recording's own recorded origin (manual/automatic) - it only changes
+// the going-forward configuration the Machine reads on its next tick.
+func applyAutoRecordSettingsSection(base autorecord.Settings, section configbackup.AutoRecordSettingsSection) autorecord.Settings {
+	base.Enabled = section.Enabled
+	base.StartGroundspeedKnots = section.StartGroundspeedKnots
+	base.StartDwellSeconds = section.StartDwellSeconds
+	base.StopGroundspeedKnots = section.StopGroundspeedKnots
+	base.StopDwellSeconds = section.StopDwellSeconds
+	base.GPSLossGraceSeconds = section.GPSLossGraceSeconds
+	base.RestartCooldownSeconds = section.RestartCooldownSeconds
+	base.MinimumRecordingDurationSeconds = section.MinimumRecordingDurationSeconds
+	return base
+}
+
 // gatherConfigBackupCurrentState takes a coherent-enough snapshot of
 // every section this subsystem exports/restores. It never holds
 // profilesMu across the AlertSettings/globalSettings reads - only around
@@ -304,6 +339,7 @@ func gatherConfigBackupCurrentState() (configbackup.CurrentState, error) {
 		CalibrationProfiles: profiles,
 		ActiveProfileID:     activeID,
 		AlertSettings:       alertSettingsSectionFromCurrent(loadAlertSettings()),
+		AutoRecordSettings:  autoRecordSettingsSectionFromCurrent(loadAutoRecordSettings()),
 	}, nil
 }
 
@@ -350,6 +386,7 @@ func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Docum
 		CalibrationProfiles:        current.CalibrationProfiles,
 		ActiveCalibrationProfileID: current.ActiveProfileID,
 		AlertSettings:              current.AlertSettings,
+		AutoRecordSettings:         current.AutoRecordSettings,
 	})
 }
 
@@ -442,6 +479,15 @@ func handleValidateConfigurationBackupRequest(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "errors": res.Errors, "warnings": res.Warnings})
 		return
 	}
+	// Only after Validate has reported doc OK: fill in any historical-
+	// shape-only defaulting (currently: a verified pre-autoRecordSettings
+	// legacy document's AutoRecordSettings, defaulted disabled) so the
+	// preview shown below reflects what will actually be applied, not a
+	// hysteresis-violating zero value. A no-op for every current-format
+	// document. doc.ContentChecksum/SectionChecksums (used below for the
+	// confirmation token) are untouched by this - they still name
+	// exactly the bytes the caller uploaded.
+	doc = configbackup.NormalizeDocument(doc)
 
 	current, err := gatherConfigBackupCurrentState()
 	if err != nil {
@@ -561,6 +607,13 @@ func handleApplyConfigurationBackupRequest(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "errors": res.Errors})
 		return
 	}
+	// Same historical-shape defaulting as the validate/preview path,
+	// applied here too so a legacy document actually being applied gets
+	// the same disabled default rather than a hysteresis-violating zero
+	// value. req.Backup.ContentChecksum (used by VerifyToken below) is
+	// untouched - it still names exactly the bytes that were validated
+	// and bound into the confirmation token.
+	req.Backup = configbackup.NormalizeDocument(req.Backup)
 
 	current, err := gatherConfigBackupCurrentState()
 	if err != nil {
@@ -699,6 +752,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	}
 	originalConfig := configurationSectionFromGlobalSettings()
 	originalAlertSettings := loadAlertSettings()
+	originalAutoRecordSettings := loadAutoRecordSettings()
 
 	rollback := func() bool {
 		clean := true
@@ -732,6 +786,10 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 			clean = false
 			log.Printf("configbackup: rollback could not restore alert settings: %s\n", err)
 		}
+		if err := saveAutoRecordSettings(originalAutoRecordSettings); err != nil {
+			clean = false
+			log.Printf("configbackup: rollback could not restore automatic-recording settings: %s\n", err)
+		}
 		return clean
 	}
 
@@ -742,6 +800,20 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 		return nil, false, false, fmt.Errorf("applying alert settings: %w", err)
 	}
 	sectionsApplied = append(sectionsApplied, "alertSettings")
+
+	// Automatic-recording settings - same atomic-write pattern. Applying
+	// this never changes any existing recording's own recorded origin
+	// (manual/automatic), only the going-forward configuration the
+	// Machine reads on its next detection tick.
+	newAutoRecordSettings := applyAutoRecordSettingsSection(originalAutoRecordSettings, doc.AutoRecordSettings)
+	if err := saveAutoRecordSettings(newAutoRecordSettings); err != nil {
+		clean := rollback()
+		return sectionsApplied, true, !clean, fmt.Errorf("applying automatic-recording settings: %w", err)
+	}
+	autoRecordMu.Lock()
+	autoRecordSettingsCache = newAutoRecordSettings
+	autoRecordMu.Unlock()
+	sectionsApplied = append(sectionsApplied, "autoRecordSettings")
 
 	profilesMu.Lock()
 	for _, p := range doc.CalibrationProfiles {

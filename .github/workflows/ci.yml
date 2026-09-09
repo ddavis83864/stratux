@@ -12,19 +12,79 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+# Two jobs, deliberately checking out two different things:
+#
+#   - integration-test: unchanged from this workflow's original single
+#     "build" job. On a pull_request event, actions/checkout@v4's default
+#     behavior checks out GitHub's own synthetic refs/pull/<n>/merge
+#     commit (base + head merged) - exactly what you want to catch a
+#     change that only breaks once combined with whatever else is
+#     currently on the target branch. This job's result is integration
+#     evidence only; nothing it builds is ever uploaded.
+#
+#   - build-artifact: explicitly pins the checkout to the exact, durable
+#     commit this run was actually asked to build (the PR's own head SHA
+#     for pull_request events, or the pushed/dispatched commit
+#     otherwise) - never the synthetic merge SHA, which stops existing
+#     the moment the PR is updated or the merge base changes, and so can
+#     never be a deployable artifact's own provenance. This is the only
+#     job that uploads a .deb.
+#
+# Both jobs run go vet/go test and the full package build independently,
+# on their own respective checkouts - a real integration break (only
+# visible on the merge) and a real defect in the exact commit being
+# packaged are both caught, and each job's own logs show exactly which
+# commit it checked out.
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  integration-test:
     runs-on: ubuntu-24.04-arm
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # fetch the full repository, necessary as the latest tag is used during the build of the deb
+
+      - name: Show checked-out commit (integration/merge-test evidence)
+        run: git log -1 --format='mergeTestCommit=%H%nparents=%P%nsubject=%s'
+
+      - name: Update submodule
+        run: git submodule update --init --recursive
+
+      - name: go vet / go test (sdrassign)
+        run: make dgotest
+
+      - name: make ddpkg (integration check only - not uploaded)
+        run: make ddpkg
+
+  build-artifact:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      # Resolve the exact durable commit this run must build BEFORE
+      # checkout: the PR's own head SHA for a pull_request event (never
+      # the synthetic merge commit checkout would otherwise default to),
+      # or this run's own triggering commit for push/workflow_dispatch.
+      - name: Resolve durable source commit
+        id: resolve
+        run: |
+          if [ -n "${{ github.event.pull_request.head.sha }}" ]; then
+            echo "sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          fetch-depth: 0 # fetch the full repository, necessary as the latest tag is used during the build of the deb
+
+      - name: Verify checkout matches the requested durable commit
+        run: |
+          actual="$(git rev-parse HEAD)"
+          requested="${{ steps.resolve.outputs.sha }}"
+          echo "artifactEmbeddedCommit=$actual"
+          if [ "$actual" != "$requested" ]; then
+            echo "::error::checked out $actual, but requested $requested - refusing to build a package from the wrong commit"
+            exit 1
+          fi
 
       - name: Update submodule
         run: git submodule update --init --recursive

@@ -148,6 +148,14 @@ type recordingSession struct {
 	doneCh          chan struct{}
 	lastHealthState string
 	lastTimeState   string
+
+	// autoRecordInitiated is set once, at creation, only by
+	// main/autorecordrun.go's autoRecordPerformStart - never read or
+	// written anywhere else. It is what lets stopActiveRecording decide
+	// whether a SessionFinalization.AutoRecordStopMode belongs on this
+	// session's metadata at all (see stopActiveRecording's own doc
+	// comment) without a redundant metadata.json re-read.
+	autoRecordInitiated bool
 }
 
 var (
@@ -343,7 +351,7 @@ func handleStartRecordingRequest(w http.ResponseWriter, r *http.Request) {
 	// here, entirely outside the lock. Session.Calibration*/ID/dir are
 	// safe to read without the lock: they are set once at creation, above,
 	// and never mutated again for the life of the session.
-	snapshot := buildSessionSnapshot(preflightSnapshot, outcome.Session)
+	snapshot := buildSessionSnapshot(preflightSnapshot, outcome.Session, nil)
 	if err := recording.WriteInitialMetadata(outcome.Session.dir, outcome.Session.ID, snapshot); err != nil {
 		log.Printf("recording: could not write initial metadata for session %s: %s\n", outcome.Session.ID, err)
 		recMu.Lock()
@@ -542,7 +550,13 @@ func handleStopRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	stopActiveRecording()
+	stopActiveRecording("manual")
+	// Reconcile Automatic Flight Recording's own state if the recording
+	// just stopped here was one it started - see
+	// main/autorecordrun.go's autoRecordNotifyManualStopIfOwned doc
+	// comment. A no-op whenever it wasn't (including: manual recording,
+	// or nothing was active).
+	autoRecordNotifyManualStopIfOwned()
 	recMu.Lock()
 	status := recordingStatusLocked()
 	recMu.Unlock()
@@ -550,8 +564,14 @@ func handleStopRecordingRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 // stopActiveRecording stops the current session, if one is active. Safe
-// to call from the HTTP handler or from gracefulShutdown.
-func stopActiveRecording() {
+// to call from the HTTP handler or from gracefulShutdown. autoRecordStopMode
+// is recorded on the finalization (recording.SessionFinalization.AutoRecordStopMode)
+// only for a session that was started by Automatic Flight Recording
+// (SessionSnapshot.AutoRecordInitiationMode == "automatic") - it is
+// otherwise silently ignored, so every existing manual-stop call site can
+// keep passing a fixed, self-describing value without needing to first
+// check who started the session.
+func stopActiveRecording(autoRecordStopMode string) {
 	recMu.Lock()
 	s := recCurrent
 	if s == nil || s.State != recordingStateActive {
@@ -578,6 +598,9 @@ func stopActiveRecording() {
 		SampleCount:     s.SampleCount,
 		AlertEvents:     recentAlertEventsForRecording(),
 	}
+	if s.autoRecordInitiated {
+		finalization.AutoRecordStopMode = autoRecordStopMode
+	}
 	var metaErr error
 	if err := recording.FinalizeMetadata(s.dir, finalization); err != nil {
 		metaErr = err
@@ -598,9 +621,14 @@ func stopActiveRecording() {
 
 // stopRecordingForShutdown is called from gracefulShutdown so an active
 // recording is flushed and closed cleanly on daemon exit, not left with an
-// unflushed final file.
+// unflushed final file. Always runs after autoRecordHandleShutdown (see
+// gen_gdl90.go's gracefulShutdown), so by the time this executes, an
+// automatic recording has already been finalized through the Machine's
+// own shutdown path (with AutoRecordStopMode "shutdown") and this call is
+// a harmless idempotent no-op for it - this function's own "shutdown"
+// mode only ever actually lands on a still-active MANUAL recording.
 func stopRecordingForShutdown() {
-	stopActiveRecording()
+	stopActiveRecording("shutdown")
 }
 
 // handleRecordingStatusRequest serves GET /getRecordingStatus.

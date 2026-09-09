@@ -73,6 +73,46 @@ func TestComputePreview_SingleBenignSettingChange(t *testing.T) {
 	}
 }
 
+// TestComputePreview_AutoRecordSettingsChangeSetsHasChanges is a
+// regression test: HasChanges' OR expression was written before
+// AutoRecordSettingsChanges existed and was never updated to include it,
+// so a backup whose only difference from the live device was its
+// autoRecordSettings section correctly populated AutoRecordSettingsChanges
+// but still reported HasChanges: false - a real, user-visible defect for
+// any caller (present or future) that uses HasChanges as its "does this
+// restore actually do anything" summary, exactly as
+// TestComputePreview_SingleBenignSettingChange already guards the
+// analogous ConfigurationChanges case.
+func TestComputePreview_AutoRecordSettingsChangeSetsHasChanges(t *testing.T) {
+	current := testCurrentState()
+	current.AutoRecordSettings = AutoRecordSettingsSection{
+		Enabled: false, StartGroundspeedKnots: 8, StartDwellSeconds: 30,
+		StopGroundspeedKnots: 4, StopDwellSeconds: 120,
+		GPSLossGraceSeconds: 30, RestartCooldownSeconds: 300,
+	}
+	backupAutoRecord := current.AutoRecordSettings
+	backupAutoRecord.Enabled = true
+	doc, err := BuildDocument(BuildInputs{
+		SourceVersion: current.Version, SourceCommit: current.Commit,
+		Configuration: current.Configuration, CalibrationProfiles: current.CalibrationProfiles,
+		ActiveCalibrationProfileID: current.ActiveProfileID, AlertSettings: current.AlertSettings,
+		AutoRecordSettings: backupAutoRecord,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := ComputePreview(doc, current)
+	if len(p.AutoRecordSettingsChanges) != 1 || p.AutoRecordSettingsChanges[0].Field != "enabled" {
+		t.Fatalf("expected exactly one autoRecordSettings change (enabled), got %+v", p.AutoRecordSettingsChanges)
+	}
+	if !p.HasChanges {
+		t.Fatal("expected HasChanges to be true when only autoRecordSettings differs")
+	}
+	if len(p.ConfigurationChanges) != 0 || len(p.AlertSettingsChanges) != 0 {
+		t.Errorf("expected no unrelated changes, got configuration=%+v alertSettings=%+v", p.ConfigurationChanges, p.AlertSettingsChanges)
+	}
+}
+
 func TestComputePreview_AddedProfile(t *testing.T) {
 	current := testCurrentState()
 	backupProfiles := append([]calprofile.Profile{}, current.CalibrationProfiles...)

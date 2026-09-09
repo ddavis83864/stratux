@@ -569,3 +569,28 @@ func storageLifecycleChecks(in Input) []CheckResult {
 		return []CheckResult{newCheck("Storage", "storage_lifecycle", "Storage lifecycle", StateReady, SeverityInfo, "storage lifecycle nominal")}
 	}
 }
+
+// autoRecordChecks reports Automatic Flight Recording's own state - a
+// single concise card, mirroring storageLifecycleChecks' own restraint.
+// Disabled (the default, opt-in-required posture) is ALWAYS purely
+// informational (NOT_APPLICABLE/Info) - a deliberate choice to leave the
+// feature off must never present as a caution or blocking condition, per
+// this check's own explicit mission requirement. Severity never rises
+// above Caution even for INHIBITED/ERROR: this is a supplemental
+// recording feature, never authoritative for flight readiness, so its
+// own trouble never blocks the overall report.
+func autoRecordChecks(in Input) []CheckResult {
+	if !in.AutoRecordEnabled {
+		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateNotApplicable, SeverityInfo, "automatic recording is disabled")}
+	}
+	switch in.AutoRecordMachineState {
+	case "":
+		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateNotApplicable, SeverityInfo, "not yet initialized")}
+	case "ERROR":
+		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateNotReady, SeverityCaution, in.AutoRecordReason)}
+	case "INHIBITED":
+		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateCaution, SeverityCaution, in.AutoRecordReason)}
+	default:
+		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateReady, SeverityInfo, "automatic recording armed")}
+	}
+}

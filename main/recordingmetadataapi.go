@@ -26,11 +26,29 @@ import (
 	"github.com/stratux/stratux/recording"
 )
 
+// autoRecordSessionContext carries Automatic Flight Recording's own
+// start-time detail into buildSessionSnapshot - nil for a manually-
+// started recording (handleStartRecordingRequest always passes nil; only
+// main/autorecordrun.go's autoRecordPerformStart ever builds one).
+type autoRecordSessionContext struct {
+	TriggerReasonCode         string
+	PolicySchemaVersion       int
+	StartGroundspeedKnots     float64
+	StartDwellSeconds         float64
+	StopGroundspeedKnots      float64
+	StopDwellSeconds          float64
+	StorageDecision           string
+	ContinuationOfRecordingID string
+}
+
 // buildSessionSnapshot derives a recording.SessionSnapshot from an
 // already-built preflight.Report and a recording session whose
 // Calibration* fields have already been populated (see
 // populateSessionCalibrationProfile). Pure - no locks, no I/O - so it is
-// safe to call at any point relative to recMu.
+// safe to call at any point relative to recMu. autoCtx is nil for a
+// manually-started recording (SessionSnapshot.AutoRecordInitiationMode
+// becomes "manual"); non-nil only for one Automatic Flight Recording
+// itself started.
 //
 // CapturedAtUTC/CapturedAtMonoSeconds deliberately reuse r's own
 // GeneratedAt/GeneratedAtMonoSeconds rather than taking a fresh
@@ -39,7 +57,7 @@ import (
 // this Preflight data generated" keeps the two internally consistent, and
 // preserves r.GeneratedAt's existing nil-unless-trusted rule (see
 // main/preflightapi.go's buildPreflightReport) without re-deriving it.
-func buildSessionSnapshot(r preflight.Report, session *recordingSession) recording.SessionSnapshot {
+func buildSessionSnapshot(r preflight.Report, session *recordingSession, autoCtx *autoRecordSessionContext) recording.SessionSnapshot {
 	gpsFixAvailable := false
 	for _, c := range r.Automated {
 		if c.CheckID == "gps_fix" && c.State == preflight.StateReady {
@@ -50,41 +68,56 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession) recordi
 	alertSchema, alertMaster, alertVisual, alertAudioArmed, alertSystem, alertMuted, alertCounts := alertingSnapshotForRecording()
 	cfgBackupSchema, cfgBackupFingerprint, cfgBackupRestored := configBackupSnapshotForRecording()
 	powerSeverity, powerUndervoltageNow, powerThrottledNow, previousSessionEndedCleanly, previousSessionAvailable := powerSnapshotForRecording()
+	initiationMode := "manual"
+	if autoCtx == nil {
+		autoCtx = &autoRecordSessionContext{}
+	} else {
+		initiationMode = "automatic"
+	}
 	return recording.SessionSnapshot{
-		ConfigBackupSchemaVersion:       cfgBackupSchema,
-		ConfigBackupFingerprint:         cfgBackupFingerprint,
-		ConfigBackupRestoredThisBoot:    cfgBackupRestored,
-		PowerSeverity:                   powerSeverity,
-		PowerUndervoltageNow:            powerUndervoltageNow,
-		PowerThrottledNow:               powerThrottledNow,
-		PreviousSessionAvailable:        previousSessionAvailable,
-		PreviousSessionEndedCleanly:     previousSessionEndedCleanly,
-		AlertingSchemaVersion:           alertSchema,
-		AlertingMasterEnabled:           alertMaster,
-		AlertingVisualEnabled:           alertVisual,
-		AlertingAudioArmed:              alertAudioArmed,
-		AlertingSystemEnabled:           alertSystem,
-		AlertingMuted:                   alertMuted,
-		AlertingActiveCountsByLevel:     alertCounts,
-		CapturedAtUTC:                   r.GeneratedAt,
-		CapturedAtMonoSeconds:           r.GeneratedAtMonoSeconds,
-		StratuxVersion:                  globalStatus.Version,
-		StratuxCommit:                   globalStatus.Build,
-		PreflightBootSessionID:          r.BootSessionID,
-		PreflightGeneratedAt:            r.GeneratedAt,
-		PreflightGeneratedAtMonoSeconds: r.GeneratedAtMonoSeconds,
-		PreflightOverallState:           string(r.Overall),
-		PreflightRequiredActionCount:    r.RequiredActionCount,
-		PreflightCautionCount:           r.CautionCount,
-		PreflightAutomated:              r.Automated,
-		PreflightManual:                 r.Manual,
-		TrustedTimeAvailable:            r.GeneratedAt != nil,
-		GPSFixAvailable:                 gpsFixAvailable,
-		CalibrationProfileID:            session.CalibrationProfileID,
-		CalibrationProfileName:          session.CalibrationProfileName,
-		CalibrationProfileKind:          session.CalibrationProfileKind,
-		CalibrationValid:                session.CalibrationValid,
-		CalibrationProfileAvailable:     session.CalibrationProfileAvailable,
+		AutoRecordInitiationMode:            initiationMode,
+		AutoRecordTriggerReasonCode:         autoCtx.TriggerReasonCode,
+		AutoRecordPolicySchemaVersion:       autoCtx.PolicySchemaVersion,
+		AutoRecordStartGroundspeedKnots:     autoCtx.StartGroundspeedKnots,
+		AutoRecordStartDwellSeconds:         autoCtx.StartDwellSeconds,
+		AutoRecordStopGroundspeedKnots:      autoCtx.StopGroundspeedKnots,
+		AutoRecordStopDwellSeconds:          autoCtx.StopDwellSeconds,
+		AutoRecordStorageDecision:           autoCtx.StorageDecision,
+		AutoRecordContinuationOfRecordingID: autoCtx.ContinuationOfRecordingID,
+		ConfigBackupSchemaVersion:           cfgBackupSchema,
+		ConfigBackupFingerprint:             cfgBackupFingerprint,
+		ConfigBackupRestoredThisBoot:        cfgBackupRestored,
+		PowerSeverity:                       powerSeverity,
+		PowerUndervoltageNow:                powerUndervoltageNow,
+		PowerThrottledNow:                   powerThrottledNow,
+		PreviousSessionAvailable:            previousSessionAvailable,
+		PreviousSessionEndedCleanly:         previousSessionEndedCleanly,
+		AlertingSchemaVersion:               alertSchema,
+		AlertingMasterEnabled:               alertMaster,
+		AlertingVisualEnabled:               alertVisual,
+		AlertingAudioArmed:                  alertAudioArmed,
+		AlertingSystemEnabled:               alertSystem,
+		AlertingMuted:                       alertMuted,
+		AlertingActiveCountsByLevel:         alertCounts,
+		CapturedAtUTC:                       r.GeneratedAt,
+		CapturedAtMonoSeconds:               r.GeneratedAtMonoSeconds,
+		StratuxVersion:                      globalStatus.Version,
+		StratuxCommit:                       globalStatus.Build,
+		PreflightBootSessionID:              r.BootSessionID,
+		PreflightGeneratedAt:                r.GeneratedAt,
+		PreflightGeneratedAtMonoSeconds:     r.GeneratedAtMonoSeconds,
+		PreflightOverallState:               string(r.Overall),
+		PreflightRequiredActionCount:        r.RequiredActionCount,
+		PreflightCautionCount:               r.CautionCount,
+		PreflightAutomated:                  r.Automated,
+		PreflightManual:                     r.Manual,
+		TrustedTimeAvailable:                r.GeneratedAt != nil,
+		GPSFixAvailable:                     gpsFixAvailable,
+		CalibrationProfileID:                session.CalibrationProfileID,
+		CalibrationProfileName:              session.CalibrationProfileName,
+		CalibrationProfileKind:              session.CalibrationProfileKind,
+		CalibrationValid:                    session.CalibrationValid,
+		CalibrationProfileAvailable:         session.CalibrationProfileAvailable,
 	}
 }
 

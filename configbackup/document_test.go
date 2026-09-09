@@ -41,6 +41,15 @@ func testBuildInputs() BuildInputs {
 			MasterEnabled: true,
 			AudioVolume:   0.5,
 		},
+		AutoRecordSettings: AutoRecordSettingsSection{
+			Enabled:                false,
+			StartGroundspeedKnots:  8,
+			StartDwellSeconds:      30,
+			StopGroundspeedKnots:   4,
+			StopDwellSeconds:       120,
+			GPSLossGraceSeconds:    30,
+			RestartCooldownSeconds: 300,
+		},
 	}
 }
 

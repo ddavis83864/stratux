@@ -133,6 +133,14 @@ type DiagnosticBundle struct {
 	// file name, a path beyond a namespace's own short identifier, or any
 	// file content.
 	StorageLifecycleSummary interface{} `json:"StorageLifecycleSummary,omitempty"`
+
+	// AutoRecordSummary is a bounded, sanitized summary of Automatic
+	// Flight Recording's current state (see the autorecord package) at
+	// generation time, opaque to this package for the same import-
+	// direction reason as the summaries above. State/reason code/
+	// counters only - never an exact GPS coordinate or a full sample
+	// trace.
+	AutoRecordSummary interface{} `json:"AutoRecordSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -160,7 +168,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -180,6 +188,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		ConfigBackupSummary:        configBackupSummary,
 		PowerSummary:               powerSummary,
 		StorageLifecycleSummary:    storageLifecycleSummary,
+		AutoRecordSummary:          autoRecordSummary,
 	}
 }
 

@@ -85,12 +85,14 @@ func Fingerprint(current CurrentState) (string, error) {
 	sort.Slice(profiles, func(i, j int) bool { return profiles[i].ID < profiles[j].ID })
 
 	return sectionChecksum(struct {
-		Configuration       ConfigurationSection   `json:"configuration"`
-		CalibrationProfiles profilesSectionPayload `json:"calibrationProfiles"`
-		AlertSettings       AlertSettingsSection   `json:"alertSettings"`
+		Configuration       ConfigurationSection      `json:"configuration"`
+		CalibrationProfiles profilesSectionPayload    `json:"calibrationProfiles"`
+		AlertSettings       AlertSettingsSection      `json:"alertSettings"`
+		AutoRecordSettings  AutoRecordSettingsSection `json:"autoRecordSettings"`
 	}{
 		Configuration:       current.Configuration,
 		CalibrationProfiles: profilesSectionPayload{Profiles: profiles, ActiveID: current.ActiveProfileID},
 		AlertSettings:       current.AlertSettings,
+		AutoRecordSettings:  current.AutoRecordSettings,
 	})
 }

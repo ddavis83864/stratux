@@ -39,6 +39,12 @@ type HealthReport struct {
 	// relate). Observational only in this release - see that type's
 	// EnforcementEnabled field.
 	StorageLifecycle StorageLifecycleHealth
+
+	// AutoRecord reports Automatic Flight Recording's own state - see
+	// AutoRecordHealth's doc comment. Disabled (the default) reports
+	// NOT_INSTALLED, which Rollup excludes from the Overall computation -
+	// the feature being off never degrades overall system readiness.
+	AutoRecord AutoRecordHealth
 }
 
 // RadioHealth is the health record for one receiver band (978 UAT or 1090
@@ -409,7 +415,7 @@ func BuildSystemHealth(version, commit string, uptime time.Duration, cpuTempC fl
 // Rollup, so the aggregate always reflects the mission's color rules
 // (StateNotInstalled/StateUnknown components never drag down an otherwise-
 // healthy Overall; any real StateNotReady always shows).
-func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs AHRSHealth, baro BaroHealth, fan FanHealth, storageLifecycle StorageLifecycleHealth) HealthReport {
+func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs AHRSHealth, baro BaroHealth, fan FanHealth, storageLifecycle StorageLifecycleHealth, autoRecord AutoRecordHealth) HealthReport {
 	r := HealthReport{
 		GeneratedAt:      now,
 		UAT978:           uat978,
@@ -424,11 +430,13 @@ func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth,
 		Baro:             baro,
 		Fan:              fan,
 		StorageLifecycle: storageLifecycle,
+		AutoRecord:       autoRecord,
 	}
 	r.Overall = Rollup(
 		uat978.State, es1090.State, gps.State, gdl90.State, system.State,
 		storage.State, timeStateToComponentState(timeState),
 		ahrs.State, baro.State, fan.State, storageLifecycle.State,
+		autoRecord.State,
 	)
 	return r
 }

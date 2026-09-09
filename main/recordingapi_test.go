@@ -164,7 +164,7 @@ func TestStopActiveRecording_FinalizesMetadataAndIsIdempotent(t *testing.T) {
 	id := currentSessionID(t)
 	dir, _ := validRecordingDir(id)
 
-	stopActiveRecording()
+	stopActiveRecording("manual")
 	result := recording.ReadMetadata(dir)
 	if result.Status != recording.MetadataOK {
 		t.Fatalf("metadata Status = %v after stop, want MetadataOK", result.Status)
@@ -186,7 +186,7 @@ func TestStopActiveRecording_FinalizesMetadataAndIsIdempotent(t *testing.T) {
 	// different content (idempotent, matching the pre-existing
 	// handleStopRecordingRequest contract).
 	firstStoppedAt := *result.Metadata.Finalization.StoppedAtUTC
-	stopActiveRecording()
+	stopActiveRecording("manual")
 	second := recording.ReadMetadata(dir)
 	if !second.Metadata.Finalization.StoppedAtUTC.Equal(firstStoppedAt) {
 		t.Errorf("repeated stop changed StoppedAtUTC: first=%v second=%v", firstStoppedAt, *second.Metadata.Finalization.StoppedAtUTC)
@@ -213,7 +213,7 @@ func TestSecondRecording_GetsItsOwnDistinctSnapshot(t *testing.T) {
 	startTestRecording(t)
 	firstID := currentSessionID(t)
 	firstDir, _ := validRecordingDir(firstID)
-	stopActiveRecording()
+	stopActiveRecording("manual")
 
 	// Recording ids are second-granularity (pre-existing, unrelated to
 	// this mission - see handleStartRecordingRequest's id generation), so
@@ -268,7 +268,7 @@ func TestSecondRecording_GetsItsOwnDistinctSnapshot(t *testing.T) {
 
 func TestHandleListRecordingsRequest_MetadataSummaryFields(t *testing.T) {
 	startTestRecording(t)
-	stopActiveRecording()
+	stopActiveRecording("manual")
 
 	req := httptest.NewRequest(http.MethodGet, "/getRecordings", nil)
 	w := httptest.NewRecorder()
@@ -382,7 +382,7 @@ func TestRecordingSamplerLoop_ProducesAtLeastOneSampleWithinTwoIntervals(t *test
 	if count < 1 {
 		t.Errorf("SampleCount = %d after waiting past one sample interval, want >= 1", count)
 	}
-	stopActiveRecording()
+	stopActiveRecording("manual")
 }
 
 func TestRecordingIDPattern_RejectsPathTraversalShapes(t *testing.T) {

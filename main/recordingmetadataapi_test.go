@@ -24,14 +24,14 @@ import (
 // content) and free of anything the sanitization scan would flag.
 func TestDiagnosticBundle_IncludesSanitizedRecordingMetadataSummary(t *testing.T) {
 	startTestRecording(t)
-	stopActiveRecording()
+	stopActiveRecording("manual")
 
 	summary := recording.SummarizeMetadata(listRecordingRefs())
 	if summary.RecordingCount != 1 || summary.WithMetadata != 1 {
 		t.Fatalf("unexpected summary from a single completed recording: %+v", summary)
 	}
 
-	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", readiness.HealthReport{}, nil, nil, nil, "", nil, summary, nil, nil, nil, nil)
+	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", readiness.HealthReport{}, nil, nil, nil, "", nil, summary, nil, nil, nil, nil, nil)
 	data, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatalf("bundle with a recording metadata summary failed to marshal: %v", err)
@@ -76,7 +76,7 @@ func TestBuildSessionSnapshot_TrustedTimeAndGPSFixDerivedFromReport(t *testing.T
 		CalibrationProfileAvailable: true,
 	}
 
-	snap := buildSessionSnapshot(report, session)
+	snap := buildSessionSnapshot(report, session, nil)
 	if !snap.TrustedTimeAvailable {
 		t.Error("TrustedTimeAvailable = false, want true when report.GeneratedAt is non-nil")
 	}
@@ -98,7 +98,7 @@ func TestBuildSessionSnapshot_UntrustedTimeAndNoGPSFix(t *testing.T) {
 			{CheckID: "gps_fix", State: preflight.StateCaution},
 		},
 	}
-	snap := buildSessionSnapshot(report, &recordingSession{})
+	snap := buildSessionSnapshot(report, &recordingSession{}, nil)
 	if snap.TrustedTimeAvailable {
 		t.Error("TrustedTimeAvailable = true, want false when report.GeneratedAt is nil")
 	}
@@ -110,7 +110,7 @@ func TestBuildSessionSnapshot_UntrustedTimeAndNoGPSFix(t *testing.T) {
 func TestBuildSessionSnapshot_NoGPSFixCheckPresent(t *testing.T) {
 	// A report with no gps_fix entry at all (e.g. GPS hardware absent)
 	// must not be misread as a fix being available.
-	snap := buildSessionSnapshot(preflight.Report{}, &recordingSession{})
+	snap := buildSessionSnapshot(preflight.Report{}, &recordingSession{}, nil)
 	if snap.GPSFixAvailable {
 		t.Error("GPSFixAvailable = true with no gps_fix check present, want false")
 	}

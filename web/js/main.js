@@ -72,6 +72,11 @@ var URL_SHUTDOWN_CONFIRM     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmShut
 
 var URL_STORAGE_LIFECYCLE_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStorageLifecycle";
 
+var URL_AUTORECORD_STATUS_GET   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getAutoRecordStatus";
+var URL_AUTORECORD_SETTINGS_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getAutoRecordSettings";
+var URL_AUTORECORD_SETTINGS_SET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setAutoRecordSettings";
+var URL_AUTORECORD_CLEAR_ERROR  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/clearAutoRecordError";
+
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
 var URL_GPS_WS              = "ws://" + URL_HOST_BASE + "/situation";
@@ -131,6 +136,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/storage',
 			templateUrl: 'plates/storage.html',
 			controller: 'StorageCtrl',
+			reloadOnSearch: false
+		})
+		.state('autorecord', {
+			url: '/autorecord',
+			templateUrl: 'plates/autorecord.html',
+			controller: 'AutoRecordCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
