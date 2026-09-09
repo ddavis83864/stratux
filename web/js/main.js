@@ -77,6 +77,14 @@ var URL_AUTORECORD_SETTINGS_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getAutoR
 var URL_AUTORECORD_SETTINGS_SET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setAutoRecordSettings";
 var URL_AUTORECORD_CLEAR_ERROR  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/clearAutoRecordError";
 
+var URL_FISBCACHE_STATUS_GET     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getFISBCacheStatus";
+var URL_FISBCACHE_INVENTORY_GET  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getFISBCacheInventory";
+var URL_FISBCACHE_SETTINGS_GET   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getFISBCacheSettings";
+var URL_FISBCACHE_SETTINGS_SET   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setFISBCacheSettings";
+var URL_FISBCACHE_PURGE_PREPARE  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/prepareFISBCachePurge";
+var URL_FISBCACHE_PURGE_CONFIRM  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmFISBCachePurge";
+var URL_FISBCACHE_PURGE_CANCEL   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/cancelFISBCachePurge";
+
 
 var URL_DEVELOPER_WS        = "ws://" + URL_HOST_BASE + "/developer";
 var URL_GPS_WS              = "ws://" + URL_HOST_BASE + "/situation";
@@ -142,6 +150,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/autorecord',
 			templateUrl: 'plates/autorecord.html',
 			controller: 'AutoRecordCtrl',
+			reloadOnSearch: false
+		})
+		.state('fisbcache', {
+			url: '/fisbcache',
+			templateUrl: 'plates/fisbcache.html',
+			controller: 'FISBCacheCtrl',
 			reloadOnSearch: false
 		})
 		.state('towers', {
