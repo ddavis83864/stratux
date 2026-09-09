@@ -290,6 +290,35 @@ func TestHandleSetFISBCacheSettings_UnknownFieldRejected(t *testing.T) {
 	}
 }
 
+func TestHandleSetFISBCacheSettings_MultipleJSONValuesRejected(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	// A second, concatenated JSON object after an otherwise-valid one -
+	// json.Decoder.Decode by itself only consumes the first value and
+	// silently ignores the rest; this must not be treated as success.
+	body := []byte(`{"enabled":true,"maxCacheBytes":1024,"maxEntries":10}{"enabled":false}`)
+	req := httptest.NewRequest(http.MethodPost, "/setFISBCacheSettings", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleSetFISBCacheSettingsRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a body containing more than one JSON value, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if loadFISBCacheSettings().Enabled {
+		t.Error("a rejected multi-value body must never have been persisted")
+	}
+}
+
+func TestHandleConfirmFISBCachePurge_MultipleJSONValuesRejected(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	withFISBCachePurgeStateReset(t)
+	body := []byte(`{"token":"fisbpurge-whatever"}{"token":"fisbpurge-second"}`)
+	req := httptest.NewRequest(http.MethodPost, "/confirmFISBCachePurge", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleConfirmFISBCachePurgeRequest(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a body containing more than one JSON value, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleSetFISBCacheSettings_WrongMethod(t *testing.T) {
 	withFISBCacheTestEnv(t)
 	req := httptest.NewRequest(http.MethodGet, "/setFISBCacheSettings", nil)

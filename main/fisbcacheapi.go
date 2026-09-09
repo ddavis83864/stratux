@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -209,6 +210,24 @@ func handleGetFISBCacheSettingsRequest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(loadFISBCacheSettings())
 }
 
+// fisbCacheDecodeStrictJSON decodes exactly one JSON value from body into
+// v (unknown fields already rejected by the caller's own json.Decoder
+// options) and additionally rejects trailing content after that value -
+// a bare Decode call only consumes the first JSON value in the stream
+// and silently ignores anything after it (a second concatenated object,
+// or trailing garbage), which would otherwise let a malformed or
+// malicious multi-value body appear to succeed. Returns the first
+// decode error verbatim, or a distinct "trailing data" error.
+func fisbCacheDecodeStrictJSON(dec *json.Decoder, v interface{}) error {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if dec.More() {
+		return fmt.Errorf("request body must contain exactly one JSON value")
+	}
+	return nil
+}
+
 func handleSetFISBCacheSettingsRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
@@ -220,7 +239,7 @@ func handleSetFISBCacheSettingsRequest(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	var s FISBCacheSettings
-	if err := dec.Decode(&s); err != nil {
+	if err := fisbCacheDecodeStrictJSON(dec, &s); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "invalid JSON body: " + err.Error()})
 		return
 	}
@@ -294,7 +313,7 @@ func handleConfirmFISBCachePurgeRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFISBCacheRequestBytes)
 	var req fisbCachePurgeConfirmRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := fisbCacheDecodeStrictJSON(json.NewDecoder(r.Body), &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "invalid JSON body: " + err.Error()})
 		return
 	}
