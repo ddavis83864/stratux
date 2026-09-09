@@ -61,6 +61,37 @@ var (
 	fisbCacheAtomicWriter *storagelifecycle.AtomicWriter
 )
 
+// fisbCacheStoragePressureProhibited reports the whole-system storage
+// pressure Manager.Status() currently observes, and whether that
+// pressure is severe enough to prohibit this cache from admitting any
+// new entry - HIGH/CRITICAL (genuinely low on room) and UNKNOWN (the
+// scan itself failed or has never completed) are all treated
+// conservatively alike, mirroring storagelifecycle.RecordingSpaceDenied's
+// own "treat unknown as denied, never as fine" precedent
+// (autorecordstorage.go). A nil storageManager (not yet initialized)
+// is reported as UNKNOWN/prohibited for the same reason - this cache
+// must never admit before it can actually confirm there is room.
+//
+// This is the single source of truth for that classification - both
+// the capture-path admission gate (fisbCacheEnqueue, fisbcacherun.go)
+// and the status/dashboard snapshot (fisbCacheStatusSnapshot,
+// fisbcacheapi.go) call this rather than each re-deriving their own
+// copy of the HIGH/CRITICAL/UNKNOWN judgment, so the reported
+// "PRESSURE_INHIBITED" state can never drift from what actually
+// inhibited admission.
+func fisbCacheStoragePressureProhibited() (pressure string, prohibited bool) {
+	if storageManager == nil {
+		return string(storagelifecycle.PressureUnknown), true
+	}
+	st := storageManager.Status()
+	switch st.Pressure {
+	case storagelifecycle.PressureHigh, storagelifecycle.PressureCritical, storagelifecycle.PressureUnknown:
+		return string(st.Pressure), true
+	default:
+		return string(st.Pressure), false
+	}
+}
+
 // fisbCacheEntryFileName derives a safe, single-segment, deterministic
 // filename for k - never the raw Identity string (which can contain
 // spaces and, for a station identifier or a NEXRAD tile's own encoded

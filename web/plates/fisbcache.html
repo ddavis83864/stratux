@@ -41,6 +41,7 @@
 					<tr><td>Cache usage</td><td>{{Status.totalBytes | number:0}} / {{Status.maxCacheBytes | number:0}} bytes, {{Status.totalEntries}} / {{Status.maxEntries}} entries</td></tr>
 					<tr><td>Queue depth</td><td>{{Status.queueDepth}} / {{Status.queueCapacity}}</td></tr>
 					<tr><td>Dropped cache updates</td><td>{{Status.droppedWrites}}</td></tr>
+					<tr><td>Rejected (storage pressure)</td><td>{{Status.pressureRejected}}</td></tr>
 					<tr><td>Last cleanup</td><td>{{Status.lastCleanupUtc ? (Status.lastCleanupUtc | date:'medium') + ' (' + Status.lastCleanupCount + ' removed)' : '(none yet)'}}</td></tr>
 				</table>
 				<ul class="small text-muted" style="margin-top:10px;">

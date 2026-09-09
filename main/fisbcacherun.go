@@ -37,8 +37,12 @@ const fisbCaptureQueueDepth = 256
 // fisbCacheStartupRecoveryTimeout bounds how long startup recovery may
 // run before this feature simply reports itself degraded and moves on -
 // never delays Stratux startup itself, since recovery runs in its own
-// goroutine from the very first line of initFISBCache.
-const fisbCacheStartupRecoveryTimeout = 30 * time.Second
+// goroutine from the very first line of initFISBCache. A var, not a
+// const, solely so a test can shrink it to prove the bound is actually
+// honored without a real 30-second wait - mirrors
+// autoRecordMountWaitTimeout's identical pattern. Never reassigned in
+// production.
+var fisbCacheStartupRecoveryTimeout = 30 * time.Second
 
 // fisbCacheRetentionInterval is deliberately similar to
 // storageLifecycleScanInterval - retention does not need to run more
@@ -56,6 +60,7 @@ var (
 	fisbCacheSettingsCache    FISBCacheSettings
 	fisbCacheQueue            chan fisbCaptureItem
 	fisbCacheDroppedWrites    uint64 // atomic
+	fisbCachePressureRejected uint64 // atomic
 	fisbCacheStartupRecovered bool
 	fisbCacheRecoveryError    bool
 	fisbCacheNonFatalErrors   bool
@@ -195,6 +200,18 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 	shuttingDown := fisbCacheShuttingDown
 	fisbCacheMu.Unlock()
 	if shuttingDown {
+		return
+	}
+	// Global storage pressure (HIGH/CRITICAL/UNKNOWN) prohibits admitting
+	// any new entry - never a second, this-cache-only pressure
+	// computation; see fisbCacheStoragePressureProhibited's own doc
+	// comment. Already-cached entries are still served; this only stops
+	// growing the cache further while storage is genuinely tight or its
+	// state cannot currently be confirmed. Counted separately from
+	// fisbCacheDroppedWrites (queue overflow) so an operator can tell
+	// "backlogged" apart from "storage is under pressure" at a glance.
+	if _, prohibited := fisbCacheStoragePressureProhibited(); prohibited {
+		atomic.AddUint64(&fisbCachePressureRejected, 1)
 		return
 	}
 	receiveUTC := fisbCacheTrustedNowUTC()

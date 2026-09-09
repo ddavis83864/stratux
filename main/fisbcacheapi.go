@@ -68,6 +68,7 @@ type fisbCacheStatusResponse struct {
 	QueueDepth         int                              `json:"queueDepth"`
 	QueueCapacity      int                              `json:"queueCapacity"`
 	DroppedWrites      uint64                           `json:"droppedWrites"`
+	PressureRejected   uint64                           `json:"pressureRejected"`
 	LastCleanupUTC     time.Time                        `json:"lastCleanupUtc,omitempty"`
 	LastCleanupCount   int                              `json:"lastCleanupCount"`
 	StoragePressure    string                           `json:"storagePressure"`
@@ -104,13 +105,7 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 	shuttingDown := fisbCacheShuttingDown
 	fisbCacheMu.Unlock()
 
-	pressure := "UNKNOWN"
-	pressureProhibited := false
-	if storageManager != nil {
-		st := storageManager.Status()
-		pressure = string(st.Pressure)
-		pressureProhibited = st.Pressure == "HIGH" || st.Pressure == "CRITICAL" || st.Pressure == "UNKNOWN"
-	}
+	pressure, pressureProhibited := fisbCacheStoragePressureProhibited()
 
 	state := fisbcache.DetermineState(fisbcache.StateInputs{
 		Enabled:                   settings.Enabled,
@@ -147,6 +142,7 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		QueueDepth:         queueDepth,
 		QueueCapacity:      fisbCaptureQueueDepth,
 		DroppedWrites:      fisbCacheDroppedWrites,
+		PressureRejected:   fisbCachePressureRejected,
 		LastCleanupUTC:     lastCleanupUTC,
 		LastCleanupCount:   lastCleanupCount,
 		StoragePressure:    pressure,
@@ -377,6 +373,7 @@ func fisbCacheDiagnosticsSummary() interface{} {
 		"byProductClass":     s.ByProductClass,
 		"queueDepth":         s.QueueDepth,
 		"droppedWrites":      s.DroppedWrites,
+		"pressureRejected":   s.PressureRejected,
 		"lastCleanupCount":   s.LastCleanupCount,
 		"schemaVersion":      fisbcache.SchemaVersion,
 	}
