@@ -594,3 +594,30 @@ func autoRecordChecks(in Input) []CheckResult {
 		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateReady, SeverityInfo, "automatic recording armed")}
 	}
 }
+
+// fisbCacheChecks reports the Rolling FIS-B Weather Cache's own state - a
+// single concise card, mirroring autoRecordChecks' own restraint.
+// Disabled (the default, opt-in-required posture) is ALWAYS purely
+// informational (NOT_APPLICABLE/Info) - the absence of a tower, or the
+// feature being off entirely, is never itself a failure (see this
+// check's own mission requirement: "no tower is not automatically
+// NOT_READY", "cache disabled is not a failure"). Severity never rises
+// above Caution: this is a supplemental convenience cache, never
+// authoritative for flight readiness, and cached-only weather being
+// present is explicitly informational, not a substitute for a "current
+// weather" check this project does not otherwise claim to make.
+func fisbCacheChecks(in Input) []CheckResult {
+	if !in.FISBCacheEnabled {
+		return []CheckResult{newCheck("Recording", "fisb_cache", "FIS-B weather cache", StateNotApplicable, SeverityInfo, "FIS-B weather cache is disabled")}
+	}
+	switch in.FISBCacheState {
+	case "", "STARTUP_GRACE", "WAITING_FOR_TRUSTED_TIME":
+		return []CheckResult{newCheck("Recording", "fisb_cache", "FIS-B weather cache", StateNotApplicable, SeverityInfo, "not yet initialized")}
+	case "ERROR":
+		return []CheckResult{newCheck("Recording", "fisb_cache", "FIS-B weather cache", StateCaution, SeverityCaution, in.FISBCacheReason)}
+	case "DEGRADED", "READ_ONLY", "PRESSURE_INHIBITED":
+		return []CheckResult{newCheck("Recording", "fisb_cache", "FIS-B weather cache", StateCaution, SeverityCaution, in.FISBCacheReason)}
+	default:
+		return []CheckResult{newCheck("Recording", "fisb_cache", "FIS-B weather cache", StateReady, SeverityInfo, "FIS-B weather cache active")}
+	}
+}

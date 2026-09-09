@@ -334,7 +334,7 @@ func TestDiagnosticBundle_IncludesSanitizedPreflightReport(t *testing.T) {
 	withTestPreflightStore(t)
 
 	report := buildPreflightReport()
-	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", globalHealth, nil, nil, nil, "", report, nil, nil, nil, nil, nil, nil)
+	bundle := readiness.BuildDiagnosticBundle(time.Now().UTC(), "v", "c", globalHealth, nil, nil, nil, "", report, nil, nil, nil, nil, nil, nil, nil)
 
 	data, err := json.Marshal(bundle)
 	if err != nil {

@@ -141,6 +141,13 @@ type DiagnosticBundle struct {
 	// counters only - never an exact GPS coordinate or a full sample
 	// trace.
 	AutoRecordSummary interface{} `json:"AutoRecordSummary,omitempty"`
+
+	// FISBCacheSummary is a bounded, sanitized summary of the Rolling
+	// FIS-B Weather Cache's current state at generation time, opaque to
+	// this package for the same import-direction reason as the summaries
+	// above. State/counts only - never a raw weather payload, station
+	// identifier, or exact coordinate.
+	FISBCacheSummary interface{} `json:"FISBCacheSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -168,7 +175,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, fisbCacheSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -189,6 +196,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		PowerSummary:               powerSummary,
 		StorageLifecycleSummary:    storageLifecycleSummary,
 		AutoRecordSummary:          autoRecordSummary,
+		FISBCacheSummary:           fisbCacheSummary,
 	}
 }
 

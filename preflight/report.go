@@ -166,6 +166,14 @@ type Input struct {
 	AutoRecordEnabled      bool
 	AutoRecordMachineState string // one of autorecord.State's own values, or "" if not yet initialized
 	AutoRecordReason       string
+
+	// FISBCache* mirrors readiness.FISBCacheHealth without this package
+	// importing fisbcache (the same avoidance pattern as AutoRecord*
+	// above).
+	FISBCacheEnabled      bool
+	FISBCacheState        string // one of fisbcache.State's own values, or "" if not yet initialized
+	FISBCacheReason       string
+	FISBCacheTotalEntries int
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -214,6 +222,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, powerSessionChecks(in)...)
 	automated = append(automated, storageLifecycleChecks(in)...)
 	automated = append(automated, autoRecordChecks(in)...)
+	automated = append(automated, fisbCacheChecks(in)...)
 
 	manual := manualCheckResults(in)
 
