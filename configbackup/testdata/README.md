@@ -1,5 +1,39 @@
 # configbackup/testdata
 
+## `legacy-pre-fisbcache-backup.json`
+
+An **authentic** Configuration Backup document, produced by literally
+running commit `83a20a8caab0fbf90c2d3bebab1d92fa76d409ca`'s (`master`,
+the merge of PR #14, immediately before the Rolling FIS-B Weather Cache)
+exact `configbackup.BuildDocument` - not hand-written or simulated. This
+is the second (newer) of the two Configuration Backup shapes that have
+ever existed on this project's `master` branch: it has `autoRecordSettings`
+but not yet `fisbCacheSettings`.
+
+### How it was regenerated
+
+```sh
+git worktree add .worktrees/pre-fisbcache-baseline 83a20a8caab0fbf90c2d3bebab1d92fa76d409ca
+# write fixturegen/main.go under that worktree, importing
+# "github.com/stratux/stratux/configbackup" (resolved to THAT worktree's
+# own source) and calling BuildDocument with the same inputs
+# configbackup/document_test.go's own testBuildInputs() used at that
+# commit (which already includes autoRecordSettings), then
+# json.MarshalIndent's the result to a file.
+./docker_run.sh "cd /data/.worktrees/pre-fisbcache-baseline && go run ./fixturegen"
+git worktree remove .worktrees/pre-fisbcache-baseline
+```
+
+Do not hand-edit this file to "fix" a test - if the shape needs to
+change, regenerate it from the actual historical commit, or (if no such
+historical commit exists for the desired shape) do not claim the fixture
+is historical at all.
+
+Its one calibration profile is again named "Legacy Backup Aircraft" for
+the same test-fixture-convenience reason as the older fixture below (a
+different profile ID, to keep the two fixtures independently
+distinguishable in any test that happens to load both).
+
 ## `legacy-pre-autorecord-backup.json`
 
 An **authentic** Configuration Backup document, produced by literally

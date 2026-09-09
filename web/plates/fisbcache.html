@@ -1,0 +1,119 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;Weather Cache</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Rolling FIS-B Weather Cache</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				Weather shown here is supplemental and may be incomplete or unavailable. Cached
+				weather can be older than currently broadcast data - always check a product's own
+				age before use. The absence of a cached product does not indicate the absence of a
+				hazard. This is never a substitute for an official preflight briefing or current
+				airborne weather sources.
+			</p>
+			<p class="small text-muted">
+				This cache is disabled by default and only ever stores products genuinely received
+				over 978 MHz FIS-B - never anything downloaded from the internet. It never deletes
+				a recording, calibration profile, diagnostic bundle, or setting to make room.
+			</p>
+			<p class="small">
+				<a href="#/readiness">Readiness</a> &middot;
+				<a href="#/preflight">Preflight</a> &middot;
+				<a href="#/storage">Storage</a>
+			</p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Status</span></div>
+		<div class="panel-body">
+			<p class="small text-danger" ng-show="StatusError">{{StatusError}}</p>
+			<div ng-show="Status">
+				<span class="label" ng-class="stateClass(Status.state)">{{Status.state}}</span>
+				<span class="small text-muted">&nbsp;{{!Status.enabled ? 'disabled by configuration' : (!Status.trustedTime ? 'waiting for trusted time' : '')}}</span>
+				<table class="table small" style="margin-top:10px;">
+					<tr><td>Enabled</td><td>{{Status.enabled ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Persistence</td><td>{{Status.persistenceEnabled ? 'enabled (survives a restart)' : 'in-memory only, nothing saved to disk'}}</td></tr>
+					<tr><td>Trusted time</td><td>{{Status.trustedTime ? 'yes (GNSS/network synced)' : 'no'}}</td></tr>
+					<tr><td>Storage pressure</td><td>{{Status.storagePressure}}</td></tr>
+					<tr><td>Cache usage</td><td>{{Status.totalBytes | number:0}} / {{Status.maxCacheBytes | number:0}} bytes, {{Status.totalEntries}} / {{Status.maxEntries}} entries</td></tr>
+					<tr><td>Queue depth</td><td>{{Status.queueDepth}} / {{Status.queueCapacity}}</td></tr>
+					<tr><td>Dropped cache updates</td><td>{{Status.droppedWrites}}</td></tr>
+					<tr><td>Rejected (storage pressure)</td><td>{{Status.pressureRejected}}</td></tr>
+					<tr><td>Last cleanup</td><td>{{Status.lastCleanupUtc ? (Status.lastCleanupUtc | date:'medium') + ' (' + Status.lastCleanupCount + ' removed)' : '(none yet)'}}</td></tr>
+				</table>
+				<ul class="small text-muted" style="margin-top:10px;">
+					<li ng-repeat="note in Status.notes">{{note}}</li>
+				</ul>
+				<table class="table small" style="margin-top:10px;">
+					<tr><th colspan="2">Entries by freshness</th></tr>
+					<tr ng-repeat="(k, v) in Status.byFreshness"><td>{{k}}</td><td>{{v}}</td></tr>
+				</table>
+				<table class="table small" style="margin-top:10px;">
+					<tr><th colspan="2">Entries by product</th></tr>
+					<tr ng-repeat="(k, v) in Status.byProductClass"><td>{{k}}</td><td>{{v}}</td></tr>
+				</table>
+				<p class="small text-muted">
+					Replay to connected EFB apps is not implemented in this release - no cached
+					product is ever sent to ForeFlight or another GDL90 client; this page is for
+					visibility only. Live reception is always shown elsewhere (e.g. the existing
+					weather page) exactly as before, unaffected by this cache.
+				</p>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Inventory && Inventory.length">
+		<div class="panel-heading"><span class="panel_label">Cached products</span></div>
+		<div class="panel-body">
+			<table class="table table-condensed small">
+				<tr><th>Product</th><th>Identity</th><th>Freshness</th><th>Age (s)</th><th>Bytes</th></tr>
+				<tr ng-repeat="item in Inventory">
+					<td>{{item.productClass}}</td>
+					<td>{{item.identity}}</td>
+					<td><span class="label" ng-class="freshnessClass(item.freshness)">{{item.freshness}}</span></td>
+					<td>{{item.ageSeconds | number:0}}</td>
+					<td>{{item.sizeBytes}}</td>
+				</tr>
+			</table>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Settings">
+		<div class="panel-heading"><span class="panel_label">Settings</span></div>
+		<div class="panel-body">
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.enabled"/> FIS-B weather cache enabled</label></div>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.persistenceEnabled"/> Persist across restarts</label></div>
+			<p class="small text-muted">
+				Replay to EFB apps is not available in this release - the "replayEnabled" setting
+				is always rejected while disabled here.
+			</p>
+			<div class="form-group">
+				<label>Maximum cache size (bytes)</label>
+				<input type="number" class="form-control" ng-model="Settings.maxCacheBytes" min="1" max="268435456"/>
+			</div>
+			<div class="form-group">
+				<label>Maximum cached entries</label>
+				<input type="number" class="form-control" ng-model="Settings.maxEntries" min="1" max="100000"/>
+			</div>
+			<button class="btn btn-primary" ng-click="saveSettings()">Save Settings</button>
+			<span class="small" ng-show="Message">{{Message}}</span>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Purge cache</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">Removes every currently-cached product (this cache's own storage only - never a recording, profile, diagnostic, or setting).</p>
+			<button class="btn btn-default btn-sm" ng-click="preparePurge()" ng-hide="PurgeToken">Purge Cache</button>
+			<div ng-show="PurgeToken">
+				<p class="small text-danger">Confirm: delete all {{Status.totalEntries}} cached entries?</p>
+				<button class="btn btn-danger btn-sm" ng-click="confirmPurge()">Confirm Purge</button>
+				<button class="btn btn-default btn-sm" ng-click="cancelPurge()">Cancel</button>
+			</div>
+			<p class="small" ng-show="PurgeMessage">{{PurgeMessage}}</p>
+		</div>
+	</div>
+</div>

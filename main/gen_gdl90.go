@@ -1182,6 +1182,18 @@ func parseInput(buf string) ([]byte, uint16) {
 				thisMsg.Products = append(thisMsg.Products, f.Product_id)
 				UpdateUATStats(f.Product_id)
 				weatherRawUpdate.SendJSON(f)
+				// Rolling FIS-B Weather Cache: observes the same decoded
+				// frame this line already broadcasts to the /weatherraw
+				// websocket - see main/fisbcachecapture.go. A no-op fast
+				// path whenever the feature is disabled (checked first
+				// thing inside fisbCaptureText/fisbCaptureNexrad) or for
+				// any product ID this project's own uatparse does not
+				// structurally decode (see fisbcache.ClassifyProductID) -
+				// never adds work to this hot path for anyone who has not
+				// explicitly enabled this feature, and never blocks this
+				// goroutine (fisbCacheCaptureFrame only ever enqueues onto
+				// a bounded, non-blocking channel).
+				fisbCacheCaptureFrame(f)
 			}
 			// Get all of the text reports.
 			textReports, _ := uatMsg.GetTextReports()
@@ -1750,6 +1762,12 @@ func gracefulShutdown() {
 	// idempotent no-op if this already stopped the only active recording.
 	autoRecordHandleShutdown()
 
+	// Stop accepting new Rolling FIS-B Weather Cache writes - see
+	// main/fisbcacherun.go's fisbCacheHandleShutdown doc comment. Never
+	// delays shutdown: any in-flight write already queued is abandoned,
+	// not awaited.
+	fisbCacheHandleShutdown()
+
 	// Flush and close any active recording session cleanly rather than
 	// leaving its last file unflushed.
 	stopRecordingForShutdown()
@@ -1915,6 +1933,13 @@ func main() {
 	// run after initPreflight/initPower/initStorageLifecycle, whose live
 	// status this feature's detection tick reads every second.
 	initAutoRecord()
+
+	// Initialize the Rolling FIS-B Weather Cache - see
+	// main/fisbcacherun.go and docs/fisb-weather-cache.md. Disabled by
+	// default; must run after initStorageLifecycle (this feature's own
+	// namespace is registered inside that function). Never blocks
+	// startup: its own recovery pass runs asynchronously.
+	initFISBCache()
 
 	// Clear the logfile on startup
 	if globalSettings.ClearLogOnStart { clearDebugLogFile() }

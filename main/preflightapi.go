@@ -229,6 +229,10 @@ func buildPreflightReport() (report preflight.Report) {
 		AutoRecordEnabled:            health.AutoRecord.Enabled,
 		AutoRecordMachineState:       health.AutoRecord.MachineState,
 		AutoRecordReason:             health.AutoRecord.Reason,
+		FISBCacheEnabled:             health.FISBCache.Enabled,
+		FISBCacheState:               health.FISBCache.CacheState,
+		FISBCacheReason:              health.FISBCache.Reason,
+		FISBCacheTotalEntries:        health.FISBCache.TotalEntries,
 	}
 	return preflight.BuildReport(in)
 }

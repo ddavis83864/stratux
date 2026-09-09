@@ -366,3 +366,194 @@ func TestEnabledWithZeroThresholdsStillRejected(t *testing.T) {
 		t.Fatal("expected Enabled:true with all-zero thresholds to still be rejected")
 	}
 }
+
+// ====================================================================
+// preFISBCache historical shape (commit 5b8509fc through 83a20a8c) -
+// has autoRecordSettings, missing fisbCacheSettings. See this file's own
+// doc comment and testdata/README.md for how the fixture was generated.
+// ====================================================================
+
+// loadLegacyPreFISBCacheFixture reads the authentic pre-fisbCacheSettings
+// backup - literally run from commit 83a20a8c's own
+// configbackup.BuildDocument, never hand-simulated.
+func loadLegacyPreFISBCacheFixture(t *testing.T) (doc Document, raw []byte) {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/legacy-pre-fisbcache-backup.json")
+	if err != nil {
+		t.Fatalf("reading legacy fixture: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshaling legacy fixture: %v", err)
+	}
+	return doc, raw
+}
+
+// TestLegacyPreFISBCacheFixture_HasAutoRecordButNoFISBCacheChecksum
+// sanity-checks the fixture itself is genuinely the preFISBCache
+// historical shape before any test below relies on that.
+func TestLegacyPreFISBCacheFixture_HasAutoRecordButNoFISBCacheChecksum(t *testing.T) {
+	doc, _ := loadLegacyPreFISBCacheFixture(t)
+	if _, present := doc.SectionChecksums["autoRecordSettings"]; !present {
+		t.Fatal("fixture unexpectedly lacks an autoRecordSettings checksum - it is not the preFISBCache historical shape this test file assumes")
+	}
+	if _, present := doc.SectionChecksums["fisbCacheSettings"]; present {
+		t.Fatal("fixture unexpectedly carries a fisbCacheSettings checksum - it is not the preFISBCache historical shape this test file assumes")
+	}
+	if doc.SchemaVersion != 2 {
+		t.Fatalf("fixture SchemaVersion = %d, want 2", doc.SchemaVersion)
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_PassesOriginalChecksumVerification is the
+// core compatibility requirement for this second historical shape,
+// mirroring TestLegacyBackup_PassesOriginalChecksumVerification.
+func TestLegacyPreFISBCacheBackup_PassesOriginalChecksumVerification(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	res := Validate(doc, len(raw))
+	if !res.OK() {
+		t.Fatalf("expected an authentic preFISBCache backup to validate, got errors: %v", res.Errors)
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_NormalizesToDisabledFISBCacheSettings
+// mirrors TestLegacyBackup_NormalizesToDisabledAutoRecordSettings: only
+// the missing fisbCacheSettings section is defaulted; the document's own
+// real autoRecordSettings section (already present in this shape) is
+// left completely untouched.
+func TestLegacyPreFISBCacheBackup_NormalizesToDisabledFISBCacheSettings(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	if res := Validate(doc, len(raw)); !res.OK() {
+		t.Fatalf("Validate: %v", res.Errors)
+	}
+	normalized := NormalizeDocument(doc)
+	if normalized.FISBCacheSettings.Enabled {
+		t.Fatal("a legacy backup must never normalize to the FIS-B weather cache enabled")
+	}
+	if normalized.FISBCacheSettings != legacyDefaultFISBCacheSettings {
+		t.Fatalf("normalized FISBCacheSettings = %+v, want the documented legacy default %+v", normalized.FISBCacheSettings, legacyDefaultFISBCacheSettings)
+	}
+	var res ValidationResult
+	validateFISBCacheSettings(normalized.FISBCacheSettings, &res)
+	if !res.OK() {
+		t.Fatalf("legacyDefaultFISBCacheSettings itself fails validateFISBCacheSettings: %v", res.Errors)
+	}
+	if normalized.AutoRecordSettings != doc.AutoRecordSettings {
+		t.Fatalf("normalization must never touch the already-present autoRecordSettings section: before=%+v after=%+v", doc.AutoRecordSettings, normalized.AutoRecordSettings)
+	}
+	if normalized.Configuration != doc.Configuration ||
+		normalized.AlertSettings != doc.AlertSettings ||
+		normalized.ContentChecksum != doc.ContentChecksum ||
+		len(normalized.CalibrationProfiles) != len(doc.CalibrationProfiles) {
+		t.Fatalf("normalization touched a field other than FISBCacheSettings:\nbefore=%+v\nafter=%+v", doc, normalized)
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_TamperedWithHiddenFISBCacheDataRejected
+// mirrors TestLegacyBackup_TamperedWithHiddenAutoRecordDataRejected for
+// the second historical shape.
+func TestLegacyPreFISBCacheBackup_TamperedWithHiddenFISBCacheDataRejected(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	doc.FISBCacheSettings.Enabled = true
+	doc.FISBCacheSettings.MaxCacheBytes = 1024
+	doc.FISBCacheSettings.MaxEntries = 10
+	if res := Validate(doc, len(raw)); res.OK() {
+		t.Fatal("expected a preFISBCache-shaped document smuggling a non-zero fisbCacheSettings section (without its own checksum) to be rejected")
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_CorruptedSectionChecksumRejected mirrors
+// TestLegacyBackup_CorruptedSectionChecksumRejected.
+func TestLegacyPreFISBCacheBackup_CorruptedSectionChecksumRejected(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	doc.SectionChecksums["autoRecordSettings"] = "0000000000000000000000000000000000000000000000000000000000000000"
+	if res := Validate(doc, len(raw)); res.OK() {
+		t.Fatal("expected a tampered preFISBCache section checksum to be rejected")
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_IsNotMistakenForPreAutoRecordShape proves
+// the newest-to-oldest ordering: a genuine preFISBCache document (4
+// checksummed sections) must be recognized as that shape, never
+// misclassified against the older, 3-key preAutoRecord shape - which
+// would otherwise leave its very real autoRecordSettings section
+// silently discarded and overwritten with the disabled default.
+func TestLegacyPreFISBCacheBackup_IsNotMistakenForPreAutoRecordShape(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	if res := Validate(doc, len(raw)); !res.OK() {
+		t.Fatalf("Validate: %v", res.Errors)
+	}
+	if verifyLegacyPreAutoRecordChecksum(doc) {
+		t.Fatal("a genuine preFISBCache document must never verify as the older preAutoRecord shape")
+	}
+	normalized := NormalizeDocument(doc)
+	// The fixture's own autoRecordSettings has StartGroundspeedKnots: 8,
+	// matching the standard default coincidentally - assert the field
+	// that actually distinguishes "was this section preserved or
+	// silently reset" instead: the whole struct must be byte-identical to
+	// what the fixture itself carried.
+	if normalized.AutoRecordSettings != doc.AutoRecordSettings {
+		t.Fatalf("a genuine preFISBCache document's real autoRecordSettings must survive normalization unchanged: before=%+v after=%+v", doc.AutoRecordSettings, normalized.AutoRecordSettings)
+	}
+}
+
+// TestLegacyPreFISBCacheBackup_ReExportProducesCurrentFormat mirrors
+// TestLegacyBackup_ReExportProducesCurrentFormat.
+func TestLegacyPreFISBCacheBackup_ReExportProducesCurrentFormat(t *testing.T) {
+	doc, raw := loadLegacyPreFISBCacheFixture(t)
+	if res := Validate(doc, len(raw)); !res.OK() {
+		t.Fatalf("Validate: %v", res.Errors)
+	}
+	normalized := NormalizeDocument(doc)
+
+	reExported, err := BuildDocument(BuildInputs{
+		SourceVersion:              normalized.SourceVersion,
+		SourceCommit:               "current-head-after-restore",
+		Configuration:              normalized.Configuration,
+		CalibrationProfiles:        normalized.CalibrationProfiles,
+		ActiveCalibrationProfileID: normalized.ActiveCalibrationProfileID,
+		AlertSettings:              normalized.AlertSettings,
+		AutoRecordSettings:         normalized.AutoRecordSettings,
+		FISBCacheSettings:          normalized.FISBCacheSettings,
+	})
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if _, present := reExported.SectionChecksums["fisbCacheSettings"]; !present {
+		t.Fatal("re-exported document must carry a fisbCacheSettings checksum - it is current-format, not legacy")
+	}
+	if res := Validate(reExported, mustMarshalLen(t, reExported)); !res.OK() {
+		t.Fatalf("re-exported document must itself validate: %v", res.Errors)
+	}
+}
+
+// --- an unpopulated (zero-value) FISBCacheSettings must still validate ---
+
+// TestUnpopulatedFISBCacheSettingsIsAccepted mirrors
+// TestUnpopulatedAutoRecordSettingsIsAccepted for the newer section.
+func TestUnpopulatedFISBCacheSettingsIsAccepted(t *testing.T) {
+	in := testBuildInputs()
+	in.FISBCacheSettings = FISBCacheSettingsSection{} // deliberately unset
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); !res.OK() {
+		t.Fatalf("a document with an unpopulated (zero-value) fisbCacheSettings section must still validate: %v", res.Errors)
+	}
+}
+
+// TestFISBCacheEnabledWithZeroLimitsStillRejected mirrors
+// TestEnabledWithZeroThresholdsStillRejected: Enabled:true together with
+// all-zero byte/entry limits is not the zero value and must still be
+// rejected.
+func TestFISBCacheEnabledWithZeroLimitsStillRejected(t *testing.T) {
+	in := testBuildInputs()
+	in.FISBCacheSettings = FISBCacheSettingsSection{Enabled: true}
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); res.OK() {
+		t.Fatal("expected Enabled:true with all-zero cache limits to still be rejected")
+	}
+}
