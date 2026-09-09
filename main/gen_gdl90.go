@@ -1391,6 +1391,37 @@ type status struct {
 }
 
 var globalSettings settings
+
+// globalSettingsMu guards every read or write of globalSettings that is
+// reachable directly or indirectly from an HTTP request - handleSettings-
+// SetRequest/handleSettingsGetRequest/handleRegionSet (managementinterface.go)
+// and Configuration Backup's apply/snapshot paths (configbackupapi.go).
+// Concurrent HTTP requests are the only source of the concurrency this
+// mutex exists to serialize (a native `go test -race` reproduction found
+// a genuine write-write race between two simultaneous /setSettings
+// calls, pre-existing and independent of any specific feature - see the
+// hotfix that introduced this mutex for the full analysis).
+//
+// Scope, deliberately narrow: this mutex is held only around the small,
+// finite set of HTTP-triggered mutation/snapshot call sites named above
+// - never around the hundreds of individual, scattered field reads
+// throughout the rest of this daemon (gps.go, traffic.go, sensors.go,
+// tracker.go, network.go, ...), which read individual settings fields
+// transiently and are not part of the reported race. Broadening this
+// mutex's coverage to every globalSettings access anywhere in the
+// codebase would be a much larger, higher-risk change than the two
+// specifically reported races require; it is intentionally out of scope
+// here and documented as a candidate for a separate, dedicated future
+// review rather than folded into this narrow fix.
+//
+// Lock order: globalSettingsMu is always the innermost lock - code that
+// acquires it (e.g. Configuration Backup's applyConfigBackupTransaction,
+// which already holds profilesMu at that point) must never itself
+// acquire another settings-related lock (profilesMu, configBackupMu,
+// autoRecordMu, alertSettingsMu, ...) while holding it. This avoids any
+// possibility of a lock-order cycle with those other mutexes.
+var globalSettingsMu sync.RWMutex
+
 var globalStatus status
 var noConfigFound bool
 
