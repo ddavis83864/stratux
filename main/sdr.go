@@ -816,7 +816,7 @@ func configDevices(count int, esEnabled, uatEnabled, ognEnabled, aisEnabled bool
 	// vice versa) and the actual device creation further down.
 	createUAT := result.UAT.Assigned && UATDev == nil
 	createES := result.ES.Assigned && ESDev == nil
-	now := stratuxClock.Time
+	now := stratuxClock.Time()
 
 	sdrAssignmentMu.Lock()
 	sdrAssignment = result
@@ -1060,7 +1060,7 @@ func updateSDRRadioStatus() {
 	// was (re)assigned does not count, so a freshly (re)assigned receiver
 	// can't appear to be receiving on the strength of a predecessor's
 	// buffered traffic; see sdrassign.IsReceiving().
-	now := stratuxClock.Time
+	now := stratuxClock.Time()
 	uatReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_UAT), uatSince, now, receivingFreshness)
 	esReceiving := sdrassign.IsReceiving(lastMessageTime(MSGCLASS_ES), esSince, now, receivingFreshness)
 

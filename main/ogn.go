@@ -134,7 +134,7 @@ func ognListen() {
 func parseOgnMessage(data string, fakeCurrentTime bool) {
 	var thisMsg msg
 	thisMsg.MessageClass = MSGCLASS_OGN
-	thisMsg.TimeReceived = stratuxClock.Time
+	thisMsg.TimeReceived = stratuxClock.Time()
 	thisMsg.Data = data
 
 	var msg OgnMessage
@@ -297,11 +297,11 @@ func importOgnTrafficMessage(msg OgnMessage, data string, fakeCurrentTime bool) 
 		ti.Last_GnssDiffAlt = ti.Alt
 		hae := msg.Alt_msl_m + mySituation.GPSGeoidSep
 		ti.GnssDiffFromBaroAlt = int32((hae - msg.Alt_std_m) * 3.28084)
-		ti.Last_GnssDiff = stratuxClock.Time
+		ti.Last_GnssDiff = stratuxClock.Time()
 	} else if msg.Alt_hae_m != 0 && msg.Alt_std_m != 0 {
 		ti.Last_GnssDiffAlt = ti.Alt
 		ti.GnssDiffFromBaroAlt = int32((msg.Alt_hae_m - msg.Alt_std_m) * 3.28084)
-		ti.Last_GnssDiff = stratuxClock.Time
+		ti.Last_GnssDiff = stratuxClock.Time()
 	}*/
 
 	ti.TurnRate = float32(msg.Turn_dps)
@@ -322,7 +322,7 @@ func importOgnTrafficMessage(msg OgnMessage, data string, fakeCurrentTime bool) 
 	}
 	ti.Position_valid = true
 	ti.ExtrapolatedPosition = false
-	ti.Last_seen = stratuxClock.Time
+	ti.Last_seen = stratuxClock.Time()
 	ageMs := int64(ti.Age * 1000)
 	ti.Last_seen = ti.Last_seen.Add(-time.Duration(ageMs) * time.Millisecond)
 	ti.Last_alt = ti.Last_seen

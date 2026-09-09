@@ -454,7 +454,7 @@ func appendRecordingSample(s *recordingSession) error {
 	// exactly what it means on the readiness dashboard: disabled,
 	// disconnected, or not yet a valid measurement - never a fabricated 0.
 	now := time.Now().UTC()
-	mono := stratuxClock.Time
+	mono := stratuxClock.Time()
 	ahrsHealth := buildAHRSHealth(mono, now)
 	baroHealth := buildBaroHealth(mono, now)
 

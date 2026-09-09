@@ -52,14 +52,14 @@ var (
 func initAlerting() {
 	settings := loadAlertSettings()
 	cfg := toAlertingConfig(settings, settings.BrowserAudioEnabled, settings.SystemAudioEnabled)
-	alertEvaluator = alerting.NewEvaluator(cfg, func() time.Time { return stratuxClock.Time })
+	alertEvaluator = alerting.NewEvaluator(cfg, func() time.Time { return stratuxClock.Time() })
 
 	if settings.Muted {
 		if settings.MutedIndefinitely {
 			alertEvaluator.SetMuted(true, time.Time{})
 		} else if settings.MuteUntilUnixSeconds > time.Now().Unix() {
 			remaining := time.Duration(settings.MuteUntilUnixSeconds-time.Now().Unix()) * time.Second
-			alertEvaluator.SetMuted(true, stratuxClock.Time.Add(remaining))
+			alertEvaluator.SetMuted(true, stratuxClock.Time().Add(remaining))
 		}
 	}
 
@@ -413,7 +413,7 @@ func handleMuteAlertsRequest(w http.ResponseWriter, r *http.Request) {
 	} else {
 		settings.MutedIndefinitely = false
 		settings.MuteUntilUnixSeconds = nowUnix + int64(dur.Seconds())
-		alertEvaluator.SetMuted(true, stratuxClock.Time.Add(dur))
+		alertEvaluator.SetMuted(true, stratuxClock.Time().Add(dur))
 	}
 	if err := saveAlertSettings(settings); err != nil {
 		log.Printf("alerting: could not persist mute state: %s\n", err)
