@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stratux/stratux/fisbcache"
 	"github.com/stratux/stratux/storagelifecycle"
@@ -467,5 +469,65 @@ func TestFISBCacheDiagnosticsSummary_NeverIncludesRawPayload(t *testing.T) {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			t.Errorf("diagnostics summary must never include %q, got %s", forbidden, encoded)
 		}
+	}
+}
+
+// --- concurrent status/settings/purge activity --------------------------
+
+// TestFISBCache_ConcurrentStatusSettingsAndPurgeActivity drives status
+// reads, a settings update, and a full prepare/confirm purge cycle at
+// each other concurrently - proving handleGetFISBCacheStatusRequest/
+// fisbCacheStatusSnapshot, handleSetFISBCacheSettingsRequest, and the
+// purge handlers share no unsynchronized state (fisbCacheMu covers this
+// feature's own fields; storageManager.Status() is proven safe
+// separately in fisbcachestorage_test.go).
+func TestFISBCache_ConcurrentStatusSettingsAndPurgeActivity(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	withFISBCachePurgeStateReset(t)
+
+	const workers = 8
+	var wg sync.WaitGroup
+	wg.Add(workers * 3)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			handleGetFISBCacheStatusRequest(rec, httptest.NewRequest(http.MethodGet, "/getFISBCacheStatus", nil))
+		}()
+		go func(i int) {
+			defer wg.Done()
+			body, _ := json.Marshal(FISBCacheSettings{Enabled: true, MaxCacheBytes: int64(1024 + i), MaxEntries: 10})
+			rec := httptest.NewRecorder()
+			handleSetFISBCacheSettingsRequest(rec, httptest.NewRequest(http.MethodPost, "/setFISBCacheSettings", bytes.NewReader(body)))
+		}(i)
+		go func() {
+			defer wg.Done()
+			prepRec := httptest.NewRecorder()
+			handlePrepareFISBCachePurgeRequest(prepRec, httptest.NewRequest(http.MethodPost, "/prepareFISBCachePurge", nil))
+			var token string
+			if prepRec.Code == http.StatusOK {
+				token, _ = decodeFISBJSONBody(t, prepRec)["token"].(string)
+			}
+			if token == "" {
+				return
+			}
+			confirmBody, _ := json.Marshal(map[string]string{"token": token})
+			confirmRec := httptest.NewRecorder()
+			handleConfirmFISBCachePurgeRequest(confirmRec, httptest.NewRequest(http.MethodPost, "/confirmFISBCachePurge", bytes.NewReader(confirmBody)))
+			// A losing confirm (superseded by a later prepare, or an
+			// already-used token from a faster goroutine) is an expected,
+			// safe outcome under real concurrency - only 200 or 410 are
+			// ever acceptable, never a panic or a hang.
+			if confirmRec.Code != http.StatusOK && confirmRec.Code != http.StatusGone {
+				t.Errorf("unexpected confirm status %d: %s", confirmRec.Code, confirmRec.Body.String())
+			}
+		}()
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent status/settings/purge activity did not complete within 10s - possible deadlock")
 	}
 }
