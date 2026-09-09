@@ -23,7 +23,7 @@ func withTestPreflightStore(t *testing.T) (*preflight.ManualAckStore, string) {
 	origStore := preflightAckStore
 	origSession := preflightSessionID
 	sessionID := "test-session"
-	store := preflight.NewManualAckStore(sessionID, func() time.Time { return stratuxClock.Time })
+	store := preflight.NewManualAckStore(sessionID, func() time.Time { return stratuxClock.Time() })
 	preflightMu.Lock()
 	preflightAckStore = store
 	preflightSessionID = sessionID

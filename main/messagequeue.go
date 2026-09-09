@@ -45,7 +45,7 @@ func (queue *MessageQueue) Put(prio int32, maxAge time.Duration, data interface{
 	queue.mutex.Lock()
 	defer queue.mutex.Unlock()
 
-	timeout := stratuxClock.Time.Add(maxAge)
+	timeout := stratuxClock.Time().Add(maxAge)
 	entry := QueueEntry { prio, timeout, data }
 
 	if queue.entries == nil || len(queue.entries) == 0 {
@@ -102,7 +102,7 @@ func (queue *MessageQueue) getFirst(remove bool) (interface{}, int32) {
 // Returns the first entry that's not outdated
 func (queue *MessageQueue) getFirstUsableIndex() int {
 	for i, data := range queue.entries {
-		if data.outdatedAt.Before(stratuxClock.Time) {
+		if data.outdatedAt.Before(stratuxClock.Time()) {
 			// entry already timed out..
 			continue
 		}
@@ -142,7 +142,7 @@ func (queue *MessageQueue) prune() {
 	totalUsable := 0
 	prevPrio := int32(999999999)
 	for _, entry := range queue.entries {
-		if entry.outdatedAt.Before(stratuxClock.Time) {
+		if entry.outdatedAt.Before(stratuxClock.Time()) {
 			continue // outdated, remove completely
 		}
 		totalUsable++

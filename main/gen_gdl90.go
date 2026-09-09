@@ -1010,8 +1010,8 @@ func updateStatus() {
 	globalStatus.GPS_position_accuracy = mySituation.GPSHorizontalAccuracy
 
 	// Update Uptime value
-	globalStatus.Uptime = int64(stratuxClock.Milliseconds)
-	globalStatus.UptimeClock = stratuxClock.Time
+	globalStatus.Uptime = int64(stratuxClock.Milliseconds())
+	globalStatus.UptimeClock = stratuxClock.Time()
 
 	usage := du.NewDiskUsage("/")
 	globalStatus.DiskBytesFree = usage.Free()
@@ -1060,7 +1060,7 @@ func registerADSBTextMessageReceived(msg string, uatMsg *uatparse.UATMsg) {
 	wm.Location = x[1]
 	wm.Time = x[2]
 	wm.Data = strings.Join(x[3:], " ")
-	wm.LocaltimeReceived = stratuxClock.Time
+	wm.LocaltimeReceived = stratuxClock.Time()
 
 	// Send to weatherUpdate channel for any connected clients.
 	weatherUpdate.SendJSON(wm)
@@ -1161,7 +1161,7 @@ func parseInput(buf string) ([]byte, uint16) {
 
 	var thisMsg msg
 	thisMsg.MessageClass = MSGCLASS_UAT
-	thisMsg.TimeReceived = stratuxClock.Time
+	thisMsg.TimeReceived = stratuxClock.Time()
 	thisMsg.Data = buf
 	thisMsg.Signal_amplitude = thisSignalStrength
 	if thisSignalStrength > 0 {
@@ -1599,7 +1599,7 @@ func printStats() {
 		runtime.ReadMemStats(&memstats)
 		usage := du.NewDiskUsage("/")
 
-		log.Printf("stats [started: %s]\n", humanize.RelTime(time.Time{}, stratuxClock.Time, "ago", "from now"))
+		log.Printf("stats [started: %s]\n", humanize.RelTime(time.Time{}, stratuxClock.Time(), "ago", "from now"))
 		log.Printf(" - Disk bytes used = %s (%.1f %%), Disk bytes free = %s (%.1f %%)\n", humanize.Bytes(usage.Used()), 100*usage.Usage(), humanize.Bytes(usage.Free()), 100*(1-usage.Usage()))
 		log.Printf(" - CPUTemp=%.02f [%.02f - %.02f] deg C, MemStats.Alloc=%s, MemStats.Sys=%s, totalNetworkMessagesSent=%s\n", globalStatus.CPUTemp, globalStatus.CPUTempMin, globalStatus.CPUTempMax, humanize.Bytes(uint64(memstats.Alloc)), humanize.Bytes(uint64(memstats.Sys)), humanize.Comma(int64(totalNetworkMessagesSent)))
 		log.Printf(" - UAT/min/total %s/%s/%s [maxSS=%.02f%%], ES/min/total %s/%s/%s, Total traffic targets tracked=%s", humanize.Comma(int64(globalStatus.UAT_messages_last_minute)), humanize.Comma(int64(globalStatus.UAT_messages_max)), humanize.Comma(int64(globalStatus.UAT_messages_total)), float64(maxSignalStrength)/10.0, humanize.Comma(int64(globalStatus.ES_messages_last_minute)), humanize.Comma(int64(globalStatus.ES_messages_max)), humanize.Comma(int64(globalStatus.ES_messages_total)),humanize.Comma(int64(len(seenTraffic))))

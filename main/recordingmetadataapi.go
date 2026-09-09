@@ -52,7 +52,7 @@ type autoRecordSessionContext struct {
 //
 // CapturedAtUTC/CapturedAtMonoSeconds deliberately reuse r's own
 // GeneratedAt/GeneratedAtMonoSeconds rather than taking a fresh
-// time.Now()/stratuxClock.Time reading: r is the exact Preflight report
+// time.Now()/stratuxClock.Time() reading: r is the exact Preflight report
 // this snapshot summarizes, so tying "when was this captured" to "when was
 // this Preflight data generated" keeps the two internally consistent, and
 // preserves r.GeneratedAt's existing nil-unless-trusted rule (see

@@ -64,9 +64,9 @@ func checkTimestamp() bool {
 		var ts StratuxTimestamp
 		ts.id = 0
 		ts.Time_type_preference = 0 // stratuxClock.
-		ts.StratuxClock_value = stratuxClock.Time
+		ts.StratuxClock_value = stratuxClock.Time()
 		ts.GPSClock_value = time.Time{}
-		ts.PreferredTime_value = stratuxClock.Time
+		ts.PreferredTime_value = stratuxClock.Time()
 
 		// Extrapolate from GPS timestamp, if possible.
 		if isGPSClockValid() && thisCurTimestamp > 0 {
@@ -374,7 +374,7 @@ func dataLogWriter(db *sql.DB) {
 			//			for i := 0; i < 1000; i++ {
 			//				logSituation()
 			//			}
-			timeStart := stratuxClock.Time
+			timeStart := stratuxClock.Time()
 			nRows := len(rowsQueuedForWrite)
 			if globalSettings.DEBUG {
 				log.Printf("Writing %d rows\n", nRows)
@@ -427,9 +427,9 @@ func dataLog() {
 	var ts StratuxTimestamp
 	ts.id = 0
 	ts.Time_type_preference = 0 // stratuxClock.
-	ts.StratuxClock_value = stratuxClock.Time
+	ts.StratuxClock_value = stratuxClock.Time()
 	ts.GPSClock_value = time.Time{}
-	ts.PreferredTime_value = stratuxClock.Time
+	ts.PreferredTime_value = stratuxClock.Time()
 	dataLogTimestamps = append(dataLogTimestamps, ts)
 	dataLogCurTimestamp = 0
 
@@ -514,7 +514,7 @@ func setDataLogTimeWithGPS(sit SituationData) {
 		// Piggyback a GPS time update from this update.
 		ts.id = 0
 		ts.Time_type_preference = 1 // gpsClock.
-		ts.StratuxClock_value = stratuxClock.Time
+		ts.StratuxClock_value = stratuxClock.Time()
 		ts.GPSClock_value = sit.GPSTime
 		ts.PreferredTime_value = sit.GPSTime
 

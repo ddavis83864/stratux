@@ -25,7 +25,7 @@ func withTestAlertEvaluator(t *testing.T) *alerting.Evaluator {
 	cfg.MasterEnabled = true
 	cfg.TrafficAudioEnabled = true
 	cfg.SystemAudioEnabled = true
-	alertEvaluator = alerting.NewEvaluator(cfg, func() time.Time { return stratuxClock.Time })
+	alertEvaluator = alerting.NewEvaluator(cfg, func() time.Time { return stratuxClock.Time() })
 	alertTrafficChan = nil // handler tests never need the background loop
 	t.Cleanup(func() {
 		alertEvaluator = origEval
