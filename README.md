@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/stratux-banner.png" alt="Stratux — built for better flight awareness. Open source, receive-only, ForeFlight compatible." width="800">
+</p>
+
 [![CI](https://github.com/ddavis83864/stratux/actions/workflows/ci.yml/badge.svg)](https://github.com/ddavis83864/stratux/actions/workflows/ci.yml)
 [![Discord](https://dcbadge.limes.pink/api/server/D9NQ6xe4nF)](https://discord.gg/D9NQ6xe4nF)
 
