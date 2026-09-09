@@ -222,12 +222,21 @@ inventing new ones:
 ## Storage-pressure interaction
 
 Mirrors `autorecord`'s own established pattern: when `storageManager`'s
-current pressure is `HIGH`/`CRITICAL`/`UNKNOWN`, this cache stops
-**admitting new entries** (`StatePressureInhibited`) but keeps serving
-whatever is already cached - denied storage means "do not write more,"
-never "delete something to make room," and never blocks on a fresh
-filesystem scan (it only ever reads the existing cached `Status()`
-snapshot).
+current pressure is `HIGH`/`CRITICAL`/`UNKNOWN` (or `storageManager`
+itself is not yet initialized), this cache genuinely stops **admitting
+new entries** - not merely a reported label. `fisbCacheEnqueue`
+(`main/fisbcacherun.go`) calls the same
+`fisbCacheStoragePressureProhibited()` classification
+(`main/fisbcachestorage.go`) the status/dashboard snapshot reports, so
+the two can never drift apart; a rejected offer is counted separately
+from a queue-overflow drop (`pressureRejected` vs. `droppedWrites`) so
+an operator can tell the two failure modes apart. Already-cached entries
+are still served while admission is inhibited - denied storage means "do
+not write more," never "delete something to make room," and never
+blocks on a fresh filesystem scan (it only ever reads the existing
+cached `Status()` snapshot). Proven by
+`TestFISBCacheEnqueue_HighPressureRejectsAdmissionNotJustLabel` and the
+full pressure-band matrix in `main/fisbcachestorage_test.go`.
 
 ## Operational state
 
@@ -304,8 +313,72 @@ never silently enabling the feature.
 | `enabled` | `false` | master on/off - no capture, no persistence, no storage use when off |
 | `persistenceEnabled` | `false` | when `false` even while enabled, the in-memory index still tracks live products for the dashboard, but nothing is written to disk or survives a restart |
 | `replayEnabled` | `false` | always rejected by `Validate()` in this release - see "Replay," above |
-| `maxCacheBytes` | 16 MiB | hard cap, 1 byte - 256 MiB |
-| `maxEntries` | 2000 | hard cap, 1 - 100000 |
+| `maxCacheBytes` | 16 MiB (configured default) | user-adjustable, 1 byte - 256 MiB (hard safety cap) |
+| `maxEntries` | 2000 (configured default) | user-adjustable, 1 - 100000 (hard safety cap) |
+
+### Exact limits, bounds, and safety caps
+
+Terminology, used consistently below: a **configured default** is what a
+never-explicitly-configured install actually runs with; a
+**user-adjustable bound** is a range the settings API will accept; a
+**hard safety cap** is a limit this build enforces unconditionally,
+never exposed as a setting; a **Storage Lifecycle pressure decision** is
+`storageManager`'s own whole-filesystem judgment, entirely independent
+of any limit below. "No invented limits" is not a claim this document
+makes - every bounded system necessarily chooses limits; the ones below
+are documented as conservative engineering policy, not as derived from
+any external standard.
+
+| Limit | Kind | Value | What happens at the limit |
+|---|---|---|---|
+| `maxCacheBytes` | Configured default | 16 MiB | Below this, no eviction is driven by size. |
+| `maxCacheBytes` | User-adjustable bound | 1 byte - 256 MiB | `Validate()` rejects anything outside this range (0, negative, or > 256 MiB), for both the live settings API and Configuration Backup restore. |
+| `maxEntries` | Configured default | 2000 | Below this, no eviction is driven by count. |
+| `maxEntries` | User-adjustable bound | 1 - 100000 | Same rejection rule as above. |
+| Individual payload size | Hard safety cap | 65536 bytes (64 KiB) | `fisbcache.EncodePersistedEntry` refuses to build a persisted record at all - the capture path simply never persists that one product (it is still visible live via the in-memory Store, exactly like any other non-persisted entry when persistence is off). Not user-configurable. |
+| Persisted entry file size (payload + metadata/framing) | Hard safety cap | 69632 bytes (payload cap + 4096 bytes headroom) | `DecodePersistedEntry` rejects a file larger than this outright during recovery - quarantined (removed), never partially read. |
+| Capture-queue capacity | Hard safety cap | 256 items | `fisbCaptureText`/`fisbCaptureNexrad` drop-and-count (`droppedWrites`) rather than block once full - see "Capture path," above. |
+| Recovery-scan per-file read bound | Hard safety cap | 131072 bytes (128 KiB) | `fisbReadFileBounded` never reads more than this from any one file during startup recovery, regardless of the file's actual on-disk size - defense in depth beyond the entry-file-size cap above. |
+| Purge confirmation token lifetime | Hard safety cap | 5 minutes | An unconfirmed prepare expires; a confirmed one is single-use - see "APIs," below. |
+| Inventory/status response size | Bounded indirectly | Equal to the current entry count | Never separately capped beyond `maxEntries` itself - the inventory endpoint returns one summary row per currently-cached entry, and the entry count can never exceed `maxEntries` (enforced by the retention loop, see below). |
+| Product-specific limits | None | - | No product class has its own separate size/count cap beyond the whole-cache `maxCacheBytes`/`maxEntries` budget and the universal per-payload hard cap above. |
+
+**Zero is always invalid, never "disabled" or "unlimited," for either
+user-facing setting.** `maxCacheBytes <= 0` and `maxEntries <= 0` are
+both rejected by `Validate()` - a disabled cache is expressed by
+`enabled: false`, never by zeroing a budget. (`fisbcache.PlanEviction`
+itself, the pure function the retention loop calls, does treat
+`maxBytes <= 0`/`maxEntries <= 0` as "that specific budget is not
+enforced" - but this build's own `Validate()` never lets a live or
+restored settings value reach it in that state; this distinction exists
+so `PlanEviction` remains a general-purpose, freely-reusable function
+in its own right, exercised directly by
+`fisbcache/retention_test.go`.)
+
+**Budget enforcement is periodic, not synchronous at admission time.**
+A new entry is never rejected merely because admitting it would exceed
+`maxCacheBytes`/`maxEntries` - only genuine storage pressure (see
+above) gates admission synchronously. The retention loop
+(`fisbCacheRunRetention`, every 60 seconds) is what brings the cache
+back under budget, oldest-received-first, after removing anything
+already expired. In practice this means a burst of many distinct new
+products can transiently hold the cache slightly over budget for up to
+60 seconds; this is a deliberate, bounded, self-correcting design
+choice (the same periodic-sweep pattern the rest of this project's
+storage-pressure evaluation already uses), not an enforcement gap.
+
+**Why these defaults are appropriate without assuming a specific
+partition size:** 16 MiB is a small, fixed absolute number - it does
+not scale with, or assume, this project's typical several-gigabyte
+persistent-data partition. It remains reasonable even on the smallest
+installations this project supports (this project's own microSD
+guidance targets a 4 GB card at minimum): 16 MiB is roughly 0.4% of a 4
+GB card, and a negligible fraction of any larger one. An owner with a
+particularly constrained installation, or who wants to cache
+substantially more NEXRAD imagery, can raise `maxCacheBytes` up to the
+256 MiB hard cap through the settings API; the default is deliberately
+conservative rather than sized to any one installation's actual
+headroom.
 
 ## HTTP API
 
@@ -325,6 +398,14 @@ METAR/TAF's own text is exactly what this project's existing `/weather`
 websocket already displays live; duplicating it here was not justified
 by anything this feature needs, and keeping the surface narrow costs
 nothing.
+
+Both request-body-accepting endpoints (`/setFISBCacheSettings`,
+`/confirmFISBCachePurge`) reject a body containing more than one JSON
+value - `encoding/json`'s `Decoder.Decode` only ever consumes the first
+value in a stream and silently ignores anything after it, so a second,
+concatenated object (or trailing garbage) is rejected explicitly
+(`fisbCacheDecodeStrictJSON`) rather than silently succeeding on the
+first value alone.
 
 ## Dashboard
 
@@ -392,24 +473,49 @@ configured as on the live device at restore time.
 
 ## Test strategy
 
-- `fisbcache/*_test.go` (39 tests): product classification; freshness
-  state transitions at every policy boundary; `Store.Admit`
+- `fisbcache/*_test.go` (52 tests, pure, no I/O): product classification;
+  freshness state transitions at every policy boundary; `Store.Admit`
   accept/supersede/reject-older/reject-unsupported, including the
-  trusted-vs-untrusted source-time tie-breaking rules; `PlanEviction`'s
-  expired-first-then-oldest-first ordering and budget math;
+  trusted-vs-untrusted source-time tie-breaking rules;
   `ReconstructSourceTime`'s month/day-present and month/day-absent paths,
   including the New Year's Eve/Day boundary case; persisted-entry
   encode/decode round-tripping and every strict-rejection case (bad
   schema version, missing origin marker, checksum mismatch, oversized
-  payload, implausible future timestamp, unsupported product).
-- `main/fisbcachesettings_test.go` (9 tests): default is disabled and
+  payload, implausible future timestamp, unsupported product);
+  `PlanEviction`'s full decision matrix on its own (`retention_test.go`)
+  - expired-first-then-oldest-of-remaining ordering, independent
+  byte/entry budget disable-at-zero-or-negative semantics, and
+  determinism (ten repeated runs against an all-tied input, proven
+  identical despite Go's randomized map iteration).
+- `main/fisbcachesettings_test.go` (10 tests): default is disabled and
   self-valid; missing/corrupt/schema-mismatched/invalid persisted files
   degrade to defaults; save rejects invalid settings without partially
-  writing.
+  writing; exact-boundary values accepted, one unit past rejected;
+  integer overflow in a request body rejected as a clean 400.
+- `main/fisbcacheapi_test.go` (20 tests): every endpoint's method guard,
+  malformed/multi-value/oversized/unknown-field body rejection, the full
+  purge token lifecycle, and an 8-worker concurrent status/settings/purge
+  stress test with a deadlock timeout.
+- `main/fisbcachestorage_test.go` (11 tests) / `main/fisbcacherun_test.go`
+  (8 tests): production-level integration tests against a real temp
+  filesystem and a real `storagelifecycle.Manager` - storage-pressure
+  admission gating across every pressure band; the namespace registers
+  exactly once; eviction deletes only its named keys, proven against a
+  real directory containing an untouched unrelated file; startup recovery
+  skips a real symlink and subdirectory, quarantines a corrupt entry,
+  bridges age correctly across a simulated reboot (including an
+  already-expired-by-bridged-age entry, removed and never re-admitted),
+  and its wait for trusted time is genuinely bounded; retention deletes
+  from both disk and the in-memory index; the capture queue drops and
+  counts under overflow without ever blocking.
 - `main/configbackupapi_test.go`: the FIS-B cache settings section
   round-trips through backup/restore, defaults correctly from both
   recognized legacy backup shapes, and is cross-checked against
   `DefaultFISBCacheSettings()` so the two can never silently drift apart.
+- Native `go test -race` (genuine amd64, not QEMU-emulated) passes
+  cleanly for every pure package this feature touches, and for this
+  feature's own code within `main` - see "A note on this feature's own
+  race-testing scope," below.
 
 ## Known limitations
 
@@ -425,3 +531,76 @@ configured as on the live device at restore time.
 - Replay to EFB apps is not available in this release (see "Replay,"
   above) - this cache is a display/diagnostic aid only until that gap is
   closed.
+- Budget enforcement (`maxCacheBytes`/`maxEntries`) is periodic (every
+  60 seconds), not synchronous at admission time - see "Exact limits,
+  bounds, and safety caps," above, for why this is a bounded,
+  self-correcting design choice rather than a gap.
+
+### A note on this feature's own race-testing scope
+
+Native `go test -race` was run against every package this feature adds
+to or modifies, including `main` (this project's cgo-linked daemon
+package, previously never race-tested at all, on any toolchain). Every
+race that appeared traces to one of two locations, both **pre-existing,
+untouched by this feature, and out of scope to fix here**: `main/`'s
+foundational shared monotonic clock (`monotonic.go`, unmodified since
+this project's original 2015-2016 implementation - its background
+`Watcher()` goroutine mutates `Time` with no synchronization, which
+`go test -race` can surface in any test in this package that reads
+`monotonicSeconds()`, including this feature's own tests, purely
+because they use the same project-wide shared clock every other test
+already does) and the pre-existing `/setSettings` handler
+(`settingsapi.go`, unrelated `globalSettings` mutation). Neither is
+touched by, nor was introduced by, this feature's diff - both predate
+it and affect the whole daemon equally. One genuinely in-scope race
+*was* found and fixed during this same verification pass:
+`storagelifecycle.Monitor` (a dependency this feature's own
+storage-pressure check calls into) - see that package's own commit
+history for the fix and its dedicated regression test. Fixing the two
+pre-existing, out-of-scope findings above would mean touching this
+project's foundational clock and its general settings handler - well
+beyond a "focused correction to the FIS-B cache" - and is recommended
+as a separate, dedicated follow-up.
+
+## Rollback plan
+
+This feature is disabled by default and additive-only: no existing
+setting, recording, calibration profile, backup format, or live
+ADS-B/GDL90 behavior is altered in a way that requires migration to roll
+back. Reverting is either leaving `enabled: false` (the shipped default
+- the daemon then performs no capture, no persistence, and uses no
+storage beyond an already-registered, empty namespace), or a plain `git
+revert` of this branch's commits. A previously-created cache-owned
+namespace directory left on disk after a revert contains only this
+feature's own `.json` entry files and is safe to leave in place or
+remove manually - nothing else on the persistent partition ever
+references it.
+
+## Future deployment-validation procedure
+
+Not yet executed - this foundation has not been installed on any
+device (see the mission's own final report for current build/artifact
+status). A future, owner-authorized hardware-validation pass should, at
+minimum: enable the feature on a device with live 978 UAT reception and
+confirm entries appear with correct freshness transitions over real
+time; enable persistence and confirm entries survive a reboot with
+correctly bridged (not reset) age; confirm storage-pressure inhibition
+under a small configured `maxCacheBytes`/`maxEntries`; confirm the
+retention loop's periodic budget enforcement; confirm the two-step purge
+clears only this cache's own namespace, with every other namespace
+(recordings, profiles, diagnostics, backups, OTA state) fully intact;
+and confirm live ADS-B/UAT reception and GDL90 forwarding are completely
+unaffected with the feature enabled under real traffic load, including
+after deliberately saturating the capture queue.
+
+## Future replay work (explicitly not part of this foundation)
+
+Should a future change close the GDL90 reception-time gap described
+under "Replay," above, replay would still need its own dedicated
+protocol design (how a replayed product is distinguished from a live
+one in the GDL90 stream itself) and its own EFB-side validation (at
+minimum, confirming ForeFlight - and ideally other common EFBs -
+correctly ages, displays, and never presents replayed data as live)
+before `replayEnabled` could ever be accepted by this build's own
+`Validate()`. That work is out of scope for this foundation and was not
+attempted here.
