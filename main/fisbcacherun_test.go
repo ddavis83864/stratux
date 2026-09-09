@@ -12,8 +12,13 @@ actually wires them together safely against a real (temp) filesystem.
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -378,5 +383,329 @@ func TestFISBCacheEnqueue_QueueOverflowDropsAndCountsNeverBlocks(t *testing.T) {
 	fisbCacheMu.Unlock()
 	if dropped != 3 {
 		t.Errorf("expected 3 of 5 offers dropped-and-counted (2 fit, 3 don't), got %d", dropped)
+	}
+}
+
+// --- synchronous admission bounds ---------------------------------------
+//
+// These tests cover the strict, admission-time capacity model described
+// in docs/fisb-weather-cache.md's "Synchronous admission bounds" section:
+// a single entry that can never fit the configured byte budget is
+// rejected before it ever occupies a queue slot or a Store entry; a
+// retention/eviction decision planned against a stale Snapshot can never
+// discard data a concurrent admission has since made current; and the
+// configured budget is enforced synchronously - after every single
+// admission, at the end of startup recovery, and immediately on a
+// settings change - not merely eventually, on the next periodic tick.
+
+func TestFISBCacheEnqueue_OversizedPayloadRejectedNeverQueuedOrAdmitted(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	withTestStorageManagerReportingPressure(t, storagelifecycle.PressureNormal)
+
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 100, MaxEntries: 10}
+	fisbCacheQueue = make(chan fisbCaptureItem, 8)
+	fisbCacheShuttingDown = false
+	origRejected := fisbCacheOversizedRejected
+	fisbCacheOversizedRejected = 0
+	fisbCacheMu.Unlock()
+	t.Cleanup(func() {
+		fisbCacheMu.Lock()
+		fisbCacheOversizedRejected = origRejected
+		fisbCacheMu.Unlock()
+	})
+
+	oversized := make([]byte, 101) // one byte over the 100-byte budget
+	for i := range oversized {
+		oversized[i] = 'A'
+	}
+	fisbCaptureText("METAR", "KSEA", string(oversized), fisbcache.FISBTime{})
+
+	if got := len(fisbCacheQueue); got != 0 {
+		t.Errorf("expected the oversized entry never queued, got queue depth %d", got)
+	}
+	if fisbCacheStore.Len() != 0 {
+		t.Error("expected the oversized entry never admitted into the Store")
+	}
+	fisbCacheMu.Lock()
+	rejected := fisbCacheOversizedRejected
+	fisbCacheMu.Unlock()
+	if rejected != 1 {
+		t.Errorf("expected fisbCacheOversizedRejected=1, got %d", rejected)
+	}
+}
+
+func TestFISBCacheEnqueue_PayloadExactlyAtBudgetIsAccepted(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	withTestStorageManagerReportingPressure(t, storagelifecycle.PressureNormal)
+
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 100, MaxEntries: 10}
+	fisbCacheQueue = make(chan fisbCaptureItem, 8)
+	fisbCacheShuttingDown = false
+	fisbCacheMu.Unlock()
+
+	exact := make([]byte, 100) // exactly at the budget, not over it
+	for i := range exact {
+		exact[i] = 'A'
+	}
+	fisbCaptureText("METAR", "KSEA", string(exact), fisbcache.FISBTime{})
+
+	if got := len(fisbCacheQueue); got != 1 {
+		t.Errorf("expected an exactly-at-budget entry to be queued normally, got queue depth %d", got)
+	}
+}
+
+func TestFISBCacheEvictKeyIfUnchanged_RefusesStalePlanEvenAfterConcurrentReplacementIsPersisted(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	dir := fisbCacheDir
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheMu.Unlock()
+
+	key := makeFISBTestKey("KSEA")
+	stale := fisbcache.Entry{Key: key, ReceivedAtMonotonic: 100}
+	if err := fisbCachePersist(stale, "METAR KSEA 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+		t.Fatal(err)
+	}
+	fisbCacheStore.Admit(stale)
+
+	// Simulate exactly what a concurrent capture-worker iteration does
+	// between a retention pass's Snapshot and its eventual eviction
+	// execution: admit AND persist a genuinely fresher copy of the same
+	// key.
+	fresh := fisbcache.Entry{Key: key, ReceivedAtMonotonic: 200}
+	if got := fisbCacheStore.Admit(fresh); got != fisbcache.AdmitSuperseded {
+		t.Fatalf("test precondition failed: got %q, want superseded", got)
+	}
+	if err := fisbCachePersist(fresh, "METAR KSEA 091953Z AUTO 00000KT 10SM CLR 16/10 A3001"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A retention pass that snapshotted BEFORE the above (still holding
+	// `stale` as its planned-for-eviction expectation) now tries to
+	// execute that stale plan.
+	deleted, err := fisbCacheEvictKeyIfUnchanged(key, stale)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleted {
+		t.Fatal("expected the stale plan to be refused - the key has since been superseded")
+	}
+
+	// Both the Store and the file on disk must still reflect the FRESH
+	// entry - a stale plan must never discard live data.
+	got, ok := fisbCacheStore.Get(key)
+	if !ok || got != fresh {
+		t.Fatalf("expected the fresh entry to remain in the Store untouched, got %+v (ok=%v)", got, ok)
+	}
+	raw, err := fisbReadFileBounded(dir + "/" + fisbCacheEntryFileName(key))
+	if err != nil {
+		t.Fatalf("expected the fresh entry's file to still exist, got %v", err)
+	}
+	_, payload, err := fisbcache.DecodePersistedEntry(raw, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("expected the surviving file to still decode cleanly: %v", err)
+	}
+	const freshPayload = "METAR KSEA 091953Z AUTO 00000KT 10SM CLR 16/10 A3001"
+	if payload != freshPayload {
+		t.Errorf("expected the surviving file's payload to be the FRESH write %q, got %q (a stale plan wrongly won)", freshPayload, payload)
+	}
+}
+
+func TestFISBCacheRunRetention_SynchronousEnforcementNeverExceedsEntryBudget(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, PersistenceEnabled: true, MaxCacheBytes: 1 << 30, MaxEntries: 3}
+	fisbCacheMu.Unlock()
+
+	// Mirrors fisbCacheCaptureWorker's own exact sequence
+	// (Admit -> fisbCacheRunRetention -> persist) for 10 distinct
+	// products against a budget of 3 - proving the Store never exceeds
+	// its configured entry budget at any point along the way, not just
+	// "eventually" after all 10 have been offered.
+	for i := 0; i < 10; i++ {
+		e := fisbcache.Entry{
+			Key:                 makeFISBTestKey("KTEST" + string(rune('A'+i))),
+			ReceivedAtMonotonic: monotonicSeconds() + float64(i), // strictly increasing "now"
+		}
+		if got := fisbCacheStore.Admit(e); got != fisbcache.AdmitAccepted {
+			t.Fatalf("iteration %d: expected AdmitAccepted, got %q", i, got)
+		}
+		fisbCacheRunRetention()
+		if fisbCacheStore.Len() > 3 {
+			t.Fatalf("iteration %d: Store exceeded its configured MaxEntries=3 budget (Len=%d) - synchronous enforcement must never let this happen even momentarily between admissions", i, fisbCacheStore.Len())
+		}
+		if err := fisbCachePersist(e, "METAR "+e.Key.Identity+" 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if fisbCacheStore.Len() != 3 {
+		t.Errorf("expected exactly 3 entries to survive (the 3 most recently admitted), got %d", fisbCacheStore.Len())
+	}
+	// The 3 most recent keys (KTESTG, KTESTH, KTESTI... - i=7,8,9) must be
+	// the ones that survived; oldest-first eviction must have kept them.
+	for _, i := range []int{7, 8, 9} {
+		k := makeFISBTestKey("KTEST" + string(rune('A'+i)))
+		if _, ok := fisbCacheStore.Get(k); !ok {
+			t.Errorf("expected the most recently admitted key %s to have survived", k.Identity)
+		}
+	}
+}
+
+// TestFISBCache_ConcurrentAdmitPersistAndRetentionNeverDivergesStoreFromDisk
+// mirrors production's actual concurrency shape, not an artificially
+// harder one: admission itself is always single-threaded in production
+// (one capture-worker goroutine, processing one item at a time - see
+// fisbCacheCaptureWorker's own doc comment), but fisbCacheRunRetention
+// can legitimately be invoked concurrently from other goroutines too
+// (the periodic retention ticker, a settings change). This test
+// reproduces exactly that: one goroutine plays the capture worker
+// (Admit -> fisbCacheRunRetention -> persist, one item at a time, for
+// many distinct keys against a tight budget) while a second goroutine
+// concurrently hammers fisbCacheRunRetention on its own, for the whole
+// duration - proving under `go test -race` both that fisbCacheDiskMu
+// makes this genuinely race-free and that the final state is correct:
+// once the single-threaded admission side has finished (with its own
+// last synchronous enforcement pass already applied), the Store never
+// exceeds its configured budget, and every entry it reports has a
+// correspondingly correct file on disk.
+func TestFISBCache_ConcurrentAdmitPersistAndRetentionNeverDivergesStoreFromDisk(t *testing.T) {
+	dir := withTestFISBCacheStorage(t)
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, PersistenceEnabled: true, MaxCacheBytes: 1 << 30, MaxEntries: 4}
+	fisbCacheMu.Unlock()
+
+	const total = 40
+
+	extraRetentionDone := make(chan struct{})
+	var extraRetentionWG sync.WaitGroup
+	extraRetentionWG.Add(1)
+	go func() {
+		defer extraRetentionWG.Done()
+		for {
+			select {
+			case <-extraRetentionDone:
+				return
+			default:
+				fisbCacheRunRetention()
+			}
+		}
+	}()
+
+	// The single-threaded "capture worker" side - exactly mirroring
+	// fisbCacheCaptureWorker's own sequence, one item at a time.
+	for i := 0; i < total; i++ {
+		e := fisbcache.Entry{
+			Key:                 makeFISBTestKey(fmt.Sprintf("KTEST%03d", i)),
+			ReceivedAtMonotonic: monotonicSeconds() + float64(i),
+		}
+		result := fisbCacheStore.Admit(e)
+		if result != fisbcache.AdmitAccepted && result != fisbcache.AdmitSuperseded {
+			continue
+		}
+		fisbCacheRunRetention()
+		if _, stillPresent := fisbCacheStore.Get(e.Key); !stillPresent {
+			continue
+		}
+		if err := fisbCachePersist(e, "METAR "+e.Key.Identity+" 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+			t.Errorf("persist for %s: %v", e.Key.Identity, err)
+		}
+	}
+	close(extraRetentionDone)
+	extraRetentionWG.Wait()
+
+	if fisbCacheStore.Len() > 4 {
+		t.Errorf("expected the Store to never exceed MaxEntries=4 once the single-threaded admission side finished (its own last enforcement pass already applied), got %d", fisbCacheStore.Len())
+	}
+	snap := fisbCacheStore.Snapshot()
+	for k := range snap {
+		path := dir + "/" + fisbCacheEntryFileName(k)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("Store reports %s as cached but its file is missing: %v", k.Identity, err)
+		}
+	}
+}
+
+func TestFISBCacheStartupRecovery_EnforcesBudgetBeforeReportingComplete(t *testing.T) {
+	dir := withTestFISBCacheStorage(t)
+	withTrustedTimeForTest(t)
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	// A tighter budget than what was persisted below - simulating an
+	// owner who lowered MaxEntries since these files were written on an
+	// earlier, more permissive boot.
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, PersistenceEnabled: true, MaxCacheBytes: 1 << 30, MaxEntries: 2}
+	fisbCacheMu.Unlock()
+
+	// Persist 5 distinct, currently-fresh (unexpired) entries directly to
+	// disk - more than the now-configured MaxEntries=2 - without going
+	// through Store.Admit at all, exactly matching what recovery itself
+	// will find via a directory scan.
+	now := monotonicSeconds()
+	for i := 0; i < 5; i++ {
+		e := fisbcache.Entry{
+			Key:                 makeFISBTestKey("KOLD" + string(rune('A'+i))),
+			ReceivedAtMonotonic: now,
+			ReceivedAtUTC:       time.Now().UTC(),
+		}
+		if err := fisbCachePersist(e, "METAR "+e.Key.Identity+" 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fisbCacheStartupRecovery()
+
+	if fisbCacheStore.Len() > 2 {
+		t.Errorf("expected recovery to enforce the now-tighter MaxEntries=2 budget before reporting complete, got Store.Len()=%d", fisbCacheStore.Len())
+	}
+	// The Store and disk must agree - recovery's own enforcement pass
+	// must have deleted the files for whatever it evicted, not merely
+	// dropped them from the in-memory index.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 2 {
+		t.Errorf("expected at most 2 files remaining on disk after recovery's own budget enforcement, got %d", len(entries))
+	}
+}
+
+func TestHandleSetFISBCacheSettings_TighteningBudgetEvictsImmediatelyNotAfterATick(t *testing.T) {
+	withFISBCacheTestEnv(t)
+
+	// Admit and persist 5 entries under a generous starting budget.
+	fisbCacheMu.Lock()
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, PersistenceEnabled: true, MaxCacheBytes: 1 << 30, MaxEntries: 100}
+	fisbCacheMu.Unlock()
+	for i := 0; i < 5; i++ {
+		e := fisbcache.Entry{
+			Key:                 makeFISBTestKey("KTIGHT" + string(rune('A'+i))),
+			ReceivedAtMonotonic: monotonicSeconds() + float64(i),
+		}
+		fisbCacheStore.Admit(e)
+		if err := fisbCachePersist(e, "METAR "+e.Key.Identity+" 091853Z AUTO 00000KT 10SM CLR 15/10 A3000"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fisbCacheStore.Len() != 5 {
+		t.Fatalf("test precondition failed: expected 5 entries admitted, got %d", fisbCacheStore.Len())
+	}
+
+	body := `{"schemaVersion":1,"enabled":true,"persistenceEnabled":true,"replayEnabled":false,"maxCacheBytes":268435456,"maxEntries":2}`
+	req := httptest.NewRequest(http.MethodPost, "/setFISBCacheSettings", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	handleSetFISBCacheSettingsRequest(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if fisbCacheStore.Len() > 2 {
+		t.Errorf("expected the tightened maxEntries=2 budget enforced synchronously by the settings handler itself, got Store.Len()=%d immediately after the request returned", fisbCacheStore.Len())
 	}
 }

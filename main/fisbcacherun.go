@@ -55,19 +55,51 @@ type fisbCaptureItem struct {
 }
 
 var (
-	fisbCacheMu               sync.Mutex
-	fisbCacheStore            *fisbcache.Store
-	fisbCacheSettingsCache    FISBCacheSettings
-	fisbCacheQueue            chan fisbCaptureItem
-	fisbCacheDroppedWrites    uint64 // atomic
-	fisbCachePressureRejected uint64 // atomic
-	fisbCacheStartupRecovered bool
-	fisbCacheRecoveryError    bool
-	fisbCacheNonFatalErrors   bool
-	fisbCacheLastCleanupUTC   time.Time
-	fisbCacheLastCleanupCount int
-	fisbCacheShuttingDown     bool
+	fisbCacheMu                sync.Mutex
+	fisbCacheStore             *fisbcache.Store
+	fisbCacheSettingsCache     FISBCacheSettings
+	fisbCacheQueue             chan fisbCaptureItem
+	fisbCacheDroppedWrites     uint64 // atomic
+	fisbCachePressureRejected  uint64 // atomic
+	fisbCacheOversizedRejected uint64 // atomic
+	fisbCacheStartupRecovered  bool
+	fisbCacheRecoveryError     bool
+	fisbCacheNonFatalErrors    bool
+	fisbCacheLastCleanupUTC    time.Time
+	fisbCacheLastCleanupCount  int
+	fisbCacheShuttingDown      bool
 )
+
+// fisbCacheDiskMu guards every actual mutation of this feature's own
+// persisted files (fisbCacheDir) - a write (fisbCachePersist) and a
+// planned eviction's check-then-delete (fisbCacheEvictKeyIfUnchanged) can
+// never run concurrently for this whole namespace while it is held.
+//
+// This exists to close a genuine TOCTOU: budget/retention eviction is
+// always PLANNED against a Snapshot taken slightly before it executes
+// (see fisbCacheRunRetention) - without this lock, a live capture could
+// admit and persist a fresher copy of a key in the gap between that
+// snapshot and eviction's own decision to remove it, and eviction would
+// then delete the FRESH file a moment after it was written, because
+// Store.Delete (unlike DeleteIfUnchanged) has no way to notice the entry
+// changed underneath it. Serializing "one write" against "one planned
+// delete's own check-then-remove" removes that gap entirely: whichever
+// side wins the race for fisbCacheDiskMu completes first, so eviction's
+// re-check of the Store (fisbCacheEvictKeyIfUnchanged's own Get call,
+// taken while already holding this lock) can never observe a state that
+// a concurrent write is still in the middle of changing. See
+// docs/fisb-weather-cache.md's "Synchronous admission bounds" section for
+// the full model this makes possible to prove.
+//
+// Scope: only the raw file mutation (fisbCachePersist's ReplaceProduct
+// call, and fisbCacheEvictKeyIfUnchanged's Remove call) is ever done
+// while holding this lock - never the surrounding decision logic
+// (PlanEviction, Snapshot, JSON encoding), which stays outside it so this
+// lock is held only as briefly as the actual I/O requires. Independent
+// of fisbCacheMu (settings/state) and Store's own internal mutex - never
+// acquired while already holding either of those, so there is no
+// possibility of a lock-order cycle between them.
+var fisbCacheDiskMu sync.Mutex
 
 // fisbCacheHandleShutdown stops this feature from admitting any further
 // capture into the queue - called once from gracefulShutdown (see
@@ -198,8 +230,27 @@ func fisbCaptureNexrad(radarType uint32, scale int, latNorth, lonWest, height, w
 func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) {
 	fisbCacheMu.Lock()
 	shuttingDown := fisbCacheShuttingDown
+	maxCacheBytes := fisbCacheSettingsCache.MaxCacheBytes
 	fisbCacheMu.Unlock()
 	if shuttingDown {
+		return
+	}
+	// A single entry whose own payload alone already exceeds the
+	// currently configured byte budget could never be admitted without
+	// either violating that budget outright or evicting every other
+	// entry - including ones far fresher than this one - just to make
+	// room for something that still would not fit twice. Rejected here,
+	// synchronously, before it ever occupies a queue slot or a Store
+	// entry: this is what keeps the strict disk-overhead bound this
+	// feature promises independent of what any single incoming product
+	// happens to be sized like (see fisbCacheOversizedRejected and
+	// docs/fisb-weather-cache.md's "Synchronous admission bounds"
+	// section). maxCacheBytes<=0 cannot happen for a validated settings
+	// value (see FISBCacheSettings.Validate) but is treated as "no
+	// limit" here too, consistent with fisbcache.PlanEviction's own
+	// convention, rather than this check inventing a stricter one.
+	if maxCacheBytes > 0 && int64(len(payload)) > maxCacheBytes {
+		atomic.AddUint64(&fisbCacheOversizedRejected, 1)
 		return
 	}
 	// Global storage pressure (HIGH/CRITICAL/UNKNOWN) prohibits admitting
@@ -238,16 +289,41 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 // failing write here only ever delays this goroutine's own next queue
 // read, never the capture-path caller (fisbCaptureText/fisbCaptureNexrad
 // already returned by the time this runs).
+//
+// Synchronous admission bounds: every admitted item is followed,
+// immediately and on this same goroutine, by a full budget-enforcement
+// pass (fisbCacheRunRetention) BEFORE that item is ever persisted to
+// disk - not merely "eventually, on the next periodic retention tick".
+// The just-admitted entry is always this pass's freshest entry (its
+// ReceivedAtMonotonic is "now"), so fisbcache.PlanEviction's own
+// deterministic oldest-first order never selects it ahead of anything
+// else already cached - enforcement only ever makes room FOR it, never
+// evicts it out from under itself, unless it is the sole entry left and
+// still over budget (impossible here: fisbCacheEnqueue already rejected
+// anything whose own payload alone cannot fit the configured budget).
+// Running enforcement before the write, rather than after, means the
+// disk is never even momentarily pushed over the configured budget as a
+// direct result of admitting one more entry - see
+// docs/fisb-weather-cache.md's "Synchronous admission bounds" section
+// for the full, provable worst-case model this establishes.
 func fisbCacheCaptureWorker() {
 	for item := range fisbCacheQueue {
 		result := fisbCacheStore.Admit(item.entry)
 		if result != fisbcache.AdmitAccepted && result != fisbcache.AdmitSuperseded {
 			continue
 		}
+		fisbCacheRunRetention()
+
 		fisbCacheMu.Lock()
 		persistenceEnabled := fisbCacheSettingsCache.Enabled && fisbCacheSettingsCache.PersistenceEnabled
 		fisbCacheMu.Unlock()
 		if !persistenceEnabled {
+			continue
+		}
+		// Defensive re-check, not expected to ever actually trigger (see
+		// this function's own doc comment): only spend a write on this
+		// entry if enforcement, just above, did not remove it.
+		if _, stillPresent := fisbCacheStore.Get(item.entry.Key); !stillPresent {
 			continue
 		}
 		if err := fisbCachePersist(item.entry, item.payload); err != nil {
@@ -256,6 +332,11 @@ func fisbCacheCaptureWorker() {
 	}
 }
 
+// fisbCachePersist writes e/payload to disk, replacing any prior file for
+// the same Key. The actual file mutation (ReplaceProduct's temp-write-
+// then-rename) is done while holding fisbCacheDiskMu - see that lock's
+// own doc comment for exactly which concurrent operation this excludes
+// and why.
 func fisbCachePersist(e fisbcache.Entry, payload string) error {
 	persisted, err := fisbcache.EncodePersistedEntry(e, payload)
 	if err != nil {
@@ -267,6 +348,8 @@ func fisbCachePersist(e fisbcache.Entry, payload string) error {
 		GeneratedAtWallClock: e.ReceivedAtUTC,
 		SizeBytes:            e.SizeBytes,
 	}
+	fisbCacheDiskMu.Lock()
+	defer fisbCacheDiskMu.Unlock()
 	return (fisbCacheLifecycle{}).ReplaceProduct(meta, func(w io.Writer) error {
 		return json.NewEncoder(w).Encode(persisted)
 	})
@@ -286,6 +369,51 @@ func fisbCachePersist(e fisbcache.Entry, payload string) error {
 // (logged, RecoveryError left false - this is not a fatal condition, it
 // simply means no persisted entry is re-admitted this boot) rather than
 // serving anything it cannot trust.
+//
+// Synchronous admission bounds: recovery finishes by running the same
+// budget-enforcement pass (fisbCacheRunRetention) every live admission
+// does, once, after every recoverable entry has been re-admitted - so a
+// persisted set that is larger than the CURRENTLY configured budget
+// (e.g. settings were tightened since these files were written) is
+// trimmed back to budget before recovery ever reports itself complete,
+// not left to whatever the next periodic retention tick happens to be.
+//
+// Known, narrow limitation: this function's own quarantine deletes below
+// (an exact per-file Remove for a corrupt/future-dated/unaged/expired
+// persisted file) are individually serialized against a concurrent live
+// write via fisbCacheDiskMu, but the DECISION to quarantine a given file
+// is still made from content read moments earlier, outside that lock -
+// so a live capture that persists a fresh replacement for the exact same
+// product in the narrow window between this loop reading a stale/corrupt
+// file and deciding to quarantine it could still have that fresh file
+// wrongly removed. This is a real, but startup-window-only and
+// low-probability, gap - recovery runs once, briefly, at boot, and it
+// requires a live capture for the exact same product to land in that
+// specific narrow window. Documented here rather than silently claimed
+// closed; closing it fully would require re-validating each file's
+// content again immediately before removal, under fisbCacheDiskMu -
+// judged not worth the added complexity for this one narrow, self-
+// healing case (a wrongly-quarantined-then-immediately-superseded entry
+// only ever loses at most one stale, about-to-be-replaced copy, and the
+// live capture's own in-memory Store entry - which is what every current
+// consumer of this feature actually reads - is entirely unaffected,
+// since recovery's quarantine path never touches the Store for a key it
+// did not itself Admit).
+// fisbCacheQuarantineRemove deletes exactly path (a single, already-
+// identified corrupt/untrustworthy persisted file) while holding
+// fisbCacheDiskMu - see fisbCacheDiskMu's own doc comment and
+// fisbCacheStartupRecovery's "known, narrow limitation" note for what
+// this does and does not close. A failure here is intentionally
+// swallowed (matching this call site's original behavior exactly): a
+// quarantine file this feature could not remove is, at worst, one extra
+// file the next retention/enforcement pass or a future recovery will
+// reconsider - never a reason to abort recovery itself.
+func fisbCacheQuarantineRemove(path string) {
+	fisbCacheDiskMu.Lock()
+	defer fisbCacheDiskMu.Unlock()
+	_ = fisbCacheFS.Remove(path)
+}
+
 func fisbCacheStartupRecovery() {
 	deadline := time.Now().Add(fisbCacheStartupRecoveryTimeout)
 	for !fisbCacheTrustedTimeState() {
@@ -338,7 +466,7 @@ func fisbCacheStartupRecovery() {
 			// Invalid/corrupt/future-dated per DecodePersistedEntry's own
 			// strict validation - quarantine by removing only this exact
 			// file (never anything else in this namespace).
-			_ = fisbCacheFS.Remove(fisbCacheNamespace.Root + "/" + e.Name)
+			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
 			nonFatal = true
 			continue
 		}
@@ -346,26 +474,31 @@ func fisbCacheStartupRecovery() {
 			// Age can never be proven for an entry that was never recorded
 			// with a trusted receive time - expire conservatively rather
 			// than guess (see docs/fisb-weather-cache.md).
-			_ = fisbCacheFS.Remove(fisbCacheNamespace.Root + "/" + e.Name)
+			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
 			continue
 		}
 		age := nowUTC.Sub(entry.ReceivedAtUTC)
 		if age < 0 {
 			// A recorded receive time in the future relative to the
 			// current trusted clock is never trustworthy either.
-			_ = fisbCacheFS.Remove(fisbCacheNamespace.Root + "/" + e.Name)
+			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
 			nonFatal = true
 			continue
 		}
 		entry.ReceivedAtMonotonic = nowMono - age.Seconds()
 		if fisbcache.Freshness(entry, fisbcache.PolicyFor(entry.Key), nowMono) == fisbcache.FreshnessExpired {
-			_ = fisbCacheFS.Remove(fisbCacheNamespace.Root + "/" + e.Name)
+			fisbCacheQuarantineRemove(fisbCacheNamespace.Root + "/" + e.Name)
 			continue
 		}
 		if fisbCacheStore.Admit(entry) == fisbcache.AdmitAccepted {
 			recovered++
 		}
 	}
+
+	// Bound recovery's own contribution to the configured budget
+	// synchronously, before this boot's very first status snapshot could
+	// ever report it - see this function's own doc comment.
+	fisbCacheRunRetention()
 
 	log.Printf("fisbcache: startup recovery complete (%d entries re-admitted)\n", recovered)
 	fisbCacheMu.Lock()
@@ -389,6 +522,54 @@ func fisbCacheRetentionLoop() {
 	}
 }
 
+// fisbCacheEvictKeyIfUnchanged deletes k's persisted file and its Store
+// entry, but ONLY if the Store still holds exactly expected for k right
+// before the file is removed - see fisbCacheDiskMu's own doc comment for
+// why this check-then-delete must run as one atomic unit against a
+// concurrent fisbCachePersist for the same key. Reports whether it
+// actually deleted anything (false, nil error, means the plan that named
+// k is stale - a concurrent admit changed or removed k since it was
+// planned; a later pass will reconsider with fresh data, exactly as
+// intended - see fisbCacheRunRetention).
+func fisbCacheEvictKeyIfUnchanged(k fisbcache.Key, expected fisbcache.Entry) (deleted bool, err error) {
+	fisbCacheDiskMu.Lock()
+	defer fisbCacheDiskMu.Unlock()
+
+	cur, ok := fisbCacheStore.Get(k)
+	if !ok || cur != expected {
+		return false, nil
+	}
+	n, errs := fisbCacheExecuteEviction([]fisbcache.Key{k})
+	if len(errs) > 0 {
+		return false, errs[0]
+	}
+	if n != 1 {
+		return false, nil
+	}
+	// Guaranteed to succeed: nothing can have changed k between the Get
+	// above and here, since both this whole function and
+	// fisbCachePersist's own file write hold fisbCacheDiskMu for their
+	// entire duration - the DeleteIfUnchanged call is still the correct
+	// primitive to use here (rather than a plain Delete) so this
+	// function's own correctness never depends on that lock discipline
+	// being perfect everywhere, now or after a future change.
+	fisbCacheStore.DeleteIfUnchanged(k, expected)
+	return true, nil
+}
+
+// fisbCacheRunRetention is this feature's one budget/retention
+// enforcement pass - plan (fisbcache.PlanEviction, pure, against a single
+// Snapshot) then execute (fisbCacheEvictKeyIfUnchanged, per key, safe
+// against anything that changed since that snapshot was taken). Called
+// from four places, all safe to run concurrently with each other and
+// with fisbCachePersist: fisbCacheCaptureWorker (synchronously, after
+// every single admission - see that function's own doc comment for why
+// this is what makes the disk-overhead bound strict rather than merely
+// eventual), fisbCacheStartupRecovery (once, at the end), the periodic
+// fisbCacheRetentionLoop (a backstop for pure time-based expiry, which
+// needs no new admission to become due), and
+// handleSetFISBCacheSettingsRequest (so a tightened budget takes effect
+// immediately rather than waiting for the next periodic tick).
 func fisbCacheRunRetention() {
 	fisbCacheMu.Lock()
 	settings := fisbCacheSettingsCache
@@ -400,12 +581,19 @@ func fisbCacheRunRetention() {
 	if len(keys) == 0 {
 		return
 	}
-	deleted, errs := fisbCacheExecuteEviction(keys)
-	for _, err := range errs {
-		log.Printf("fisbcache: retention: %s\n", err)
-	}
+	deleted := 0
 	for _, k := range keys {
-		fisbCacheStore.Delete(k)
+		ok, err := fisbCacheEvictKeyIfUnchanged(k, snap[k])
+		if err != nil {
+			log.Printf("fisbcache: retention: %s\n", err)
+			continue
+		}
+		if ok {
+			deleted++
+		}
+	}
+	if deleted == 0 {
+		return
 	}
 	fisbCacheMu.Lock()
 	fisbCacheLastCleanupUTC = fisbCacheTrustedNowUTC()

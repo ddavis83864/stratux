@@ -70,6 +70,7 @@ type fisbCacheStatusResponse struct {
 	QueueCapacity      int                              `json:"queueCapacity"`
 	DroppedWrites      uint64                           `json:"droppedWrites"`
 	PressureRejected   uint64                           `json:"pressureRejected"`
+	OversizedRejected  uint64                           `json:"oversizedRejected"`
 	LastCleanupUTC     time.Time                        `json:"lastCleanupUtc,omitempty"`
 	LastCleanupCount   int                              `json:"lastCleanupCount"`
 	StoragePressure    string                           `json:"storagePressure"`
@@ -144,6 +145,7 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		QueueCapacity:      fisbCaptureQueueDepth,
 		DroppedWrites:      fisbCacheDroppedWrites,
 		PressureRejected:   fisbCachePressureRejected,
+		OversizedRejected:  fisbCacheOversizedRejected,
 		LastCleanupUTC:     lastCleanupUTC,
 		LastCleanupCount:   lastCleanupCount,
 		StoragePressure:    pressure,
@@ -255,6 +257,16 @@ func handleSetFISBCacheSettingsRequest(w http.ResponseWriter, r *http.Request) {
 	fisbCacheMu.Lock()
 	fisbCacheSettingsCache = s
 	fisbCacheMu.Unlock()
+	// A tightened budget (lower maxCacheBytes/maxEntries) must take effect
+	// immediately, not up to fisbCacheRetentionInterval later - run the
+	// same enforcement pass every admission already runs synchronously.
+	// Harmless, cheap no-op when the new settings are not actually
+	// tighter than what is currently cached (fisbCacheRunRetention's own
+	// PlanEviction is a pure function of the current Snapshot - see its
+	// own doc comment).
+	if fisbCacheStore != nil {
+		fisbCacheRunRetention()
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "settings": s})
 }
 

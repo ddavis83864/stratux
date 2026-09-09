@@ -119,6 +119,25 @@ func (s *Store) Delete(k Key) {
 	delete(s.entries, k)
 }
 
+// DeleteIfUnchanged removes k only if its current entry is still exactly
+// expected (compared by value - Entry is a plain, comparable struct) -
+// used by retention/budget-enforcement execution so a decision made
+// against an earlier Snapshot can never discard an entry that was
+// concurrently admitted/superseded after that snapshot was taken (see
+// main/fisbcacherun.go's fisbCacheEvictKeyIfUnchanged for the full
+// synchronization this closes). Reports whether it actually deleted
+// anything.
+func (s *Store) DeleteIfUnchanged(k Key, expected Entry) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, ok := s.entries[k]
+	if !ok || cur != expected {
+		return false
+	}
+	delete(s.entries, k)
+	return true
+}
+
 // Snapshot returns every current entry, keyed by Key - a copy, safe to
 // range over without holding Store's lock.
 func (s *Store) Snapshot() map[Key]Entry {

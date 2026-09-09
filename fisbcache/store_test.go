@@ -120,6 +120,61 @@ func TestStore_DeleteAndSnapshot(t *testing.T) {
 	}
 }
 
+// --- DeleteIfUnchanged: the compare-and-delete primitive that closes
+// the retention-vs-concurrent-admit TOCTOU (see
+// main/fisbcacherun.go's fisbCacheEvictKeyIfUnchanged for the full
+// synchronization this is used inside).
+
+func TestStore_DeleteIfUnchanged_DeletesWhenStillExactMatch(t *testing.T) {
+	s := NewStore()
+	k := TextKey(TextProductMETAR, "KSEA")
+	e := Entry{Key: k, ReceivedAtMonotonic: 100}
+	s.Admit(e)
+
+	if !s.DeleteIfUnchanged(k, e) {
+		t.Fatal("expected DeleteIfUnchanged to report a real deletion")
+	}
+	if s.Len() != 0 {
+		t.Fatal("expected the entry actually removed")
+	}
+}
+
+func TestStore_DeleteIfUnchanged_NoOpWhenEntryChangedSinceExpected(t *testing.T) {
+	s := NewStore()
+	k := TextKey(TextProductMETAR, "KSEA")
+	stale := Entry{Key: k, ReceivedAtMonotonic: 100}
+	s.Admit(stale)
+
+	// A concurrent admit superseded the entry after `stale` was captured
+	// (e.g. by an earlier Snapshot a retention pass planned against).
+	fresh := Entry{Key: k, ReceivedAtMonotonic: 200}
+	if got := s.Admit(fresh); got != AdmitSuperseded {
+		t.Fatalf("test precondition failed: got %q, want superseded", got)
+	}
+
+	if s.DeleteIfUnchanged(k, stale) {
+		t.Fatal("expected DeleteIfUnchanged to refuse deleting a stale-planned entry that has since changed")
+	}
+	got, ok := s.Get(k)
+	if !ok {
+		t.Fatal("expected the fresh entry to remain - a stale plan must never discard live data")
+	}
+	if got != fresh {
+		t.Fatalf("expected the fresh entry untouched, got %+v", got)
+	}
+}
+
+func TestStore_DeleteIfUnchanged_NoOpWhenKeyAlreadyAbsent(t *testing.T) {
+	s := NewStore()
+	k := TextKey(TextProductMETAR, "KSEA")
+	e := Entry{Key: k, ReceivedAtMonotonic: 100}
+	// Never admitted - simulates a key already removed by a prior,
+	// concurrent eviction of the same stale plan.
+	if s.DeleteIfUnchanged(k, e) {
+		t.Fatal("expected DeleteIfUnchanged to report no deletion for an absent key")
+	}
+}
+
 func TestStore_ExpiredKeys(t *testing.T) {
 	s := NewStore()
 	k := TextKey(TextProductMETAR, "KSEA")

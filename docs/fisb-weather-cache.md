@@ -219,6 +219,136 @@ inventing new ones:
   Storage Lifecycle Foundation's own eviction remains exactly as
   conservative as it already was.
 
+## Synchronous admission bounds
+
+This feature's foundation originally enforced `maxCacheBytes`/
+`maxEntries` only from the 60-second retention loop - a burst of
+distinct new products could transiently hold the cache over its
+configured budget for up to that long. This section documents the
+strict, synchronous replacement (`main/fisbcacherun.go`,
+`main/fisbcachestorage.go`): the exact worst-case bound this cache can
+ever exhibit at any instant, and why it holds under real concurrency,
+not merely in the single-threaded case.
+
+**Where enforcement now runs, synchronously, not just periodically:**
+
+1. **After every single admission**, on the same goroutine, before that
+   entry is ever persisted - `fisbCacheCaptureWorker` calls
+   `fisbCacheRunRetention()` immediately after `Store.Admit` succeeds
+   and before `fisbCachePersist`. The just-admitted entry is always this
+   pass's freshest entry (`ReceivedAtMonotonic` is "now"), so
+   `fisbcache.PlanEviction`'s own deterministic oldest-first order never
+   selects it ahead of anything already cached - enforcement only ever
+   makes room *for* it. Running this *before* the write, not after,
+   means the disk is never even momentarily pushed over budget as a
+   direct result of admitting one more entry.
+2. **At the end of startup recovery** - a persisted set larger than the
+   *currently* configured budget (e.g. settings were tightened since
+   these files were written on an earlier boot) is trimmed back before
+   recovery ever reports itself complete, not left for whatever the
+   first periodic tick after boot happens to be.
+3. **Immediately on a settings change** - `handleSetFISBCacheSettingsRequest`
+   runs the same enforcement pass right after applying a new
+   `maxCacheBytes`/`maxEntries`, so tightening the budget takes effect
+   at once rather than up to 60 seconds later.
+4. **The periodic 60-second loop still exists**, now purely as a
+   backstop for pure time-based expiry - an entry can become `EXPIRED`
+   purely from the passage of time, with no new admission to trigger
+   enforcement, so a periodic sweep is still the only way that case gets
+   noticed promptly.
+
+**A single entry that could never fit is rejected before it is ever
+admitted.** `fisbCacheEnqueue` rejects an offer outright (counted as
+`oversizedRejected`, distinct from `droppedWrites`/`pressureRejected`)
+whenever its own payload alone exceeds the currently configured
+`maxCacheBytes` - admitting it would either violate the budget outright
+or require evicting every other entry, including fresher ones, just to
+make room for something that still would not fit twice.
+
+**Concurrency: the exact race this closes.** Retention/enforcement is
+always *planned* against a `Store.Snapshot()` taken slightly before it
+*executes*. Without further care, a live admission could persist a
+fresher copy of a key in the gap between that snapshot and eviction's
+own decision to remove it, and eviction would then delete the FRESH
+file moments after it was written - `Store.Delete` has no way to notice
+an entry changed underneath it. Two mechanisms close this, together:
+
+- **`fisbcache.Store.DeleteIfUnchanged(k, expected)`** - a compare-and-
+  delete: removes `k` only if the Store's current entry for `k` is
+  still exactly `expected` (`Entry` is a plain, comparable struct). A
+  stale plan's delete becomes a safe no-op instead of destroying live
+  data.
+- **`fisbCacheDiskMu`** (`main/fisbcacherun.go`) - a lock held around
+  (a) `fisbCachePersist`'s actual file write and (b) one planned
+  eviction's own re-check-then-remove sequence
+  (`fisbCacheEvictKeyIfUnchanged`: re-`Get` the key, and only if it
+  still matches what was planned, remove the file and then
+  `DeleteIfUnchanged`). Because both sides hold this lock for their
+  *entire* file-touching sequence, a write can never complete in the
+  narrow gap between eviction's own check and its remove - whichever
+  side wins the race for the lock finishes first, so eviction's re-check
+  can never observe a state a concurrent write is still in the middle of
+  changing. `Store.Admit` itself is deliberately left outside this lock
+  (a fast, separately-synchronized, non-disk operation); the proof this
+  is still sufficient is worked through in `fisbCacheDiskMu`'s own doc
+  comment. Proven under `go test -race` by
+  `TestFISBCache_ConcurrentAdmitPersistAndRetentionNeverDivergesStoreFromDisk`
+  (single-threaded admission - matching `fisbCacheCaptureWorker`'s own
+  real architecture - concurrently with a second goroutine hammering
+  `fisbCacheRunRetention` on its own, exactly the shape the periodic
+  ticker/a settings change can produce in production) and
+  `TestFISBCacheEvictKeyIfUnchanged_RefusesStalePlanEvenAfterConcurrentReplacementIsPersisted`
+  (a deterministic, single-goroutine reproduction of the exact stale-plan
+  sequence, proving the surviving file is provably the fresh write, not
+  the stale one).
+
+**Known, narrow, documented limitation:** startup recovery's own
+quarantine deletes (a corrupt/future-dated/unaged/expired persisted
+file, found during the directory scan) are individually serialized
+against a concurrent live write via `fisbCacheDiskMu`, but the decision
+to quarantine a given file is still made from content read moments
+earlier, outside that lock - a live capture that persists a fresh
+replacement for the exact same product in the narrow window between
+recovery reading a stale file and deciding to quarantine it could still
+have that fresh file wrongly removed. This is real, but startup-window-
+only (recovery runs once, briefly, at boot) and self-healing (the live
+capture's own in-memory `Store` entry - what every current consumer of
+this feature actually reads - is unaffected, since recovery's
+quarantine path never touches the `Store` for a key it did not itself
+`Admit`; only the on-disk file of an about-to-be-superseded stale copy
+is at risk). Documented here rather than silently claimed closed - see
+`fisbCacheStartupRecovery`'s own doc comment for the full reasoning.
+
+**The strict maximum disk-overhead bound this cache can ever exhibit, at
+any instant:**
+
+```
+maxCacheBytes (configured, hard-capped at 256 MiB)
+  + maxPersistedEntryBytes (69,632 bytes - one entry's own hard cap)
+```
+
+The first term is the enforced steady-state budget. The second is the
+maximum *additional*, strictly transient overhead: `AtomicWriter.Write`
+creates a uniquely-named temp file, writes and syncs it, then renames it
+over the final path - during that brief window, the old file (if this
+write is a replacement) and the new temp file can coexist on disk. Since
+this feature has exactly one writer for its own namespace at a time
+(`fisbCacheCaptureWorker` is a single goroutine, and `fisbCacheDiskMu`
+excludes any concurrent eviction from touching the same window), at most
+one such temp file can ever exist at once, and its size is bounded by
+`maxPersistedEntryBytes` regardless of how large `maxCacheBytes` is
+configured. At the 256 MiB hard cap this is a ~0.03% relative overhead;
+at the 16 MiB default, ~0.4% - a small, fixed, always-known constant,
+not a function of traffic volume or how long since the last periodic
+tick.
+
+**What this bound deliberately does not cover:** items sitting in
+`fisbCaptureQueue` (up to 256, bounded separately - see "Exact limits,
+bounds, and safety caps," above) have not yet reached `Store.Admit` and
+so never count toward this disk bound at all; they are an *in-process
+memory* bound (256 × up to 64 KiB ≈ 16 MiB worst case), unrelated to,
+and not a substitute for, the disk-overhead model above.
+
 ## Storage-pressure interaction
 
 Mirrors `autorecord`'s own established pattern: when `storageManager`'s
@@ -340,7 +470,8 @@ any external standard.
 | Capture-queue capacity | Hard safety cap | 256 items | `fisbCaptureText`/`fisbCaptureNexrad` drop-and-count (`droppedWrites`) rather than block once full - see "Capture path," above. |
 | Recovery-scan per-file read bound | Hard safety cap | 131072 bytes (128 KiB) | `fisbReadFileBounded` never reads more than this from any one file during startup recovery, regardless of the file's actual on-disk size - defense in depth beyond the entry-file-size cap above. |
 | Purge confirmation token lifetime | Hard safety cap | 5 minutes | An unconfirmed prepare expires; a confirmed one is single-use - see "APIs," below. |
-| Inventory/status response size | Bounded indirectly | Equal to the current entry count | Never separately capped beyond `maxEntries` itself - the inventory endpoint returns one summary row per currently-cached entry, and the entry count can never exceed `maxEntries` (enforced by the retention loop, see below). |
+| Inventory/status response size | Bounded indirectly | Equal to the current entry count | Never separately capped beyond `maxEntries` itself - the inventory endpoint returns one summary row per currently-cached entry, and the entry count can never exceed `maxEntries` (enforced synchronously - see "Synchronous admission bounds," below). |
+| Single-entry admission relative to `maxCacheBytes` | Enforced at admission | Rejected if `payload size > maxCacheBytes` | `fisbCacheEnqueue` rejects the offer outright (counted separately, `oversizedRejected`) before it ever occupies a queue slot or a Store entry - see "Synchronous admission bounds," below. |
 | Product-specific limits | None | - | No product class has its own separate size/count cap beyond the whole-cache `maxCacheBytes`/`maxEntries` budget and the universal per-payload hard cap above. |
 
 **Zero is always invalid, never "disabled" or "unlimited," for either
@@ -355,17 +486,12 @@ so `PlanEviction` remains a general-purpose, freely-reusable function
 in its own right, exercised directly by
 `fisbcache/retention_test.go`.)
 
-**Budget enforcement is periodic, not synchronous at admission time.**
-A new entry is never rejected merely because admitting it would exceed
-`maxCacheBytes`/`maxEntries` - only genuine storage pressure (see
-above) gates admission synchronously. The retention loop
-(`fisbCacheRunRetention`, every 60 seconds) is what brings the cache
-back under budget, oldest-received-first, after removing anything
-already expired. In practice this means a burst of many distinct new
-products can transiently hold the cache slightly over budget for up to
-60 seconds; this is a deliberate, bounded, self-correcting design
-choice (the same periodic-sweep pattern the rest of this project's
-storage-pressure evaluation already uses), not an enforcement gap.
+**Budget enforcement is synchronous, at admission time - not merely
+periodic.** See "Synchronous admission bounds," below, for the full
+model and its proof; the summary: `maxCacheBytes`/`maxEntries` are
+brought back into compliance immediately after every single admission,
+before that admission's own entry is ever written to disk - not left to
+however long until the next periodic tick.
 
 **Why these defaults are appropriate without assuming a specific
 partition size:** 16 MiB is a small, fixed absolute number - it does
@@ -473,15 +599,18 @@ configured as on the live device at restore time.
 
 ## Test strategy
 
-- `fisbcache/*_test.go` (52 tests, pure, no I/O): product classification;
+- `fisbcache/*_test.go` (55 tests, pure, no I/O): product classification;
   freshness state transitions at every policy boundary; `Store.Admit`
   accept/supersede/reject-older/reject-unsupported, including the
-  trusted-vs-untrusted source-time tie-breaking rules;
-  `ReconstructSourceTime`'s month/day-present and month/day-absent paths,
-  including the New Year's Eve/Day boundary case; persisted-entry
-  encode/decode round-tripping and every strict-rejection case (bad
-  schema version, missing origin marker, checksum mismatch, oversized
-  payload, implausible future timestamp, unsupported product);
+  trusted-vs-untrusted source-time tie-breaking rules; `Store.DeleteIfUnchanged`'s
+  compare-and-delete semantics (deletes on an exact match, safely no-ops
+  when the entry changed or is already absent - the primitive
+  `fisbCacheEvictKeyIfUnchanged` builds on, see "Synchronous admission
+  bounds," above); `ReconstructSourceTime`'s month/day-present and
+  month/day-absent paths, including the New Year's Eve/Day boundary case;
+  persisted-entry encode/decode round-tripping and every strict-rejection
+  case (bad schema version, missing origin marker, checksum mismatch,
+  oversized payload, implausible future timestamp, unsupported product);
   `PlanEviction`'s full decision matrix on its own (`retention_test.go`)
   - expired-first-then-oldest-of-remaining ordering, independent
   byte/entry budget disable-at-zero-or-negative semantics, and
@@ -497,7 +626,7 @@ configured as on the live device at restore time.
   purge token lifecycle, and an 8-worker concurrent status/settings/purge
   stress test with a deadlock timeout.
 - `main/fisbcachestorage_test.go` (11 tests) / `main/fisbcacherun_test.go`
-  (8 tests): production-level integration tests against a real temp
+  (15 tests): production-level integration tests against a real temp
   filesystem and a real `storagelifecycle.Manager` - storage-pressure
   admission gating across every pressure band; the namespace registers
   exactly once; eviction deletes only its named keys, proven against a
@@ -507,7 +636,19 @@ configured as on the live device at restore time.
   already-expired-by-bridged-age entry, removed and never re-admitted),
   and its wait for trusted time is genuinely bounded; retention deletes
   from both disk and the in-memory index; the capture queue drops and
-  counts under overflow without ever blocking.
+  counts under overflow without ever blocking. Synchronous admission
+  bounds specifically (see that section, above): an oversized single
+  entry is rejected before it is ever queued or admitted, while an
+  exactly-at-budget one is accepted; a stale eviction plan is refused
+  even after the same key has been concurrently re-persisted (both a
+  deterministic single-goroutine reproduction and a genuine concurrent
+  `-race` test mirroring production's actual single-threaded-admission-
+  plus-concurrent-retention-callers shape); the entry-count budget is
+  never exceeded across many sequential admissions; startup recovery
+  enforces a since-tightened budget before ever reporting itself
+  complete; and a settings-driven budget tightening takes effect
+  synchronously inside the settings handler itself, not on the next
+  periodic tick.
 - `main/configbackupapi_test.go`: the FIS-B cache settings section
   round-trips through backup/restore, defaults correctly from both
   recognized legacy backup shapes, and is cross-checked against
@@ -531,36 +672,39 @@ configured as on the live device at restore time.
 - Replay to EFB apps is not available in this release (see "Replay,"
   above) - this cache is a display/diagnostic aid only until that gap is
   closed.
-- Budget enforcement (`maxCacheBytes`/`maxEntries`) is periodic (every
-  60 seconds), not synchronous at admission time - see "Exact limits,
-  bounds, and safety caps," above, for why this is a bounded,
-  self-correcting design choice rather than a gap.
+- Startup recovery's quarantine-delete decision has one narrow,
+  documented, self-healing race against a concurrent live write for the
+  exact same product in the same narrow startup window - see
+  "Synchronous admission bounds," above, for the precise scope.
 
 ### A note on this feature's own race-testing scope
 
 Native `go test -race` was run against every package this feature adds
 to or modifies, including `main` (this project's cgo-linked daemon
-package, previously never race-tested at all, on any toolchain). Every
-race that appeared traces to one of two locations, both **pre-existing,
-untouched by this feature, and out of scope to fix here**: `main/`'s
-foundational shared monotonic clock (`monotonic.go`, unmodified since
-this project's original 2015-2016 implementation - its background
-`Watcher()` goroutine mutates `Time` with no synchronization, which
-`go test -race` can surface in any test in this package that reads
-`monotonicSeconds()`, including this feature's own tests, purely
-because they use the same project-wide shared clock every other test
-already does) and the pre-existing `/setSettings` handler
-(`settingsapi.go`, unrelated `globalSettings` mutation). Neither is
-touched by, nor was introduced by, this feature's diff - both predate
-it and affect the whole daemon equally. One genuinely in-scope race
-*was* found and fixed during this same verification pass:
-`storagelifecycle.Monitor` (a dependency this feature's own
-storage-pressure check calls into) - see that package's own commit
-history for the fix and its dedicated regression test. Fixing the two
-pre-existing, out-of-scope findings above would mean touching this
-project's foundational clock and its general settings handler - well
-beyond a "focused correction to the FIS-B cache" - and is recommended
-as a separate, dedicated follow-up.
+package). This foundation's original verification pass found every race
+that appeared traced to one of two locations, both pre-existing and
+untouched by this feature's own diff at the time: `main/`'s foundational
+shared monotonic clock (`monotonic.go`, unmodified since this project's
+original 2015-2016 implementation) and the pre-existing `/setSettings`
+handler (`managementinterface.go`, unrelated `globalSettings`
+mutation). **Both have since been fixed**, on a dedicated hotfix branch
+(`hotfix/main-concurrency-races`, merged to `master` and then merged
+into this feature branch via a normal merge commit before the
+synchronous-admission-bounds work above) - `monotonic` now uses
+`sync/atomic` throughout, and a new `globalSettingsMu` serializes every
+HTTP-triggered `globalSettings` read/write. Full native
+`go test -race -count=1 ./main/...`, repeated 3x, is clean after both
+fixes and after this foundation's own synchronous-admission-bounds
+changes, except for one remaining, still out-of-scope,
+still-pre-existing race: `TestAutoRecordAwaitMountAndReload_ReloadsOnceMountBecomesReady`
+(`main/autorecordrun_test.go`) - a test-code-only synchronization gap
+between a test goroutine and its own helper, unrelated to this feature
+or to either of the two fixed races, documented for separate owner
+review. One genuinely in-scope race *was* found and fixed during this
+foundation's original verification pass: `storagelifecycle.Monitor` (a
+dependency this feature's own storage-pressure check calls into) - see
+that package's own commit history for the fix and its dedicated
+regression test.
 
 ## Rollback plan
 
@@ -586,7 +730,9 @@ confirm entries appear with correct freshness transitions over real
 time; enable persistence and confirm entries survive a reboot with
 correctly bridged (not reset) age; confirm storage-pressure inhibition
 under a small configured `maxCacheBytes`/`maxEntries`; confirm the
-retention loop's periodic budget enforcement; confirm the two-step purge
+synchronous admission-time budget enforcement (see "Synchronous
+admission bounds," above) under sustained real traffic against a
+deliberately small budget; confirm the two-step purge
 clears only this cache's own namespace, with every other namespace
 (recordings, profiles, diagnostics, backups, OTA state) fully intact;
 and confirm live ADS-B/UAT reception and GDL90 forwarding are completely
