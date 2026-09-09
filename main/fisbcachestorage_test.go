@@ -153,7 +153,7 @@ func TestFISBCacheEnqueue_HighPressureRejectsAdmissionNotJustLabel(t *testing.T)
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 1024, MaxEntries: 10}
-	fisbCacheQueue = make(chan fisbCaptureItem, fisbCaptureQueueDepth)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheShuttingDown = false
 	origRejected := fisbCachePressureRejected
 	fisbCachePressureRejected = 0
@@ -166,8 +166,8 @@ func TestFISBCacheEnqueue_HighPressureRejectsAdmissionNotJustLabel(t *testing.T)
 
 	fisbCaptureText("METAR", "KSEA", "METAR KSEA 091853Z AUTO 00000KT 10SM CLR 15/10 A3000", fisbcache.FISBTime{})
 
-	if got := len(fisbCacheQueue); got != 0 {
-		t.Fatalf("expected nothing enqueued while storage pressure is HIGH, queue depth = %d", got)
+	if depth, _, _, _ := fisbCachePending.stats(); depth != 0 {
+		t.Fatalf("expected nothing enqueued while storage pressure is HIGH, queue depth = %d", depth)
 	}
 	fisbCacheMu.Lock()
 	rejected := fisbCachePressureRejected
@@ -184,14 +184,14 @@ func TestFISBCacheEnqueue_NormalPressureAdmitsToQueue(t *testing.T) {
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 1024, MaxEntries: 10}
-	fisbCacheQueue = make(chan fisbCaptureItem, fisbCaptureQueueDepth)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheShuttingDown = false
 	fisbCacheMu.Unlock()
 
 	fisbCaptureText("METAR", "KSEA", "METAR KSEA 091853Z AUTO 00000KT 10SM CLR 15/10 A3000", fisbcache.FISBTime{})
 
-	if got := len(fisbCacheQueue); got != 1 {
-		t.Fatalf("expected exactly one item enqueued at NORMAL pressure, got queue depth %d", got)
+	if depth, _, _, _ := fisbCachePending.stats(); depth != 1 {
+		t.Fatalf("expected exactly one item enqueued at NORMAL pressure, got queue depth %d", depth)
 	}
 }
 

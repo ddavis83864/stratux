@@ -29,7 +29,7 @@ func withFISBCacheTestEnv(t *testing.T) {
 
 	origStore := fisbCacheStore
 	origSettings := fisbCacheSettingsCache
-	origQueue := fisbCacheQueue
+	origPending := fisbCachePending
 	origRecovered := fisbCacheStartupRecovered
 	origRecoveryErr := fisbCacheRecoveryError
 	origNonFatal := fisbCacheNonFatalErrors
@@ -49,7 +49,7 @@ func withFISBCacheTestEnv(t *testing.T) {
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = DefaultFISBCacheSettings()
-	fisbCacheQueue = make(chan fisbCaptureItem, fisbCaptureQueueDepth)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheStartupRecovered = true
 	fisbCacheRecoveryError = false
 	fisbCacheNonFatalErrors = false
@@ -64,7 +64,7 @@ func withFISBCacheTestEnv(t *testing.T) {
 		fisbCacheMu.Lock()
 		fisbCacheStore = origStore
 		fisbCacheSettingsCache = origSettings
-		fisbCacheQueue = origQueue
+		fisbCachePending = origPending
 		fisbCacheStartupRecovered = origRecovered
 		fisbCacheRecoveryError = origRecoveryErr
 		fisbCacheNonFatalErrors = origNonFatal

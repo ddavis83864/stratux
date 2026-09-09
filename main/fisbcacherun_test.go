@@ -348,7 +348,7 @@ func TestFISBCacheEnqueue_QueueOverflowDropsAndCountsNeverBlocks(t *testing.T) {
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 1024, MaxEntries: 10}
-	fisbCacheQueue = make(chan fisbCaptureItem, 2) // deliberately tiny
+	fisbCachePending = newFISBPendingQueue(2) // deliberately tiny structural capacity
 	fisbCacheShuttingDown = false
 	origDropped := fisbCacheDroppedWrites
 	fisbCacheDroppedWrites = 0
@@ -361,9 +361,12 @@ func TestFISBCacheEnqueue_QueueOverflowDropsAndCountsNeverBlocks(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		// Five distinct products against a 2-capacity queue with no
-		// worker draining it - this must return promptly (never block
-		// on a full channel) regardless of how many are offered.
+		// Five DISTINCT products against a structural capacity of 2 keys
+		// with no worker draining it - this must return promptly (never
+		// block) regardless of how many are offered. Distinct keys
+		// matter here: this is testing the structural
+		// distinct-key-slot cap, not the byte/entry budget (which easily
+		// accommodates all 5 of these small payloads on its own).
 		for i := 0; i < 5; i++ {
 			fisbCaptureText("METAR", "KTEST"+string(rune('A'+i)), "irrelevant", fisbcache.FISBTime{})
 		}
@@ -375,8 +378,8 @@ func TestFISBCacheEnqueue_QueueOverflowDropsAndCountsNeverBlocks(t *testing.T) {
 		t.Fatal("fisbCaptureText blocked on a full queue instead of dropping and counting")
 	}
 
-	if got := len(fisbCacheQueue); got != 2 {
-		t.Errorf("expected the queue to be at its capacity (2), got %d", got)
+	if depth, _, _, _ := fisbCachePending.stats(); depth != 2 {
+		t.Errorf("expected the queue to be at its structural capacity (2), got %d", depth)
 	}
 	fisbCacheMu.Lock()
 	dropped := fisbCacheDroppedWrites
@@ -405,7 +408,7 @@ func TestFISBCacheEnqueue_OversizedPayloadRejectedNeverQueuedOrAdmitted(t *testi
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 100, MaxEntries: 10}
-	fisbCacheQueue = make(chan fisbCaptureItem, 8)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheShuttingDown = false
 	origRejected := fisbCacheOversizedRejected
 	fisbCacheOversizedRejected = 0
@@ -422,8 +425,8 @@ func TestFISBCacheEnqueue_OversizedPayloadRejectedNeverQueuedOrAdmitted(t *testi
 	}
 	fisbCaptureText("METAR", "KSEA", string(oversized), fisbcache.FISBTime{})
 
-	if got := len(fisbCacheQueue); got != 0 {
-		t.Errorf("expected the oversized entry never queued, got queue depth %d", got)
+	if depth, _, _, _ := fisbCachePending.stats(); depth != 0 {
+		t.Errorf("expected the oversized entry never queued, got queue depth %d", depth)
 	}
 	if fisbCacheStore.Len() != 0 {
 		t.Error("expected the oversized entry never admitted into the Store")
@@ -443,7 +446,7 @@ func TestFISBCacheEnqueue_PayloadExactlyAtBudgetIsAccepted(t *testing.T) {
 	fisbCacheMu.Lock()
 	fisbCacheStore = fisbcache.NewStore()
 	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 100, MaxEntries: 10}
-	fisbCacheQueue = make(chan fisbCaptureItem, 8)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheShuttingDown = false
 	fisbCacheMu.Unlock()
 
@@ -453,8 +456,8 @@ func TestFISBCacheEnqueue_PayloadExactlyAtBudgetIsAccepted(t *testing.T) {
 	}
 	fisbCaptureText("METAR", "KSEA", string(exact), fisbcache.FISBTime{})
 
-	if got := len(fisbCacheQueue); got != 1 {
-		t.Errorf("expected an exactly-at-budget entry to be queued normally, got queue depth %d", got)
+	if depth, _, _, _ := fisbCachePending.stats(); depth != 1 {
+		t.Errorf("expected an exactly-at-budget entry to be queued normally, got queue depth %d", depth)
 	}
 }
 

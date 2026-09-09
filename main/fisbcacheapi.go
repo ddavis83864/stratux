@@ -68,9 +68,15 @@ type fisbCacheStatusResponse struct {
 	ByProductClass     map[fisbcache.ProductClass]int   `json:"byProductClass"`
 	QueueDepth         int                              `json:"queueDepth"`
 	QueueCapacity      int                              `json:"queueCapacity"`
+	InFlightEntries    int                              `json:"inFlightEntries"`
+	ReservedBytes      int64                            `json:"reservedBytes"`
+	ReservedEntries    int                              `json:"reservedEntries"`
+	ProjectedBytes     int64                            `json:"projectedBytes"`
+	ProjectedEntries   int                              `json:"projectedEntries"`
 	DroppedWrites      uint64                           `json:"droppedWrites"`
 	PressureRejected   uint64                           `json:"pressureRejected"`
 	OversizedRejected  uint64                           `json:"oversizedRejected"`
+	CapacityRejected   uint64                           `json:"capacityRejected"`
 	LastCleanupUTC     time.Time                        `json:"lastCleanupUtc,omitempty"`
 	LastCleanupCount   int                              `json:"lastCleanupCount"`
 	StoragePressure    string                           `json:"storagePressure"`
@@ -125,9 +131,20 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 	}
 	stats := fisbcache.ComputeStats(snap, monotonicSeconds())
 
-	queueDepth := 0
-	if fisbCacheQueue != nil {
-		queueDepth = len(fisbCacheQueue)
+	queueDepth, inFlightEntries := 0, 0
+	var reservedBytes int64
+	reservedEntries := 0
+	projectedBytes, projectedEntries := stats.TotalBytes, stats.TotalEntries
+	if fisbCachePending != nil {
+		var queuedBytes, inFlightBytes int64
+		queueDepth, inFlightEntries, queuedBytes, inFlightBytes = fisbCachePending.stats()
+		reservedBytes = queuedBytes + inFlightBytes
+		reservedEntries = queueDepth + inFlightEntries
+		// A jointly-consistent read (not the separate `snap` above,
+		// which is a plain committed-only snapshot) - see
+		// fisbCacheProjectedSnapshotAtomic's own doc comment for why
+		// this matters specifically for these two fields.
+		projectedBytes, projectedEntries = fisbCacheProjectedSnapshotAtomic(fisbCachePending)
 	}
 
 	return fisbCacheStatusResponse{
@@ -142,10 +159,16 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		ByFreshness:        stats.ByFreshness,
 		ByProductClass:     stats.ByProductClass,
 		QueueDepth:         queueDepth,
-		QueueCapacity:      fisbCaptureQueueDepth,
+		QueueCapacity:      fisbCachePendingCapacity,
+		InFlightEntries:    inFlightEntries,
+		ReservedBytes:      reservedBytes,
+		ReservedEntries:    reservedEntries,
+		ProjectedBytes:     projectedBytes,
+		ProjectedEntries:   projectedEntries,
 		DroppedWrites:      fisbCacheDroppedWrites,
 		PressureRejected:   fisbCachePressureRejected,
 		OversizedRejected:  fisbCacheOversizedRejected,
+		CapacityRejected:   fisbCacheCapacityRejected,
 		LastCleanupUTC:     lastCleanupUTC,
 		LastCleanupCount:   lastCleanupCount,
 		StoragePressure:    pressure,
@@ -310,6 +333,32 @@ type fisbCachePurgeConfirmRequest struct {
 	Token string `json:"token"`
 }
 
+// fisbCachePurgeUsingSnapshot deletes every key named in snap - this is
+// the confirmed-purge handler's own plan-then-execute step, factored out
+// so a test can supply a DELIBERATELY stale snap (one captured before a
+// concurrent replacement) and prove the same guarantee
+// fisbCacheEvictKeyIfUnchanged already proves for a single key: a purge
+// planned against an earlier Snapshot must never destroy a key that was
+// concurrently superseded with fresher content before this function's
+// own per-key deletes run - see docs/fisb-weather-cache.md's "purge and
+// retention concurrency" coverage. Per-key check-then-delete
+// (fisbCacheEvictKeyIfUnchanged, the same primitive retention/
+// reservation eviction uses), never a blind batch delete-then-
+// Store.Delete.
+func fisbCachePurgeUsingSnapshot(snap map[fisbcache.Key]fisbcache.Entry) (deleted, errCount int) {
+	for k, e := range snap {
+		ok, err := fisbCacheEvictKeyIfUnchanged(k, e)
+		if err != nil {
+			errCount++
+			continue
+		}
+		if ok {
+			deleted++
+		}
+	}
+	return deleted, errCount
+}
+
 // handleConfirmFISBCachePurgeRequest deletes every currently-cached entry
 // - this feature's cache-owned namespace only, never anything else on
 // the persistent partition. Single-use: a repeated confirm with the same
@@ -349,19 +398,19 @@ func handleConfirmFISBCachePurgeRequest(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"success": false, "error": "cache not initialized"})
 		return
 	}
-	snap := fisbCacheStore.Snapshot()
-	keys := make([]fisbcache.Key, 0, len(snap))
-	for k := range snap {
-		keys = append(keys, k)
+	// Discard anything still queued (not yet dequeued by the capture
+	// worker) FIRST, so a purge is never immediately, silently undone by
+	// whatever was waiting behind it - see fisbPendingQueue.clear's own
+	// doc comment for the narrow, documented exception (an item already
+	// in-flight when this runs is left alone).
+	if fisbCachePending != nil {
+		fisbCachePending.clear()
 	}
-	deleted, errs := fisbCacheExecuteEviction(keys)
-	for _, k := range keys {
-		fisbCacheStore.Delete(k)
-	}
+	deleted, errCount := fisbCachePurgeUsingSnapshot(fisbCacheStore.Snapshot())
 	resp := map[string]interface{}{"success": true, "deletedCount": deleted}
-	if len(errs) > 0 {
+	if errCount > 0 {
 		resp["partial"] = true
-		resp["errorCount"] = len(errs)
+		resp["errorCount"] = errCount
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -403,8 +452,15 @@ func fisbCacheDiagnosticsSummary() interface{} {
 		"byFreshness":        s.ByFreshness,
 		"byProductClass":     s.ByProductClass,
 		"queueDepth":         s.QueueDepth,
+		"inFlightEntries":    s.InFlightEntries,
+		"reservedBytes":      s.ReservedBytes,
+		"reservedEntries":    s.ReservedEntries,
+		"projectedBytes":     s.ProjectedBytes,
+		"projectedEntries":   s.ProjectedEntries,
 		"droppedWrites":      s.DroppedWrites,
 		"pressureRejected":   s.PressureRejected,
+		"oversizedRejected":  s.OversizedRejected,
+		"capacityRejected":   s.CapacityRejected,
 		"lastCleanupCount":   s.LastCleanupCount,
 		"schemaVersion":      fisbcache.SchemaVersion,
 	}

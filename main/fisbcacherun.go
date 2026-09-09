@@ -27,13 +27,6 @@ import (
 	"github.com/stratux/stratux/storagelifecycle"
 )
 
-// fisbCaptureQueueDepth bounds the capture path's own queue - generous
-// for this project's own observed 978 uplink rate, small enough that a
-// stalled/slow disk can never accumulate unbounded memory. Once full,
-// new captures are dropped (see fisbCacheDroppedWrites), never blocking
-// the caller.
-const fisbCaptureQueueDepth = 256
-
 // fisbCacheStartupRecoveryTimeout bounds how long startup recovery may
 // run before this feature simply reports itself degraded and moves on -
 // never delays Stratux startup itself, since recovery runs in its own
@@ -58,10 +51,11 @@ var (
 	fisbCacheMu                sync.Mutex
 	fisbCacheStore             *fisbcache.Store
 	fisbCacheSettingsCache     FISBCacheSettings
-	fisbCacheQueue             chan fisbCaptureItem
+	fisbCachePending           *fisbPendingQueue
 	fisbCacheDroppedWrites     uint64 // atomic
 	fisbCachePressureRejected  uint64 // atomic
 	fisbCacheOversizedRejected uint64 // atomic
+	fisbCacheCapacityRejected  uint64 // atomic
 	fisbCacheStartupRecovered  bool
 	fisbCacheRecoveryError     bool
 	fisbCacheNonFatalErrors    bool
@@ -126,7 +120,7 @@ func initFISBCache() {
 	fisbCacheMu.Lock()
 	fisbCacheSettingsCache = loadFISBCacheSettings()
 	fisbCacheStore = fisbcache.NewStore()
-	fisbCacheQueue = make(chan fisbCaptureItem, fisbCaptureQueueDepth)
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
 	fisbCacheFS = storagelifecycle.NewOSFS()
 	fisbCacheAtomicWriter = storagelifecycle.NewAtomicWriter(fisbCacheFS)
 	settingsSnapshot := fisbCacheSettingsCache
@@ -227,10 +221,18 @@ func fisbCaptureNexrad(radarType uint32, scale int, latNorth, lonWest, height, w
 	fisbCacheEnqueue(key, ft, payload)
 }
 
+// fisbCacheEnqueue is this feature's one synchronous capacity-reservation
+// gate. It never merely queues a capture and hopes there is room later -
+// every check here, including the projected-capacity reservation itself,
+// happens before this function returns, so a caller (fisbCaptureText/
+// fisbCaptureNexrad) never learns "accepted" for something that was not
+// actually, synchronously, reserved room for at that exact moment. See
+// docs/fisb-weather-cache.md's "Synchronous admission bounds" section for
+// the full model and its proof.
 func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) {
 	fisbCacheMu.Lock()
 	shuttingDown := fisbCacheShuttingDown
-	maxCacheBytes := fisbCacheSettingsCache.MaxCacheBytes
+	settings := fisbCacheSettingsCache
 	fisbCacheMu.Unlock()
 	if shuttingDown {
 		return
@@ -240,16 +242,15 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 	// either violating that budget outright or evicting every other
 	// entry - including ones far fresher than this one - just to make
 	// room for something that still would not fit twice. Rejected here,
-	// synchronously, before it ever occupies a queue slot or a Store
-	// entry: this is what keeps the strict disk-overhead bound this
-	// feature promises independent of what any single incoming product
-	// happens to be sized like (see fisbCacheOversizedRejected and
-	// docs/fisb-weather-cache.md's "Synchronous admission bounds"
-	// section). maxCacheBytes<=0 cannot happen for a validated settings
+	// before this function ever computes a full reservation: this is
+	// what keeps the strict disk-overhead bound this feature promises
+	// independent of what any single incoming product happens to be
+	// sized like (see fisbCacheOversizedRejected).
+	// settings.MaxCacheBytes<=0 cannot happen for a validated settings
 	// value (see FISBCacheSettings.Validate) but is treated as "no
 	// limit" here too, consistent with fisbcache.PlanEviction's own
 	// convention, rather than this check inventing a stricter one.
-	if maxCacheBytes > 0 && int64(len(payload)) > maxCacheBytes {
+	if settings.MaxCacheBytes > 0 && int64(len(payload)) > settings.MaxCacheBytes {
 		atomic.AddUint64(&fisbCacheOversizedRejected, 1)
 		return
 	}
@@ -259,8 +260,9 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 	// comment. Already-cached entries are still served; this only stops
 	// growing the cache further while storage is genuinely tight or its
 	// state cannot currently be confirmed. Counted separately from
-	// fisbCacheDroppedWrites (queue overflow) so an operator can tell
-	// "backlogged" apart from "storage is under pressure" at a glance.
+	// fisbCacheDroppedWrites/fisbCacheCapacityRejected so an operator can
+	// tell "backlogged," "budget exhausted," and "storage is under
+	// pressure" apart at a glance.
 	if _, prohibited := fisbCacheStoragePressureProhibited(); prohibited {
 		atomic.AddUint64(&fisbCachePressureRejected, 1)
 		return
@@ -275,10 +277,15 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 		SizeBytes:           int64(len(payload)),
 	}
 	item := fisbCaptureItem{entry: entry, payload: payload}
-	select {
-	case fisbCacheQueue <- item:
-	default:
-		atomic.AddUint64(&fisbCacheDroppedWrites, 1)
+
+	accepted, reason := fisbCachePending.reserveAndEnqueue(key, item, settings)
+	if !accepted {
+		switch reason {
+		case fisbReserveReasonStructuralFull:
+			atomic.AddUint64(&fisbCacheDroppedWrites, 1)
+		case fisbReserveReasonCapacity:
+			atomic.AddUint64(&fisbCacheCapacityRejected, 1)
+		}
 	}
 }
 
@@ -290,45 +297,61 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 // read, never the capture-path caller (fisbCaptureText/fisbCaptureNexrad
 // already returned by the time this runs).
 //
-// Synchronous admission bounds: every admitted item is followed,
-// immediately and on this same goroutine, by a full budget-enforcement
-// pass (fisbCacheRunRetention) BEFORE that item is ever persisted to
-// disk - not merely "eventually, on the next periodic retention tick".
-// The just-admitted entry is always this pass's freshest entry (its
-// ReceivedAtMonotonic is "now"), so fisbcache.PlanEviction's own
-// deterministic oldest-first order never selects it ahead of anything
-// else already cached - enforcement only ever makes room FOR it, never
-// evicts it out from under itself, unless it is the sole entry left and
-// still over budget (impossible here: fisbCacheEnqueue already rejected
-// anything whose own payload alone cannot fit the configured budget).
-// Running enforcement before the write, rather than after, means the
-// disk is never even momentarily pushed over the configured budget as a
-// direct result of admitting one more entry - see
-// docs/fisb-weather-cache.md's "Synchronous admission bounds" section
-// for the full, provable worst-case model this establishes.
+// Synchronous admission bounds: by the time an item reaches this worker
+// at all, fisbCacheEnqueue's own reservation has already, synchronously,
+// made room for it - see fisbcachereserve.go. This function still runs
+// fisbCacheRunRetention immediately after each Admit, before persisting,
+// as a defense-in-depth backstop (usually a no-op given the reservation
+// already made room) that also re-validates against whatever the CURRENT
+// settings are at commit time, not whatever they were when the
+// reservation was originally made - see docs/fisb-weather-cache.md's
+// "Synchronous admission bounds" section for why this closes the gap a
+// settings tightening could otherwise leave for an already-reserved item.
 func fisbCacheCaptureWorker() {
-	for item := range fisbCacheQueue {
-		result := fisbCacheStore.Admit(item.entry)
-		if result != fisbcache.AdmitAccepted && result != fisbcache.AdmitSuperseded {
-			continue
+	for range fisbCachePending.wake {
+		for {
+			key, item, ok := fisbCachePending.pop()
+			if !ok {
+				break
+			}
+			fisbCacheProcessOneCaptureItem(key, item)
 		}
-		fisbCacheRunRetention()
+	}
+}
 
-		fisbCacheMu.Lock()
-		persistenceEnabled := fisbCacheSettingsCache.Enabled && fisbCacheSettingsCache.PersistenceEnabled
-		fisbCacheMu.Unlock()
-		if !persistenceEnabled {
-			continue
-		}
-		// Defensive re-check, not expected to ever actually trigger (see
-		// this function's own doc comment): only spend a write on this
-		// entry if enforcement, just above, did not remove it.
-		if _, stillPresent := fisbCacheStore.Get(item.entry.Key); !stillPresent {
-			continue
-		}
-		if err := fisbCachePersist(item.entry, item.payload); err != nil {
-			log.Printf("fisbcache: could not persist entry: %s\n", err)
-		}
+// fisbCacheProcessOneCaptureItem is fisbCacheCaptureWorker's own inner,
+// per-item logic - factored out as a plain function (not itself a
+// goroutine) so it can be driven directly, deterministically, without
+// starting a real background worker: production always reaches it via
+// fisbCacheCaptureWorker's pop loop above; tests that need to prove the
+// wake/pop goroutine plumbing itself still can (and one does), while
+// tests that only need to prove admission/eviction/persistence behavior
+// can call this directly after their own pop(), with no leaked
+// goroutine risk across test boundaries.
+func fisbCacheProcessOneCaptureItem(key fisbcache.Key, item fisbCaptureItem) {
+	result := fisbCacheStore.Admit(item.entry)
+	// The reservation's job ends the instant Admit decides this key's
+	// fate - see fisbPendingQueue's own doc comment.
+	fisbCachePending.releaseInFlight(key)
+	if result != fisbcache.AdmitAccepted && result != fisbcache.AdmitSuperseded {
+		return
+	}
+	fisbCacheRunRetention()
+
+	fisbCacheMu.Lock()
+	persistenceEnabled := fisbCacheSettingsCache.Enabled && fisbCacheSettingsCache.PersistenceEnabled
+	fisbCacheMu.Unlock()
+	if !persistenceEnabled {
+		return
+	}
+	// Defensive re-check, not expected to ever actually trigger (see
+	// fisbCacheCaptureWorker's own doc comment): only spend a write on
+	// this entry if enforcement, just above, did not remove it.
+	if _, stillPresent := fisbCacheStore.Get(item.entry.Key); !stillPresent {
+		return
+	}
+	if err := fisbCachePersist(item.entry, item.payload); err != nil {
+		log.Printf("fisbcache: could not persist entry: %s\n", err)
 	}
 }
 
@@ -541,19 +564,42 @@ func fisbCacheEvictKeyIfUnchanged(k fisbcache.Key, expected fisbcache.Entry) (de
 	}
 	n, errs := fisbCacheExecuteEviction([]fisbcache.Key{k})
 	if len(errs) > 0 {
-		return false, errs[0]
-	}
-	if n != 1 {
+		// A missing file is not a failure to remove k from committed
+		// state - there is nothing left on disk to protect, and the
+		// Store index must still be corrected, or eviction of this key
+		// would be permanently impossible whenever no file exists for
+		// it: persistence disabled (in-memory-only mode never writes a
+		// file at all), or - the case that surfaces this specifically -
+		// this exact entry was just Admitted this same worker iteration
+		// and this call is running (as fisbCacheRunRetention's own
+		// post-Admit backstop always does) BEFORE that admission's own
+		// fisbCachePersist has had a chance to run. Any OTHER error
+		// (permission denied, I/O failure, a SafeJoin rejection, ...)
+		// still refuses to touch the Store, rather than risk an
+		// inconsistent claim about what actually happened.
+		for _, e := range errs {
+			if !os.IsNotExist(e) {
+				return false, e
+			}
+		}
+	} else if n != 1 {
 		return false, nil
 	}
-	// Guaranteed to succeed: nothing can have changed k between the Get
-	// above and here, since both this whole function and
-	// fisbCachePersist's own file write hold fisbCacheDiskMu for their
-	// entire duration - the DeleteIfUnchanged call is still the correct
-	// primitive to use here (rather than a plain Delete) so this
-	// function's own correctness never depends on that lock discipline
-	// being perfect everywhere, now or after a future change.
-	fisbCacheStore.DeleteIfUnchanged(k, expected)
+	// Do NOT assume this succeeds just because the Get above matched:
+	// fisbCacheDiskMu (held for this whole function) excludes a
+	// concurrent fisbCachePersist WRITE for k, but Store.Admit is
+	// deliberately NOT gated by fisbCacheDiskMu (see that lock's own
+	// doc comment) - a live capture that supersedes k with a genuinely
+	// fresher copy of the SAME real-world product can still run its
+	// Admit() in the gap between the Get above and here. When that
+	// happens, DeleteIfUnchanged correctly refuses (the Store no longer
+	// holds `expected`) and this function must report that refusal
+	// faithfully, not claim success - the file is gone (a stale copy,
+	// harmless to have removed) but the Store's fresher in-memory entry
+	// for k must survive untouched.
+	if !fisbCacheStore.DeleteIfUnchanged(k, expected) {
+		return false, nil
+	}
 	return true, nil
 }
 

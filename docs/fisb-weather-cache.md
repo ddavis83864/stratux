@@ -83,7 +83,8 @@ Following this project's established convention (`alerting`, `readiness`,
 | `main/fisbcachesettings.go` | versioned, atomically-persisted settings |
 | `main/fisbcachestorage.go` | the `storagelifecycle.CacheLifecycle` adapter |
 | `main/fisbcachecapture.go` | the one file that imports `uatparse` - frame-to-`Entry` translation |
-| `main/fisbcacherun.go` | init, capture queue/worker, startup recovery, retention loop, shutdown |
+| `main/fisbcacherun.go` | init, capture worker, startup recovery, retention loop, shutdown |
+| `main/fisbcachereserve.go` | `fisbPendingQueue`, `fisbCachePlanReservation` - the synchronous, pre-enqueue capacity reservation model (see "Synchronous admission bounds," below) |
 | `main/fisbcacheapi.go` | HTTP status/inventory/settings/purge endpoints |
 
 ## Product scope: only what this codebase actually decodes
@@ -213,65 +214,163 @@ inventing new ones:
   artifact, or any file this cache did not itself write (the namespace's
   `.json`-only extension allowlist and its own dedicated directory are
   the structural guarantee).
-- **Automatic storage eviction is never enabled by this feature.** This
-  cache's own bounded retention loop (`fisbCacheRetentionLoop`, 60 s) is
-  the only thing that ever deletes a *cache-owned* file; the project-wide
-  Storage Lifecycle Foundation's own eviction remains exactly as
-  conservative as it already was.
+- **Automatic storage eviction is never enabled by this feature.** Only
+  this cache's own logic - synchronous reservation eviction
+  (`fisbCacheEnqueue`), the periodic retention loop
+  (`fisbCacheRetentionLoop`, 60 s, now purely a time-based-expiry
+  backstop), and the confirmed-purge handler - ever deletes a
+  *cache-owned* file, always via the same safe, per-key
+  `fisbCacheEvictKeyIfUnchanged` primitive (see "Synchronous admission
+  bounds," below); the project-wide Storage Lifecycle Foundation's own
+  eviction remains exactly as conservative as it already was.
 
 ## Synchronous admission bounds
 
-This feature's foundation originally enforced `maxCacheBytes`/
-`maxEntries` only from the 60-second retention loop - a burst of
-distinct new products could transiently hold the cache over its
-configured budget for up to that long. This section documents the
-strict, synchronous replacement (`main/fisbcacherun.go`,
-`main/fisbcachestorage.go`): the exact worst-case bound this cache can
-ever exhibit at any instant, and why it holds under real concurrency,
-not merely in the single-threaded case.
+This feature's capacity enforcement went through two designs before
+reaching the one described here (`main/fisbcachereserve.go`,
+`main/fisbcacherun.go`, `main/fisbcachestorage.go`):
 
-**Where enforcement now runs, synchronously, not just periodically:**
+1. Originally, `maxCacheBytes`/`maxEntries` were enforced only from the
+   60-second retention loop - a burst of distinct new products could
+   transiently hold the cache well over its configured budget for up to
+   that long.
+2. A first correction made enforcement run synchronously *after* each
+   admission, before that entry was persisted - closing the "up to 60
+   seconds over budget" gap, but still deciding capacity only after an
+   item had already been queued and already occupied a `Store` slot.
+   Nothing accounted for what was still sitting in the queue, or being
+   actively written, when deciding whether a *new* capture could be
+   admitted at all - a large enough burst could still queue up well past
+   what the budget could ever hold, all before a single one of those
+   items was evaluated against it.
 
-1. **After every single admission**, on the same goroutine, before that
-   entry is ever persisted - `fisbCacheCaptureWorker` calls
-   `fisbCacheRunRetention()` immediately after `Store.Admit` succeeds
-   and before `fisbCachePersist`. The just-admitted entry is always this
-   pass's freshest entry (`ReceivedAtMonotonic` is "now"), so
-   `fisbcache.PlanEviction`'s own deterministic oldest-first order never
-   selects it ahead of anything already cached - enforcement only ever
-   makes room *for* it. Running this *before* the write, not after,
-   means the disk is never even momentarily pushed over budget as a
-   direct result of admitting one more entry.
-2. **At the end of startup recovery** - a persisted set larger than the
-   *currently* configured budget (e.g. settings were tightened since
-   these files were written on an earlier boot) is trimmed back before
-   recovery ever reports itself complete, not left for whatever the
-   first periodic tick after boot happens to be.
-3. **Immediately on a settings change** - `handleSetFISBCacheSettingsRequest`
-   runs the same enforcement pass right after applying a new
-   `maxCacheBytes`/`maxEntries`, so tightening the budget takes effect
-   at once rather than up to 60 seconds later.
-4. **The periodic 60-second loop still exists**, now purely as a
-   backstop for pure time-based expiry - an entry can become `EXPIRED`
-   purely from the passage of time, with no new admission to trigger
-   enforcement, so a periodic sweep is still the only way that case gets
-   noticed promptly.
+This section documents the current, final design: capacity is a
+**reservation**, decided **synchronously at `fisbCacheEnqueue` time**,
+strictly *before* an item ever occupies a queue slot - the exact
+worst-case bound this cache can ever exhibit at any instant, and why it
+holds under real concurrency, not merely in the single-threaded case.
 
-**A single entry that could never fit is rejected before it is ever
-admitted.** `fisbCacheEnqueue` rejects an offer outright (counted as
-`oversizedRejected`, distinct from `droppedWrites`/`pressureRejected`)
-whenever its own payload alone exceeds the currently configured
-`maxCacheBytes` - admitting it would either violate the budget outright
-or require evicting every other entry, including fresher ones, just to
-make room for something that still would not fit twice.
+### The reservation model
 
-**Concurrency: the exact race this closes.** Retention/enforcement is
-always *planned* against a `Store.Snapshot()` taken slightly before it
-*executes*. Without further care, a live admission could persist a
-fresher copy of a key in the gap between that snapshot and eviction's
-own decision to remove it, and eviction would then delete the FRESH
-file moments after it was written - `Store.Delete` has no way to notice
-an entry changed underneath it. Two mechanisms close this, together:
+`fisbCacheEnqueue` no longer merely queues a capture and hopes there is
+room later. It calls `fisbPendingQueue.reserveAndEnqueue`
+(`main/fisbcachereserve.go`), which - as one atomic operation, holding
+the pending-queue's own lock throughout - computes the **projected**
+total (everything already **committed**, i.e. `Store.Snapshot()`, plus
+everything already **reserved**, i.e. every other currently queued or
+in-flight capture, plus this new candidate) and, if that does not
+already fit the configured budget, evicts committed entries
+(oldest-received/expired-first, via the same safe primitive retention
+uses - see below) to make room, *before* the reservation is ever
+granted. If even evicting everything evictable still would not be
+enough, the offer is rejected outright (`capacityRejected`, distinct
+from `oversizedRejected`/`pressureRejected`/`droppedWrites` - see "Exact
+limits, bounds, and safety caps," above).
+
+`fisbPendingQueue` replaces the earlier plain channel with a bounded,
+**per-key-coalescing** structure: at most one pending reservation per
+product `Key`. A second capture for a key that is already queued always
+*supersedes* its reservation (updating the reserved size to the latest
+offer) rather than adding a second, separate one - this is what makes
+"reserved bytes"/"reserved entries" a precise count of *distinct
+products* with an outstanding claim, never inflated by how many times
+one of them was re-broadcast while still queued. A reservation's
+lifecycle has three states, all counted as "reserved": **queued**
+(`q.items`, not yet dequeued), **in-flight** (`q.inFlight`, dequeued by
+the capture worker, `Store.Admit` not yet decided), and finally
+released - the instant `Store.Admit` decides the item's fate (accepted,
+superseded, or rejected), regardless of outcome, since at that point the
+key's contribution to capacity is either now reflected in `committed`
+(accepted/superseded) or nothing at all (rejected).
+
+Once a reservation is granted and the capture worker (`fisbCacheCaptureWorker`
+/ `fisbCacheProcessOneCaptureItem`) actually processes it, `fisbCacheRunRetention`
+still runs immediately after `Store.Admit`, before persisting - now
+almost always a no-op (the reservation already made room), kept as a
+defense-in-depth backstop that also re-validates against whatever
+settings are current at *commit* time, not whatever was current when the
+reservation was made (see "settings-limit reductions," below).
+
+### Every concern this reservation model accounts for
+
+- **Persisted entries** - `Store.Snapshot()`, the *committed* side of
+  every projection.
+- **Queued entries** - `fisbPendingQueue.items`, counted as *reserved*.
+- **In-flight writes** - `fisbPendingQueue.inFlight` (dequeued, not yet
+  `Admit`-decided), also counted as *reserved*, so the one item the
+  capture worker is actively processing is never invisible to a
+  concurrent reservation's own projection.
+- **Replacements / superseded queued updates** - a second capture for an
+  already-queued key updates (never adds to) its reservation; a
+  candidate that already has a *committed* entry is projected using the
+  candidate's own size, never double-counted against its own
+  about-to-be-superseded committed value.
+- **Reserved bytes / reserved entry-count deltas** - `fisbCacheProjectedTotals`
+  merges committed and reserved into one set, reserved's value always
+  winning for a key present in both (a key mid-transition from reserved
+  to committed, still counted exactly once).
+- **Failed, rejected, canceled, or interrupted work** - a reservation
+  that never actually reaches the queue (structurally full, or capacity
+  could not be freed) never reserves anything in the first place; an
+  `Admit`-rejected item (an older copy of an already-cached product)
+  releases its reservation exactly like an accepted one and is never
+  persisted (`TestFISBCacheProcessOneCaptureItem_RejectedAdmitReleasesReservationAndPersistsNothing`).
+- **Settings-limit reductions** - see below.
+- **Purge and retention concurrency** - see below.
+- **Startup recovery** - recovery re-admits directly into `Store`
+  (bypassing reservation entirely, since it is reading already-persisted
+  files, not live captures); `fisbCacheRunRetention` still runs once at
+  the end, bounding recovery's own contribution before it ever reports
+  complete.
+
+### Settings-limit reductions
+
+A reservation already granted under a looser budget is **not**
+retroactively cancelled when settings tighten before it is processed
+(cancelling in-flight work mid-flight would need its own, more invasive
+machinery than this narrow correction warrants). Instead, this is a
+deliberate, bounded, self-correcting exception: `fisbCacheRunRetention`'s
+post-`Admit` backstop always re-validates against the settings current
+at **commit** time, not reservation time - so `committed` state (what is
+actually taking up disk space) never exceeds the *current* budget for
+more than one capture-worker iteration after a tightening event, however
+many "grandfathered" reservations were outstanding when it happened.
+Proven by
+`TestFISBCacheProcessOneCaptureItem_SettingsTighteningDuringOutstandingReservationSelfCorrects`.
+`handleSetFISBCacheSettingsRequest` also still runs an enforcement pass
+immediately on every settings change, for the *already-committed* state
+that exists at that moment.
+
+### Purge and retention concurrency
+
+The confirmed-purge handler (`handleConfirmFISBCachePurgeRequest`)
+first calls `fisbPendingQueue.clear()`, discarding everything still
+**queued** (not yet dequeued), so a purge is never immediately, silently
+undone by whatever was waiting behind it - deliberately leaving anything
+already **in-flight** alone (the capture worker may already be
+`Admit`-deciding it; this feature's established "never abandon in-flight
+work" posture applies here too, and the resulting failure mode is
+narrow: at most the one in-flight item can reappear immediately after a
+purge). It then deletes every entry named in its own `Store.Snapshot()`
+via `fisbCachePurgeUsingSnapshot` - the SAME per-key, check-then-delete
+primitive (`fisbCacheEvictKeyIfUnchanged`) retention and reservation
+eviction use, not a blind batch delete - so a concurrent capture that
+supersedes a key between the purge's snapshot and its own per-key
+deletes can never have its fresh write destroyed by a purge decision
+made against the older, now-stale snapshot value. Proven by
+`TestFISBCachePurgeUsingSnapshot_NeverDestroysAConcurrentReplacement`
+and `TestHandleConfirmFISBCachePurge_ClearsQueuedReservations`.
+
+### Concurrency: the exact races this closes
+
+**Race 1 - a stale eviction plan destroying fresh data.** Retention/
+reservation eviction is always *planned* against a `Store.Snapshot()`
+taken slightly before it *executes*. Without further care, a live
+admission could persist a fresher copy of a key in the gap between that
+snapshot and eviction's own decision to remove it, and eviction would
+then delete the FRESH file moments after it was written - `Store.Delete`
+has no way to notice an entry changed underneath it. Two mechanisms
+close this, together:
 
 - **`fisbcache.Store.DeleteIfUnchanged(k, expected)`** - a compare-and-
   delete: removes `k` only if the Store's current entry for `k` is
@@ -283,24 +382,60 @@ an entry changed underneath it. Two mechanisms close this, together:
   eviction's own re-check-then-remove sequence
   (`fisbCacheEvictKeyIfUnchanged`: re-`Get` the key, and only if it
   still matches what was planned, remove the file and then
-  `DeleteIfUnchanged`). Because both sides hold this lock for their
-  *entire* file-touching sequence, a write can never complete in the
-  narrow gap between eviction's own check and its remove - whichever
-  side wins the race for the lock finishes first, so eviction's re-check
-  can never observe a state a concurrent write is still in the middle of
-  changing. `Store.Admit` itself is deliberately left outside this lock
-  (a fast, separately-synchronized, non-disk operation); the proof this
-  is still sufficient is worked through in `fisbCacheDiskMu`'s own doc
-  comment. Proven under `go test -race` by
+  `DeleteIfUnchanged` - itself re-checked, never assumed to succeed just
+  because the file removal did, since `Store.Admit` is deliberately not
+  gated by this lock and can still supersede the key in the narrow gap
+  between the two). Because both sides hold this lock for their *entire*
+  file-touching sequence, a write can never complete in the narrow gap
+  between eviction's own check and its remove. Proven under
+  `go test -race` by
   `TestFISBCache_ConcurrentAdmitPersistAndRetentionNeverDivergesStoreFromDisk`
-  (single-threaded admission - matching `fisbCacheCaptureWorker`'s own
-  real architecture - concurrently with a second goroutine hammering
-  `fisbCacheRunRetention` on its own, exactly the shape the periodic
-  ticker/a settings change can produce in production) and
-  `TestFISBCacheEvictKeyIfUnchanged_RefusesStalePlanEvenAfterConcurrentReplacementIsPersisted`
-  (a deterministic, single-goroutine reproduction of the exact stale-plan
-  sequence, proving the surviving file is provably the fresh write, not
-  the stale one).
+  and `TestFISBCacheEvictKeyIfUnchanged_RefusesStalePlanEvenAfterConcurrentReplacementIsPersisted`.
+- **A missing file is never treated as a failure to evict.** If the file
+  to be removed simply does not exist - persistence disabled
+  (in-memory-only mode never writes one), or this exact entry was just
+  `Admit`-ted this same worker iteration and `fisbCacheRunRetention`'s
+  own post-`Admit` backstop is running *before* that admission's own
+  `fisbCachePersist` call - `fisbCacheEvictKeyIfUnchanged` still removes
+  the `Store` entry: there is nothing left on disk to protect, and
+  refusing to correct the `Store` index in this case would make such a
+  key permanently un-evictable. Any *other* removal error (permission
+  denied, I/O failure, a path-safety rejection) still refuses to touch
+  the `Store`.
+
+**Race 2 - a reservation's own "already fits" fast path using stale
+data.** `reserveAndEnqueue` holds `fisbPendingQueue`'s own lock for its
+entire duration, so no other reservation can run concurrently with it -
+but `Store.Admit` is not gated by that lock, so a reservation's
+`committed` snapshot can still be momentarily behind the worker's own
+progress. This is provably harmless for the same reason Race 1 is
+closed: after any eviction a reservation performs, it re-verifies
+against a **freshly re-read** `Store.Snapshot()` using a plain,
+non-simulating fit check (`fisbCacheReservationFits`) - deliberately
+never a second call to the *planning* function
+(`fisbCachePlanReservation`), which would derive a fresh plan from
+whatever is still present and report success by *simulating* that plan's
+removal too, even if the real eviction just attempted had silently
+failed to remove anything. Only a real, already-reflected-in-`Store`
+change is ever trusted to have freed room.
+
+**Observability caveat - not an enforcement gap.** The status API's
+`projectedBytes`/`projectedEntries` fields, like any external reader,
+combine `Store.Snapshot()` (its own mutex) and the pending queue's own
+reservation ledger (a *different* mutex) into one number. Read as two
+independent, separately-locked snapshots, this combination can
+momentarily describe a mix of two different real instants that never
+truly co-existed (e.g. one taken just before a reservation's own
+eviction completes, the other just after) - a pure artifact of
+non-atomic combination, never a real admission-time violation (the
+admission decision itself, inside `reserveAndEnqueue`, is never affected
+by this - it always computes committed+reserved while holding the
+pending queue's own lock throughout, which *is* atomic relative to every
+other reservation). Where this distinction actually matters -
+*proving* the bound, not just reporting it for a dashboard -
+`fisbCacheProjectedSnapshotAtomic` holds the pending queue's lock across
+*both* nested reads, closing the gap; `TestInvariant_ProjectedNeverExceedsMaximumUnderRealConcurrentLoad`
+uses it for exactly this reason.
 
 **Known, narrow, documented limitation:** startup recovery's own
 quarantine deletes (a corrupt/future-dated/unaged/expired persisted
@@ -319,35 +454,59 @@ quarantine path never touches the `Store` for a key it did not itself
 is at risk). Documented here rather than silently claimed closed - see
 `fisbCacheStartupRecovery`'s own doc comment for the full reasoning.
 
-**The strict maximum disk-overhead bound this cache can ever exhibit, at
-any instant:**
+### The required invariants, and where each is proven
 
 ```
-maxCacheBytes (configured, hard-capped at 256 MiB)
-  + maxPersistedEntryBytes (69,632 bytes - one entry's own hard cap)
+committed cache bytes                                <= configured maximum bytes
+committed cache entries                               <= configured maximum entries
+projected bytes (committed + queued/in-flight)        <= configured maximum bytes
+projected entries (committed + queued/in-flight)      <= configured maximum entries
+temporary atomic-write overhead                       <= one explicitly derived hard bound
+queue memory                                          <= one explicitly derived hard bound
 ```
 
-The first term is the enforced steady-state budget. The second is the
-maximum *additional*, strictly transient overhead: `AtomicWriter.Write`
-creates a uniquely-named temp file, writes and syncs it, then renames it
-over the final path - during that brief window, the old file (if this
-write is a replacement) and the new temp file can coexist on disk. Since
-this feature has exactly one writer for its own namespace at a time
-(`fisbCacheCaptureWorker` is a single goroutine, and `fisbCacheDiskMu`
-excludes any concurrent eviction from touching the same window), at most
-one such temp file can ever exist at once, and its size is bounded by
-`maxPersistedEntryBytes` regardless of how large `maxCacheBytes` is
-configured. At the 256 MiB hard cap this is a ~0.03% relative overhead;
-at the 16 MiB default, ~0.4% - a small, fixed, always-known constant,
-not a function of traffic volume or how long since the last periodic
-tick.
-
-**What this bound deliberately does not cover:** items sitting in
-`fisbCaptureQueue` (up to 256, bounded separately - see "Exact limits,
-bounds, and safety caps," above) have not yet reached `Store.Admit` and
-so never count toward this disk bound at all; they are an *in-process
-memory* bound (256 × up to 64 KiB ≈ 16 MiB worst case), unrelated to,
-and not a substitute for, the disk-overhead model above.
+- **Committed bytes/entries `<=` budget:**
+  `TestInvariant_CommittedBytesAndEntriesNeverExceedConfiguredMaximum`
+  (a real burst through the actual reservation+admission pipeline,
+  cross-checked against what is actually on disk).
+- **Projected bytes/entries `<=` budget, including queued/in-flight
+  work:** `TestInvariant_ProjectedBytesAndEntriesNeverExceedConfiguredMaximumMidBurst`
+  (deterministic, single-threaded, checked after every single enqueue
+  call, with no worker draining anything - proving the bound from
+  `fisbCacheEnqueue`'s own synchronous reservation alone) and
+  `TestInvariant_ProjectedNeverExceedsMaximumUnderRealConcurrentLoad`
+  (genuinely concurrent, `go test -race`, using
+  `fisbCacheProjectedSnapshotAtomic` - see the observability caveat
+  above for why that specific accessor, not two separate reads, is what
+  this proof requires).
+- **Temporary atomic-write overhead `<=` an explicit hard bound:**
+  `TestInvariant_TemporaryAtomicWriteOverheadHasAnExplicitHardBound`
+  names the bound explicitly (69,632 bytes = `fisbcache`'s own
+  `maxPersistedPayloadBytes` + framing headroom) and proves
+  `EncodePersistedEntry` actually enforces it. The reasoning this bound
+  is *itself* the maximum transient overhead is unchanged from the
+  prior design: `AtomicWriter.Write` creates a uniquely-named temp file,
+  writes and syncs it, then renames it over the final path - the old
+  file (if this write is a replacement) and the new temp file can
+  coexist on disk for that brief window - and since this feature has
+  exactly one writer for its own namespace at a time
+  (`fisbCacheCaptureWorker` is a single goroutine, `fisbCacheDiskMu`
+  excludes any concurrent eviction from the same window), at most one
+  such temp file can ever exist at once, regardless of how large
+  `maxCacheBytes` is configured. At the 256 MiB hard cap this is a
+  ~0.03% relative overhead; at the 16 MiB default, ~0.4%.
+- **Queue memory `<=` an explicit hard bound:**
+  `TestInvariant_QueueMemoryHasAnExplicitHardBound` fills a pending
+  queue to its own structural capacity (`fisbCachePendingCapacity`, 256
+  distinct keys - unchanged in value from the prior design's plain
+  channel depth, kept for continuity) with maximum-sized payloads and
+  proves the `(N+1)`th distinct key is rejected, never silently
+  accepted past `fisbCachePendingCapacity * maxPersistedPayloadBytes`
+  (≈16 MiB worst case). This bound is deliberately **separate** from,
+  and not a substitute for, the disk-overhead bound above: items sitting
+  in the pending queue have not yet reached `Store.Admit`, so they never
+  count toward committed *disk* bytes at all - only toward this
+  in-process *memory* bound.
 
 ## Storage-pressure interaction
 
@@ -386,13 +545,16 @@ stopped accepting writes, e.g. during shutdown) &rarr;
 `main/fisbcachecapture.go` is the only file that imports `uatparse`. Its
 hook is called from `main/gen_gdl90.go` immediately after the existing
 `weatherRawUpdate.SendJSON(f)` call - **after**, never in place of, and
-never blocking it. Frames are handed off through a bounded channel
-(`fisbCacheQueue`, capacity 256) to a dedicated worker goroutine; when the
-queue is full, the frame is simply dropped and counted
-(`fisbCacheDroppedWrites`), never blocking the capture call site. A
-disabled cache, a saturated queue, a corrupt persisted entry, or a
-retention-loop error can therefore never interrupt live ADS-B/UAT
-reception or GDL90 forwarding - the one thing this feature must never be
+never blocking it. Frames are handed off through `fisbCacheEnqueue`'s own
+synchronous capacity reservation (`fisbPendingQueue`, structural capacity
+256 distinct keys - see "Synchronous admission bounds," above) to a
+dedicated worker goroutine; when that structural capacity is exhausted,
+or capacity genuinely cannot be freed, the frame is simply dropped/
+rejected and counted (`fisbCacheDroppedWrites`/`fisbCacheCapacityRejected`),
+never blocking the capture call site. A disabled cache, an exhausted
+queue, a corrupt persisted entry, or a retention-loop error can therefore
+never interrupt live ADS-B/UAT reception or GDL90 forwarding - the one
+thing this feature must never be
 allowed to do.
 
 ## Live versus cached labeling
@@ -467,7 +629,7 @@ any external standard.
 | `maxEntries` | User-adjustable bound | 1 - 100000 | Same rejection rule as above. |
 | Individual payload size | Hard safety cap | 65536 bytes (64 KiB) | `fisbcache.EncodePersistedEntry` refuses to build a persisted record at all - the capture path simply never persists that one product (it is still visible live via the in-memory Store, exactly like any other non-persisted entry when persistence is off). Not user-configurable. |
 | Persisted entry file size (payload + metadata/framing) | Hard safety cap | 69632 bytes (payload cap + 4096 bytes headroom) | `DecodePersistedEntry` rejects a file larger than this outright during recovery - quarantined (removed), never partially read. |
-| Capture-queue capacity | Hard safety cap | 256 items | `fisbCaptureText`/`fisbCaptureNexrad` drop-and-count (`droppedWrites`) rather than block once full - see "Capture path," above. |
+| Pending-reservation queue capacity | Hard safety cap | 256 distinct product keys | `fisbCacheEnqueue` drop-and-count (`droppedWrites`) rather than block once the structural cap is reached - see "Capture path," above, and "Synchronous admission bounds," below, for the separate byte/entry *capacity* rejection (`capacityRejected`). |
 | Recovery-scan per-file read bound | Hard safety cap | 131072 bytes (128 KiB) | `fisbReadFileBounded` never reads more than this from any one file during startup recovery, regardless of the file's actual on-disk size - defense in depth beyond the entry-file-size cap above. |
 | Purge confirmation token lifetime | Hard safety cap | 5 minutes | An unconfirmed prepare expires; a confirmed one is single-use - see "APIs," below. |
 | Inventory/status response size | Bounded indirectly | Equal to the current entry count | Never separately capped beyond `maxEntries` itself - the inventory endpoint returns one summary row per currently-cached entry, and the entry count can never exceed `maxEntries` (enforced synchronously - see "Synchronous admission bounds," below). |
@@ -532,6 +694,17 @@ value in a stream and silently ignores anything after it, so a second,
 concatenated object (or trailing garbage) is rejected explicitly
 (`fisbCacheDecodeStrictJSON`) rather than silently succeeding on the
 first value alone.
+
+`/getFISBCacheStatus` also reports the reservation model's own state
+directly: `queueDepth`/`inFlightEntries` (queued vs. actively
+`Admit`-deciding reservations), `reservedBytes`/`reservedEntries` (their
+combined size/count), `projectedBytes`/`projectedEntries` (committed +
+reserved, combined via `fisbCacheProjectedSnapshotAtomic` - see
+"Synchronous admission bounds," above, for why this specific accessor is
+used rather than two separate reads), and `capacityRejected` (offers
+refused because capacity could not be freed even after evicting
+everything evictable - distinct from `oversizedRejected`, a single entry
+that can never fit regardless of anything else).
 
 ## Dashboard
 
@@ -635,20 +808,54 @@ configured as on the live device at restore time.
   bridges age correctly across a simulated reboot (including an
   already-expired-by-bridged-age entry, removed and never re-admitted),
   and its wait for trusted time is genuinely bounded; retention deletes
-  from both disk and the in-memory index; the capture queue drops and
-  counts under overflow without ever blocking. Synchronous admission
-  bounds specifically (see that section, above): an oversized single
-  entry is rejected before it is ever queued or admitted, while an
-  exactly-at-budget one is accepted; a stale eviction plan is refused
-  even after the same key has been concurrently re-persisted (both a
-  deterministic single-goroutine reproduction and a genuine concurrent
-  `-race` test mirroring production's actual single-threaded-admission-
-  plus-concurrent-retention-callers shape); the entry-count budget is
-  never exceeded across many sequential admissions; startup recovery
+  from both disk and the in-memory index; a queue overflow (a full
+  structural distinct-key capacity) drops and counts under overflow
+  without ever blocking; an oversized single entry is rejected before it
+  is ever queued or admitted, while an exactly-at-budget one is accepted;
+  a stale eviction plan is refused even after the same key has been
+  concurrently re-persisted (both a deterministic single-goroutine
+  reproduction and a genuine concurrent `-race` test); startup recovery
   enforces a since-tightened budget before ever reporting itself
-  complete; and a settings-driven budget tightening takes effect
+  complete; a settings-driven budget tightening takes effect
   synchronously inside the settings handler itself, not on the next
   periodic tick.
+- `main/fisbcachereserve_test.go` (18 tests): the reservation model in
+  isolation - `fisbCachePlanReservation`'s full decision matrix (already
+  fits without eviction; evicts oldest-first to make room; still does
+  not fit after evicting everything eligible; never evicts a key that is
+  itself already separately reserved; the byte or entry budget already
+  fully consumed by reserved+candidate alone forces evicting every
+  eligible entry, not "no limit"; `maxBytes`/`maxEntries`\<=0 both mean
+  "no limit," matching `PlanEviction`'s own convention);
+  `fisbCacheProjectedTotals`'s own reserved-wins-over-stale-committed
+  merge rule; `fisbPendingQueue`'s coalescing (a second reservation for
+  an already-queued key supersedes, never adds), structural capacity
+  (the `(N+1)`th distinct key rejected, a supersede of an
+  already-reserved key still succeeds at full capacity), FIFO pop order
+  and the queued-to-in-flight transition, `releaseInFlight` fully ending
+  a reservation, and `clear` discarding queued-but-not-in-flight
+  reservations (purge's own use); a full end-to-end pass through the
+  REAL `fisbCacheCaptureWorker` goroutine (`fisbCacheEnqueue` through
+  `Store.Admit` through `fisbCachePersist`); a rejected (older-copy)
+  admission releasing its reservation and persisting nothing; the
+  confirmed-purge handler's own per-key deletes
+  (`fisbCachePurgeUsingSnapshot`) refusing to destroy a concurrently
+  superseded key, and clearing queued-but-not-in-flight reservations;
+  and a reservation accepted under a looser budget self-correcting to a
+  since-tightened one the moment it is actually committed.
+- `main/fisbcacheinvariants_test.go` (5 tests): the six required
+  invariants from "Synchronous admission bounds," above, each proven
+  directly and explicitly - committed bytes/entries never exceed budget
+  across a real burst through the actual pipeline, cross-checked against
+  what is actually on disk; projected bytes/entries never exceed budget
+  mid-burst, both deterministically (single-threaded, checked after
+  every enqueue call) and under genuine concurrent load
+  (`go test -race`, via `fisbCacheProjectedSnapshotAtomic`); the
+  temporary atomic-write overhead's exact hard bound (69,632 bytes),
+  proven enforced, not merely documented; and the pending-queue's own
+  in-process memory hard bound, proven by filling it to structural
+  capacity with maximum-sized payloads and confirming the next distinct
+  key is rejected.
 - `main/configbackupapi_test.go`: the FIS-B cache settings section
   round-trips through backup/restore, defaults correctly from both
   recognized legacy backup shapes, and is cross-checked against
