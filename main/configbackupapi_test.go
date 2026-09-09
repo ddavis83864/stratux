@@ -18,22 +18,25 @@ import (
 )
 
 // withConfigBackupTestEnv wires a temp calibration-profile store, a temp
-// alert-settings file, a temp autorecord-settings file, a monotonic
-// clock, and a clean restore-operation state machine for the duration of
-// one test - mirrors withTestProfilesStore (calprofilesapi_test.go),
-// withTestAlertSettingsPath (alertsettings_test.go), and
-// withTestAutoRecordSettingsPath (autorecordsettings_test.go), plus this
-// subsystem's own state. The autorecord-settings redirect matters here
-// specifically: gatherConfigBackupCurrentState/applyConfigBackupTransaction
-// both read/write autoRecordSettingsPath, which otherwise defaults to
-// the real PersistentDataPath - without this, a configbackup test run on
-// a real device or a developer machine with /var/lib/stratux-data
-// present could read or write that real file.
+// alert-settings file, a temp autorecord-settings file, a temp
+// fisbcache-settings file, a monotonic clock, and a clean restore-
+// operation state machine for the duration of one test - mirrors
+// withTestProfilesStore (calprofilesapi_test.go), withTestAlertSettingsPath
+// (alertsettings_test.go), withTestAutoRecordSettingsPath
+// (autorecordsettings_test.go), and withTestFISBCacheSettingsPath
+// (fisbcachesettings_test.go), plus this subsystem's own state. Each
+// settings-path redirect matters here specifically:
+// gatherConfigBackupCurrentState/applyConfigBackupTransaction read/write
+// all of them, which otherwise default to the real PersistentDataPath -
+// without this, a configbackup test run on a real device or a developer
+// machine with /var/lib/stratux-data present could read or write those
+// real files.
 func withConfigBackupTestEnv(t *testing.T) *calprofile.Store {
 	t.Helper()
 	store := withTestProfilesStore(t)
 	withTestAlertSettingsPath(t)
 	withTestAutoRecordSettingsPath(t)
+	withTestFISBCacheSettingsPath(t)
 	withFakePersistentStorageForTest(t)
 	if stratuxClock == nil {
 		stratuxClock = NewMonotonic()
@@ -784,6 +787,10 @@ func TestHandleApplyConfigurationBackup_AddedAndActivatedProfile(t *testing.T) {
 		// than 0 knots) - a test-construction gap, not a real restore
 		// scenario.
 		AutoRecordSettings: doc.AutoRecordSettings,
+		// Same reasoning as AutoRecordSettings above, for the same
+		// zero-value-fails-Validate() trap - see
+		// applyFISBCacheSettingsSection's own doc comment.
+		FISBCacheSettings: doc.FISBCacheSettings,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -887,6 +894,25 @@ func TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault(t *testi
 		got.RestartCooldownSeconds != want.RestartCooldownSeconds ||
 		got.MinimumRecordingDurationSeconds != want.MinimumRecordingDurationSeconds {
 		t.Fatalf("configbackup.LegacyDefaultAutoRecordSettings() = %+v has drifted from autorecord.DefaultSettings() = %+v - update legacy.go's legacyDefaultAutoRecordSettings to match", got, want)
+	}
+}
+
+// TestLegacyDefaultFISBCacheSettingsMatchesFISBCachePackageDefault
+// cross-checks configbackup's own independently-restated legacy default
+// (it cannot import main - see configbackup's package doc comment)
+// against the real DefaultFISBCacheSettings() - the one place both are
+// already available together, so a future change to either default
+// without updating the other fails here rather than silently drifting.
+// Mirrors TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault.
+func TestLegacyDefaultFISBCacheSettingsMatchesFISBCachePackageDefault(t *testing.T) {
+	got := configbackup.LegacyDefaultFISBCacheSettings()
+	want := DefaultFISBCacheSettings()
+	if got.Enabled != want.Enabled ||
+		got.PersistenceEnabled != want.PersistenceEnabled ||
+		got.ReplayEnabled != want.ReplayEnabled ||
+		got.MaxCacheBytes != want.MaxCacheBytes ||
+		got.MaxEntries != want.MaxEntries {
+		t.Fatalf("configbackup.LegacyDefaultFISBCacheSettings() = %+v has drifted from DefaultFISBCacheSettings() = %+v - update legacy.go's legacyDefaultFISBCacheSettings to match", got, want)
 	}
 }
 

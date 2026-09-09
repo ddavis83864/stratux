@@ -27,6 +27,7 @@ glue, in-memory restore-operation state machine, and every read/write of
 | `activeCalibrationProfileId` | Which profile is active. | Applied via `calprofile.Store.SetActiveID`, which itself refuses a dangling reference; the active profile's calibration is also mirrored into `globalSettings` (the same `applyProfileToGlobalSettingsLocked` helper `/activateCalibrationProfile` already uses). |
 | `alertSettings` | Every persisted operational-alerting preference (thresholds, audio toggles, volume, cooldowns) **except** mute state. | Overwrites those fields; `SchemaVersion` and `Muted`/`MutedIndefinitely`/`MuteUntilUnixSeconds` are always preserved from the *current* settings, never the backup. |
 | `autoRecordSettings` | Every persisted Automatic Flight Recording setting (enabled, start/stop groundspeed and dwell thresholds, GPS-loss grace, restart cooldown, minimum recording duration) - see `docs/automatic-flight-recording.md`. | Overwrites those fields (`SchemaVersion` preserved from current); never changes any existing recording's own recorded origin (manual/automatic), only the going-forward configuration. |
+| `fisbCacheSettings` | Every persisted Rolling FIS-B Weather Cache setting (enabled, persistence, replay - always false, cache byte/entry limits) - see `docs/fisb-weather-cache.md`. | Overwrites those fields; never touches the cache's own stored entries, only the going-forward configuration. |
 
 ## Excluded sections (never read or written by this subsystem)
 
@@ -166,55 +167,71 @@ that never knew about a field this build's `Document` shape now has - must still
 restore, with the missing field defaulted safely, rather than being rejected outright
 just because it cannot possibly carry a checksum for something it never serialized.
 
-Today this covers exactly one historical shape: schema 2 as it existed from PR #9
-(this package's original merge) through commit `5b8509fc` (PR #13's merge,
-immediately before Automatic Flight Recording added the `autoRecordSettings`
-section) - the only Configuration Backup shape that has ever actually existed on this
-project's `master` branch (`alertSettings` was present from this package's very first
-commit, so there is no earlier "before `alertSettings`" schema-2 shape; schema 1 was
-superseded by a deliberate, documented, non-additive break before this feature ever
-shipped a real document, and `MinimumCompatibleSchemaVersion` already rejects it
-before legacy-compatibility logic ever runs).
+Today this covers exactly two historical shapes, both schema 2, checked
+newest-to-oldest - the only Configuration Backup shapes that have ever actually
+existed on this project's `master` branch (`alertSettings` was present from this
+package's very first commit, so there is no earlier "before `alertSettings`"
+schema-2 shape; schema 1 was superseded by a deliberate, documented, non-additive
+break before this feature ever shipped a real document, and
+`MinimumCompatibleSchemaVersion` already rejects it before legacy-compatibility
+logic ever runs):
+
+1. **preAutoRecord** - from PR #9 (this package's original merge) through commit
+   `5b8509fc` (PR #13's merge, immediately before Automatic Flight Recording added
+   the `autoRecordSettings` section). Missing both `autoRecordSettings` and
+   `fisbCacheSettings`.
+2. **preFISBCache** - from commit `5b8509fc` through commit `83a20a8c` (PR #14's
+   merge, immediately before the Rolling FIS-B Weather Cache added the
+   `fisbCacheSettings` section). Has `autoRecordSettings`, missing
+   `fisbCacheSettings`.
 
 **How verification works** (`configbackup/legacy.go`): `Validate` first checks
 whether the uploaded document's checksums are *exactly* consistent with having been
-produced by this one known historical shape - not "close enough," and never "some
-checksums are missing so skip those": the historical shape's own section-checksum key
-set must equal the document's key set exactly (not a subset or superset),
-`autoRecordSettings` must be exactly its zero value, and every checksum - each
-section's, and the whole historical-shape document's own - is independently
-recomputed from the document's other fields, using a permanently-frozen struct that
-mirrors exactly what commit `5b8509fc`'s code would have serialized, and compared. Any
-discrepancy anywhere means the document is not this historical shape; it is then
-evaluated as a current-format document by the existing, unchanged checksum
-verification instead - either way, a corrupt or tampered document is still rejected
-exactly as before. This is a finite, closed registry of exactly one historical shape,
-never a general "try every combination until something matches" bypass.
+produced by one of these known historical shapes, checked newest-to-oldest
+(preFISBCache, then preAutoRecord, since a genuine preAutoRecord document's checksum
+key set is a strict subset of preFISBCache's and must never be mistaken for it) - not
+"close enough," and never "some checksums are missing so skip those": the historical
+shape's own section-checksum key set must equal the document's key set exactly (not a
+subset or superset), every section absent from that shape must be exactly its zero
+value, and every checksum - each section's, and the whole historical-shape document's
+own - is independently recomputed from the document's other fields, using a
+permanently-frozen struct that mirrors exactly what that historical commit's code
+would have serialized, and compared. Any discrepancy anywhere means the document is
+not that historical shape; it is then evaluated against the other historical shape,
+or (if neither matches) as a current-format document by the existing, unchanged
+checksum verification instead - either way, a corrupt or tampered document is still
+rejected exactly as before. This is a finite, closed registry of exactly two
+historical shapes, never a general "try every combination until something matches"
+bypass.
 
 **Defaulting happens only after successful verification.** Once a document is
-confirmed to be this historical shape, `NormalizeDocument` fills in
-`AutoRecordSettings` with the same disabled, standard-threshold default
-`autorecord.DefaultSettings()` already uses everywhere else on a device that has never
-configured the feature - never the bare zero value (which would itself fail this
-package's own hysteresis check) and never anything that could start automatic
-recording, alter an active manual recording, reserve storage, or touch an existing
-recording file. `main/`'s glue calls `NormalizeDocument` exactly once, immediately
-after `Validate` reports success, before using the document for preview or apply -
-the document's own `contentChecksum`/`sectionChecksums` (used to bind the confirmation
-token) are untouched by normalization, so they still name exactly the bytes that were
-uploaded and validated.
+confirmed to be one of these historical shapes, `NormalizeDocument` fills in each
+section that shape lacks: `AutoRecordSettings` (for preAutoRecord) with the same
+disabled, standard-threshold default `autorecord.DefaultSettings()` already uses
+everywhere else on a device that has never configured the feature, and/or
+`FISBCacheSettings` (for both shapes) with the same disabled, standard-limit default
+`DefaultFISBCacheSettings()` uses - never the bare zero value (which would itself
+fail this package's own hysteresis/bounds checks) and never anything that could
+start automatic recording, admit a cache entry, alter an active manual recording,
+reserve storage, or touch an existing recording or cache file. `main/`'s glue calls
+`NormalizeDocument` exactly once, immediately after `Validate` reports success,
+before using the document for preview or apply - the document's own
+`contentChecksum`/`sectionChecksums` (used to bind the confirmation token) are
+untouched by normalization, so they still name exactly the bytes that were uploaded
+and validated.
 
-A document that is genuinely current-format (already carries an `autoRecordSettings`
-checksum) never even reaches the historical-shape check - its key set does not match,
-so it always goes through the ordinary rebuild-and-compare path unchanged.
+A document that is genuinely current-format (already carries a `fisbCacheSettings`
+checksum) never even reaches either historical-shape check - its key set does not
+match either one, so it always goes through the ordinary rebuild-and-compare path
+unchanged.
 
 **Re-exporting after a legacy restore produces the current format** - the normalized
 settings feed back into `BuildDocument` like any other live settings would, so the
-resulting document carries a real `autoRecordSettings` section and checksum from that
-point on.
+resulting document carries real `autoRecordSettings`/`fisbCacheSettings` sections and
+checksums from that point on.
 
-**This is narrowly scoped, not a general checksum bypass**: it recognizes exactly one
-frozen historical shape by exact structural and checksum match, never skips
+**This is narrowly scoped, not a general checksum bypass**: it recognizes exactly two
+frozen historical shapes by exact structural and checksum match, never skips
 verification for a document merely because some checksum is absent, and the
 documented checksum limitation (detects accidental corruption, never authenticates
 against deliberate modification) applies identically to a legacy document as to a
@@ -222,8 +239,8 @@ current one - a deliberately edited legacy document with an honestly recomputed
 checksum still passes, exactly as a deliberately edited current document would.
 
 See `configbackup/legacy_test.go` and `configbackup/testdata/README.md` for the full
-compatibility test suite and exactly how the authentic historical fixture was
-generated (literally run from commit `5b8509fc`'s own code, never hand-simulated).
+compatibility test suite and exactly how each authentic historical fixture was
+generated (literally run from that commit's own code, never hand-simulated).
 
 ## Preview
 

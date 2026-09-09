@@ -38,6 +38,7 @@ type CurrentState struct {
 	ActiveProfileID     string
 	AlertSettings       AlertSettingsSection
 	AutoRecordSettings  AutoRecordSettingsSection
+	FISBCacheSettings   FISBCacheSettingsSection
 }
 
 // Preview is Validate's companion: an accurate, human-readable account of
@@ -56,6 +57,7 @@ type Preview struct {
 	ConfigurationChanges      []FieldChange `json:"configurationChanges,omitempty"`
 	AlertSettingsChanges      []FieldChange `json:"alertSettingsChanges,omitempty"`
 	AutoRecordSettingsChanges []FieldChange `json:"autoRecordSettingsChanges,omitempty"`
+	FISBCacheSettingsChanges  []FieldChange `json:"fisbCacheSettingsChanges,omitempty"`
 
 	AddedProfiles     []ProfileSummary `json:"addedProfiles,omitempty"`
 	UpdatedProfiles   []ProfileSummary `json:"updatedProfiles,omitempty"`
@@ -124,6 +126,7 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 	preview.ConfigurationChanges = diffJSONFields(current.Configuration, doc.Configuration)
 	preview.AlertSettingsChanges = diffJSONFields(current.AlertSettings, doc.AlertSettings)
 	preview.AutoRecordSettingsChanges = diffJSONFields(current.AutoRecordSettings, doc.AutoRecordSettings)
+	preview.FISBCacheSettingsChanges = diffJSONFields(current.FISBCacheSettings, doc.FISBCacheSettings)
 
 	for _, c := range preview.ConfigurationChanges {
 		if fieldRequiresRestart(c.Field) {
@@ -188,6 +191,7 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 	preview.HasChanges = len(preview.ConfigurationChanges) > 0 ||
 		len(preview.AlertSettingsChanges) > 0 ||
 		len(preview.AutoRecordSettingsChanges) > 0 ||
+		len(preview.FISBCacheSettingsChanges) > 0 ||
 		len(preview.AddedProfiles) > 0 ||
 		len(preview.UpdatedProfiles) > 0 ||
 		preview.ActiveProfileChange != nil
