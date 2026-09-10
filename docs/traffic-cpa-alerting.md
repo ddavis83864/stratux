@@ -397,9 +397,9 @@ predicted-separation/confidence/escalation line (or an explicit
 "unavailable (reason)" note), and a new settings panel exposes the
 escalation toggle and the three thresholds, with the required disclaimer
 and an explicit note that CPA can only ever raise, never lower, an
-alert. See that page's own doc comment for the exact fields; not
-independently screenshotted or rendered on a physical device in this
-implementation-only mission (see "Hardware-validation checklist").
+alert. See that page's own doc comment for the exact fields; owner-
+confirmed rendering correctly on a physical iPad and iPhone, portrait
+and landscape (see "Hardware-validation checklist").
 
 ## Diagnostics integration
 
@@ -581,21 +581,38 @@ in advance. See the mission's own final report for the authoritative,
 evidence-graded record (what was directly observed vs. inferred from
 source/unit/integration evidence vs. still not obtainable).
 
-- [ ] Confirm the dashboard's CPA fields render correctly on a physical
-      iPad/iPhone, portrait and landscape.
+- [x] Confirm the dashboard's CPA fields render correctly on a physical
+      iPad/iPhone, portrait and landscape. Owner-confirmed as a single
+      consolidated check ("dashboard is perfect"), not itemized per
+      device/orientation.
+- [x] Confirm Test Sound, mute, and unmute work, including through a
+      Bose A30 over Bluetooth. Owner-confirmed.
 - [ ] Confirm live GPS ground-track accuracy is actually reported below
-      30m in normal flight, so CPA computation is not silently gated off
-      by `isGPSGroundTrackValid` far more often than expected.
+      30m **in normal flight**. Only confirmed stationary-on-the-ground
+      (`GPSHorizontalAccuracy` ~4.6m at the bench) - not equivalent
+      evidence to an airborne reading and left unchecked accordingly.
 - [ ] Confirm against real or simulated converging traffic that an
       escalation actually fires, uses the correct audio path, and never
-      duplicates the existing distance/altitude alert.
-- [ ] Confirm the corrected `Vvel` handling (see "Vertical-rate
-      behavior") does not produce misleading UI text in practice for the
-      traffic sources this device actually receives - predicted vertical
-      separation should now honestly read "unavailable" for every live
-      target, rather than sometimes silently wrong.
-- [ ] Confirm settings persist correctly across a reboot and a
-      Configuration Backup round trip on real hardware.
+      duplicates the existing distance/altitude alert. Not achieved this
+      mission: `escalatedAlertCount` stayed 0 across 1,401 real
+      evaluations at the bench location (only distant/transient 1090ES
+      traffic was received; no safe, already-existing test-traffic seam
+      was available to use - see the mission's own final report for why
+      one was not built for this mission). Escalation logic itself is
+      covered by `TestEvaluateTraffic_CPAEscalationUsesExistingFramework`
+      and 10 other policy tests, but a live escalation firing on real
+      hardware was not observed.
+- [x] Confirm the corrected `Vvel` handling (see "Vertical-rate
+      behavior") does not produce misleading UI text in practice -
+      structurally guaranteed now (target `VerticalRateValid` is always
+      `false`, so predicted vertical separation can never render as
+      anything but "unavailable"), and 1,401 real evaluations against
+      live traffic produced zero panics.
+- [x] Confirm settings persist correctly across a reboot and a
+      Configuration Backup round trip on real hardware. Confirmed across
+      5 consecutive warm reboots (with `escalationEnabled: true`, a
+      non-default value, persisting correctly every time) and a full
+      preview/apply/token-reuse-rejected Configuration Backup cycle.
 
 ## Rollback plan
 
