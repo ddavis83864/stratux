@@ -150,6 +150,15 @@ type DiagnosticBundle struct {
 	// tallies only - never a raw target list, a track history, or any
 	// coordinate.
 	TrafficCPASummary interface{} `json:"TrafficCPASummary,omitempty"`
+
+	// WifiAdminSummary is a bounded, sanitized summary of the Wi-Fi
+	// administration-hardening feature's current state (see the
+	// wifiadmin package) at generation time, opaque to this package for
+	// the same import-direction reason as the summaries above. Never a
+	// passphrase, a token, or a raw configuration file - only transaction
+	// stage, last result, and the current configuration in its own
+	// already-redacted (wifiadmin.Redacted) form.
+	WifiAdminSummary interface{} `json:"WifiAdminSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -177,7 +186,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, trafficCPASummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, trafficCPASummary interface{}, wifiAdminSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -199,6 +208,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		StorageLifecycleSummary:    storageLifecycleSummary,
 		AutoRecordSummary:          autoRecordSummary,
 		TrafficCPASummary:          trafficCPASummary,
+		WifiAdminSummary:           wifiAdminSummary,
 	}
 }
 
