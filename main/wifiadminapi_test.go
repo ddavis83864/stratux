@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,12 +17,14 @@ import (
 // fakeWifiExecutorForAPI is main package's own fake Executor - never
 // touches a real network interface. Used only by this test file.
 type fakeWifiExecutorForAPI struct {
-	live      wifiadmin.Config
-	failSSID  string
-	applyErrs int
+	live       wifiadmin.Config
+	failSSID   string
+	applyErrs  int
+	applyCalls int
 }
 
 func (f *fakeWifiExecutorForAPI) Apply(cfg wifiadmin.Config) error {
+	f.applyCalls++
 	if f.failSSID != "" && cfg.SSID == f.failSSID {
 		f.applyErrs++
 		return errTestExecutorFailure
@@ -27,6 +32,12 @@ func (f *fakeWifiExecutorForAPI) Apply(cfg wifiadmin.Config) error {
 	f.live = cfg
 	return nil
 }
+
+// applyCount reports how many times Apply has been called - used by
+// tests that must prove a code path never touches the executor at all
+// (e.g. a clean restart with nothing pending), not merely that it left
+// no visible side effect.
+func (f *fakeWifiExecutorForAPI) applyCount() int { return f.applyCalls }
 
 func (f *fakeWifiExecutorForAPI) HealthCheck(cfg wifiadmin.Config) (wifiadmin.Health, error) {
 	return wifiadmin.Health{InterfacePresent: true, InterfaceAddress: f.live.IPAddress, AddressMatches: f.live.IPAddress == cfg.IPAddress}, nil
@@ -152,6 +163,13 @@ func TestWifiAdminAPI_FullPreviewApplyConfirmRoundTrip(t *testing.T) {
 
 	confirmBody, _ := json.Marshal(confirmWifiAdminReconnectionRequest{ReconnectToken: reconnectToken})
 	req3 := httptest.NewRequest(http.MethodPost, "/confirmWifiAdminReconnection", bytes.NewReader(confirmBody))
+	// httptest.NewRequest does not go through the real server's
+	// ConnContext hook (main/managementinterface.go) - simulate what it
+	// would have populated: the request delivered to the newly-applied
+	// AP's own configured address, from a client address in that same
+	// /24, exactly as a real reconnecting client would look.
+	req3 = req3.WithContext(context.WithValue(req3.Context(), connLocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP(proposed.IPAddress), Port: 80}))
+	req3.RemoteAddr = "192.168.10.77:54321"
 	w3 := httptest.NewRecorder()
 	handleConfirmWifiAdminReconnectionRequest(w3, req3)
 	if w3.Code != http.StatusOK {
@@ -310,6 +328,114 @@ func TestWifiAdminAPI_ApplyFailureAutoRollsBackViaAPI(t *testing.T) {
 	status := wifiAdminManager.Status()
 	if status.Stage != wifiadmin.StageIdle {
 		t.Errorf("stage after auto-rollback = %v, want idle", status.Stage)
+	}
+}
+
+// previewAndApplyForConfirmTest is a shared helper for the HTTP-level
+// path-confirmation tests below - runs preview+apply and returns the
+// reconnect token, without confirming.
+func previewAndApplyForConfirmTest(t *testing.T, ssid string) (reconnectToken string, proposed wifiadmin.Config) {
+	t.Helper()
+	proposed = wifiadmin.DefaultConfig()
+	proposed.SSID = ssid
+	body, _ := json.Marshal(proposed)
+	req := httptest.NewRequest(http.MethodPost, "/previewWifiAdminSettings", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handlePreviewWifiAdminSettingsRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview status = %d: %s", w.Code, w.Body.String())
+	}
+	var previewResp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &previewResp)
+	applyToken, _ := previewResp["applyToken"].(string)
+
+	applyBody, _ := json.Marshal(applyWifiAdminRequest{ApplyToken: applyToken})
+	req2 := httptest.NewRequest(http.MethodPost, "/applyWifiAdminSettings", bytes.NewReader(applyBody))
+	w2 := httptest.NewRecorder()
+	handleApplyWifiAdminSettingsRequest(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("apply status = %d: %s", w2.Code, w2.Body.String())
+	}
+	var applyResp map[string]interface{}
+	json.Unmarshal(w2.Body.Bytes(), &applyResp)
+	reconnectToken, _ = applyResp["reconnectToken"].(string)
+	if reconnectToken == "" {
+		t.Fatal("expected a non-empty reconnectToken")
+	}
+	return reconnectToken, proposed
+}
+
+func confirmRequestWithPath(reconnectToken, localAddr, remoteAddr string) *http.Request {
+	body, _ := json.Marshal(confirmWifiAdminReconnectionRequest{ReconnectToken: reconnectToken})
+	req := httptest.NewRequest(http.MethodPost, "/confirmWifiAdminReconnection", bytes.NewReader(body))
+	if localAddr != "" {
+		host, portStr, _ := net.SplitHostPort(localAddr)
+		port := 0
+		fmt.Sscanf(portStr, "%d", &port)
+		req = req.WithContext(context.WithValue(req.Context(), connLocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP(host), Port: port}))
+	}
+	req.RemoteAddr = remoteAddr
+	return req
+}
+
+// TestWifiAdminAPI_ConfirmReconnection_RejectsUnrelatedNetworkPath is the
+// HTTP-level proof that a confirmation cannot succeed merely because the
+// daemon is reachable - it must arrive via the newly-applied AP's own
+// address/subnet. Covers the specific unrelated-path scenarios named in
+// this mission: loopback, an Ethernet-shaped address, and a client-mode-
+// Wi-Fi-shaped address, all distinct from the wifiadmin package's own
+// (more exhaustive) unit tests of the same property.
+func TestWifiAdminAPI_ConfirmReconnection_RejectsUnrelatedNetworkPath(t *testing.T) {
+	cases := []struct {
+		name      string
+		localAddr string
+	}{
+		{"loopback", "127.0.0.1:80"},
+		{"ethernet-shaped", "10.0.0.5:80"},
+		{"client-mode-wifi-shaped", "192.168.1.50:80"},
+		{"connctext-missing", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withTestWifiAdminManager(t)
+			reconnectToken, _ := previewAndApplyForConfirmTest(t, "path-test-ssid")
+			req := confirmRequestWithPath(reconnectToken, tc.localAddr, "192.168.10.77:54321")
+			w := httptest.NewRecorder()
+			handleConfirmWifiAdminReconnectionRequest(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("status = %d, want 403: %s", w.Code, w.Body.String())
+			}
+			if wifiAdminManager.Status().Stage != wifiadmin.StageAwaitingReconnection {
+				t.Error("a rejected-path confirmation must not disturb the pending transaction")
+			}
+		})
+	}
+}
+
+func TestWifiAdminAPI_ConfirmReconnection_RejectsRemoteFromWrongSubnet(t *testing.T) {
+	withTestWifiAdminManager(t)
+	reconnectToken, proposed := previewAndApplyForConfirmTest(t, "path-test-ssid")
+	// Correct local (AP's own) address, but a client address from an
+	// entirely different subnet.
+	req := confirmRequestWithPath(reconnectToken, proposed.IPAddress+":80", "203.0.113.5:54321")
+	w := httptest.NewRecorder()
+	handleConfirmWifiAdminReconnectionRequest(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWifiAdminAPI_ConfirmReconnection_ValidPathSucceeds(t *testing.T) {
+	withTestWifiAdminManager(t)
+	reconnectToken, proposed := previewAndApplyForConfirmTest(t, "path-test-ssid")
+	req := confirmRequestWithPath(reconnectToken, proposed.IPAddress+":80", "192.168.10.77:54321")
+	w := httptest.NewRecorder()
+	handleConfirmWifiAdminReconnectionRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if wifiAdminManager.Status().Stage != wifiadmin.StageIdle {
+		t.Error("expected idle after a valid-path confirmation")
 	}
 }
 

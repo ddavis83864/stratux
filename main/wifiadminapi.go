@@ -23,6 +23,7 @@ wifiadmin.NewManager's own doc comment).
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -38,6 +39,35 @@ import (
 var wifiAdminManager *wifiadmin.Manager
 
 const maxWifiAdminRequestBytes = 8192
+
+// connLocalAddrContextKeyType/connLocalAddrContextKey are the private
+// context key main/managementinterface.go's own http.Server.ConnContext
+// hook uses to stash each accepted connection's own LocalAddr - see that
+// hook's own doc comment for why (wifiadmin's path-aware reconnection
+// confirmation needs to know which of this device's own addresses a
+// request was physically delivered to, which http.Request itself does
+// not expose). An unexported type (not a bare string) as the key,
+// following the standard library's own documented convention for
+// context keys, so this can never collide with a key some other package
+// happens to also store under the same context.
+type connLocalAddrContextKeyType struct{}
+
+var connLocalAddrContextKey = connLocalAddrContextKeyType{}
+
+// localAddrFromContext returns the local address the current request's
+// own underlying connection was accepted on, formatted exactly as
+// net.Addr.String() does (host:port) - or "" if the ConnContext hook
+// somehow did not run (e.g. a test driving a handler directly without
+// going through the real http.Server; httptest.NewRequest's own default
+// Context carries none). ConfirmContext.LocalAddr treats "" as a hard
+// rejection, never a bypass - see wifiadmin.validateConfirmationPath.
+func localAddrFromContext(ctx context.Context) string {
+	addr, _ := ctx.Value(connLocalAddrContextKey).(interface{ String() string })
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}
 
 // initWifiAdmin constructs wifiAdminManager - called from main() once
 // preflightSessionID (this process's boot-session id, reused from the
@@ -147,6 +177,13 @@ func wifiAdminStatusCode(err error) int {
 		errors.Is(err, wifiadmin.ErrTokenStateChanged),
 		errors.Is(err, wifiadmin.ErrReconnectTokenBad):
 		return http.StatusGone
+	case errors.Is(err, wifiadmin.ErrReconnectionPathInvalid),
+		errors.Is(err, wifiadmin.ErrReconnectionHealthCheckFailed):
+		// Distinct from ErrReconnectTokenBad's 410: the token itself was
+		// fine, but the request did not arrive via a network path this
+		// confirmation is allowed to trust - see wifiadmin.ConfirmContext's
+		// own doc comment.
+		return http.StatusForbidden
 	case errors.Is(err, wifiadmin.ErrNoPendingPreview):
 		return http.StatusNotFound
 	default:
@@ -278,7 +315,11 @@ func handleConfirmWifiAdminReconnectionRequest(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "missing required field: reconnectToken"})
 		return
 	}
-	stage, err := wifiAdminManager.ConfirmReconnection(req.ReconnectToken)
+	stage, err := wifiAdminManager.ConfirmReconnection(wifiadmin.ConfirmContext{
+		Token:      req.ReconnectToken,
+		RemoteAddr: r.RemoteAddr,
+		LocalAddr:  localAddrFromContext(r.Context()),
+	})
 	if err != nil {
 		writeJSON(w, wifiAdminStatusCode(err), map[string]interface{}{"success": false, "error": err.Error(), "stage": string(stage)})
 		return

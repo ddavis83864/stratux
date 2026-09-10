@@ -13,6 +13,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1419,7 +1421,25 @@ func managementInterface() {
 
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	// A plain http.ListenAndServe(addr, nil) - unchanged for every other
+	// handler in this file - does not let a handler learn which of this
+	// device's own local addresses an incoming connection was actually
+	// accepted on (only http.Request.RemoteAddr, the CLIENT's address,
+	// is exposed by default). ConnContext stashes each accepted
+	// connection's own LocalAddr into that connection's request
+	// context, additively: nothing here changes request routing,
+	// timeouts, or any existing handler's behavior - see
+	// localAddrFromContext (main/wifiadminapi.go) for the one consumer,
+	// wifiadmin's path-aware reconnection confirmation, which needs to
+	// prove a confirming request arrived via the newly-applied AP's own
+	// address rather than loopback/Ethernet/client-mode Wi-Fi.
+	server := &http.Server{
+		Addr: addr,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, connLocalAddrContextKey, c.LocalAddr())
+		},
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Printf("managementInterface ListenAndServe: %s\n", err.Error())
 	}
 }

@@ -3,6 +3,7 @@ package wifiadmin
 import (
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 )
 
@@ -45,6 +46,17 @@ var (
 	ErrPreconditionFailed = errors.New("wifiadmin: a precondition blocked the Wi-Fi transaction")
 	ErrNoPendingPreview   = errors.New("wifiadmin: no preview is pending to cancel")
 	ErrCannotCancelNow    = errors.New("wifiadmin: the pending change has already been applied and cannot be cancelled - use rollback instead")
+
+	// ErrReconnectionPathInvalid and ErrReconnectionHealthCheckFailed are
+	// returned by ConfirmReconnection when the token itself is valid but
+	// the request did not arrive through the newly-applied AP path, or
+	// the AP does not yet verifiably carry the new configuration - see
+	// ConfirmReconnection's own doc comment for exactly what each proves.
+	// Deliberately distinct from ErrReconnectTokenBad: a caller (and a
+	// test) must be able to tell "wrong token" apart from "right token,
+	// wrong network."
+	ErrReconnectionPathInvalid       = errors.New("wifiadmin: confirmation did not arrive through the newly-applied AP's own address/subnet")
+	ErrReconnectionHealthCheckFailed = errors.New("wifiadmin: the AP interface does not yet verifiably carry the newly-applied configuration")
 )
 
 // defaultReconnectTimeoutSeconds bounds how long an applied,
@@ -521,24 +533,64 @@ func (m *Manager) setFailedLocked(reason string) {
 	m.mu.Unlock()
 }
 
+// ConfirmContext is everything ConfirmReconnection needs about the
+// confirming HTTP request beyond the token itself, so a configuration
+// can never become last known good merely because the daemon process
+// happens to be reachable - reachability alone proves nothing about
+// WHICH network the request arrived over (loopback, Ethernet, a
+// client-mode Wi-Fi uplink, and the newly-applied AP are all, from the
+// daemon's own perspective, just "a socket accepted a connection"). See
+// docs/wifi-administration-hardening.md's "Reconnection-confirmation
+// behavior" section for the full design and its own disclosed limit.
+type ConfirmContext struct {
+	Token string
+	// RemoteAddr is the confirming request's own source address
+	// (host[:port] or bare host), exactly as main/net/http's own
+	// http.Request.RemoteAddr already reports it - the client's own
+	// address as the kernel's TCP stack saw it.
+	RemoteAddr string
+	// LocalAddr is the local address the underlying TCP connection was
+	// actually ACCEPTED on - i.e. which of this device's own IP
+	// addresses the request was physically delivered to, not merely
+	// which address the client believes it dialed. http.Request itself
+	// does not expose this; main/ obtains it via a net/http ConnContext
+	// hook on the one shared management HTTP server (see
+	// main/managementinterface.go) and passes it through unchanged.
+	// Left empty only if that plumbing is somehow unavailable - treated
+	// as a hard rejection below, never silently skipped, so this check
+	// can never be accidentally bypassed by a caller that forgot to wire
+	// it up.
+	LocalAddr string
+}
+
 // ConfirmReconnection is presented by a client that has reconnected to
 // the just-applied network and reached this same running daemon over
-// it - the strongest confirmation this architecture can offer that the
-// new configuration is actually reachable (see the package doc comment
-// on why GDL90/ForeFlight-application-level identity is never claimed
-// here: only "an HTTP client reached the management API" is proven).
-// token must be the SEPARATE reconnect token Apply issued - never the
-// original preview/apply token, which is already spent by then. On
-// success, proposed becomes the new last known good, persisted, and the
-// pending transaction record is cleared.
-func (m *Manager) ConfirmReconnection(token string) (Stage, error) {
+// it. This is the strongest confirmation this architecture can offer,
+// but "strong" here specifically means: the confirming request's own
+// destination address was the newly-applied AP's own configured IP
+// address (via ConfirmContext.LocalAddr, proving it did NOT arrive via
+// loopback, Ethernet, or a client-mode Wi-Fi uplink sharing the same
+// daemon), the request's own source address falls inside that same
+// configuration's own /24 (via ConfirmContext.RemoteAddr), AND the
+// injected Executor's own HealthCheck independently confirms the AP
+// interface currently carries that address at the OS level - not merely
+// that this process's own in-memory state claims it should. It is still
+// not proof that any specific application (ForeFlight or otherwise) is
+// behind that connection - see the package doc comment on why that is
+// never claimed.
+//
+// ctx.Token must be the SEPARATE reconnect token Apply issued - never
+// the original preview/apply token, which is already spent by then. On
+// success, the pending configuration becomes the new last known good,
+// persisted, and the pending transaction record is cleared.
+func (m *Manager) ConfirmReconnection(ctx ConfirmContext) (Stage, error) {
 	m.mu.Lock()
 	if m.stage != StageAwaitingReconnection {
 		stage := m.stage
 		m.mu.Unlock()
 		return stage, ErrNotAwaitingConfirm
 	}
-	if m.reconnectTokenUsed || token == "" || token != m.reconnectToken {
+	if m.reconnectTokenUsed || ctx.Token == "" || ctx.Token != m.reconnectToken {
 		m.mu.Unlock()
 		return StageAwaitingReconnection, ErrReconnectTokenBad
 	}
@@ -546,8 +598,35 @@ func (m *Manager) ConfirmReconnection(token string) (Stage, error) {
 		m.mu.Unlock()
 		return StageAwaitingReconnection, ErrReconnectTokenBad
 	}
-	m.reconnectTokenUsed = true
 	proposed := m.pendingProposed
+	m.mu.Unlock()
+
+	// Path validation happens BEFORE the token is marked used, so a
+	// request that fails this check (e.g. a stray poll from the wrong
+	// network) does not burn the one legitimate confirmation attempt.
+	if err := validateConfirmationPath(proposed, ctx); err != nil {
+		return StageAwaitingReconnection, err
+	}
+	if health, err := m.executor.HealthCheck(proposed); err != nil || !health.InterfacePresent || !health.AddressMatches {
+		return StageAwaitingReconnection, ErrReconnectionHealthCheckFailed
+	}
+
+	m.mu.Lock()
+	// Re-check everything that could have changed while this function
+	// ran unlocked above (path validation and the executor health check
+	// both intentionally run without the lock held, since HealthCheck
+	// may do real I/O in the production Executor) - a concurrent
+	// ConfirmReconnection, Cancel, or deadline rollback could have moved
+	// the stage or already consumed the token in the meantime.
+	if m.stage != StageAwaitingReconnection || m.reconnectTokenUsed || ctx.Token != m.reconnectToken {
+		stage := m.stage
+		m.mu.Unlock()
+		if stage == StageAwaitingReconnection {
+			return stage, ErrReconnectTokenBad
+		}
+		return stage, ErrNotAwaitingConfirm
+	}
+	m.reconnectTokenUsed = true
 	m.mu.Unlock()
 
 	if err := m.persistence.SaveLastKnownGood(proposed); err != nil {
@@ -569,6 +648,66 @@ func (m *Manager) ConfirmReconnection(token string) (Stage, error) {
 	m.previousConfig = Config{}
 	m.mu.Unlock()
 	return StageIdle, nil
+}
+
+// validateConfirmationPath implements ConfirmContext's own documented
+// checks. Every rejection reason returns the same ErrReconnectionPathInvalid
+// deliberately (not a field-by-field error) - disclosing exactly why a
+// confirmation was rejected would hand an attacker a working oracle for
+// probing this device's own network topology from an unrelated path;
+// the caller-facing docs/wifi-administration-hardening.md explains the
+// full rule set instead.
+func validateConfirmationPath(proposed Config, ctx ConfirmContext) error {
+	if ctx.LocalAddr == "" || ctx.RemoteAddr == "" {
+		return ErrReconnectionPathInvalid
+	}
+	localHost := hostOnly(ctx.LocalAddr)
+	localIP := net.ParseIP(localHost)
+	if localIP == nil || localIP.String() != net.ParseIP(proposed.IPAddress).String() {
+		return ErrReconnectionPathInvalid
+	}
+
+	remoteHost := hostOnly(ctx.RemoteAddr)
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return ErrReconnectionPathInvalid
+	}
+	v4 := remoteIP.To4()
+	if v4 == nil || v4.IsLoopback() || v4.IsUnspecified() || v4.IsMulticast() || v4.IsLinkLocalUnicast() {
+		return ErrReconnectionPathInvalid
+	}
+	apPrefix, _, ok := apSubnetPrefix(proposed.IPAddress)
+	if !ok {
+		return ErrReconnectionPathInvalid
+	}
+	remotePrefix, _, ok := apSubnetPrefix(remoteHost)
+	if !ok || remotePrefix != apPrefix {
+		return ErrReconnectionPathInvalid
+	}
+	return nil
+}
+
+// hostOnly strips an optional ":port" suffix - ConfirmContext's two
+// addresses may arrive either way depending on their source (a raw
+// net.Conn.LocalAddr().String() always includes a port;
+// http.Request.RemoteAddr does too, by net/http's own convention).
+func hostOnly(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// apSubnetPrefix returns ip's own first three octets - the same fixed-
+// /24 convention DerivedDHCPRange and validateAPAddress already assume
+// throughout this package (see validateAPAddress's own doc comment for
+// why this project has no separate, user-settable netmask today).
+func apSubnetPrefix(ip string) (prefix string, last int, ok bool) {
+	v4 := net.ParseIP(ip).To4()
+	if v4 == nil {
+		return "", 0, false
+	}
+	return itoa(int(v4[0])) + "." + itoa(int(v4[1])) + "." + itoa(int(v4[2])), int(v4[3]), true
 }
 
 func (m *Manager) setFailedAwaitingLocked(reason string) {

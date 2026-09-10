@@ -15,6 +15,12 @@ type fakeExecutor struct {
 	applyCalls  []Config
 	failForSSID string
 	failErr     error
+	// forceUnhealthy, when set, makes every HealthCheck call report
+	// AddressMatches=false regardless of f.live - simulates a case
+	// where Apply "succeeded" (the config files were written and the
+	// service restart command returned no error) but the AP interface
+	// does not actually, verifiably carry the new address yet.
+	forceUnhealthy bool
 }
 
 func newFakeExecutor(initial Config) *fakeExecutor {
@@ -35,6 +41,9 @@ func (f *fakeExecutor) Apply(cfg Config) error {
 func (f *fakeExecutor) HealthCheck(cfg Config) (Health, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.forceUnhealthy {
+		return Health{InterfacePresent: true, InterfaceAddress: f.live.IPAddress, AddressMatches: false}, nil
+	}
 	return Health{
 		InterfacePresent: true,
 		InterfaceAddress: f.live.IPAddress,
@@ -46,6 +55,25 @@ func (f *fakeExecutor) applyCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.applyCalls)
+}
+
+// validConfirmContext builds a ConfirmContext that passes
+// validateConfirmationPath for cfg - LocalAddr exactly cfg's own AP
+// address (simulating a request delivered to the newly-applied AP's own
+// IP), RemoteAddr a plausible DHCP client address in the same /24
+// (simulating a client that actually joined that AP). Tests that need to
+// exercise a REJECTED path build their own ConfirmContext directly
+// instead of using this helper.
+func validConfirmContext(token string, cfg Config) ConfirmContext {
+	prefix, _, ok := apSubnetPrefix(cfg.IPAddress)
+	if !ok {
+		panic("validConfirmContext: cfg.IPAddress is not a valid IPv4 address: " + cfg.IPAddress)
+	}
+	return ConfirmContext{
+		Token:      token,
+		LocalAddr:  cfg.IPAddress + ":80",
+		RemoteAddr: prefix + ".77:54321",
+	}
 }
 
 // fakePersistence is an in-memory stand-in for Persistence.
@@ -186,7 +214,7 @@ func TestManager_PreviewApplyConfirm_HappyPath(t *testing.T) {
 		t.Fatal("expected a reconnect token to be available")
 	}
 
-	stage, err = m.ConfirmReconnection(reconnectTok)
+	stage, err = m.ConfirmReconnection(validConfirmContext(reconnectTok, proposed))
 	if err != nil {
 		t.Fatalf("ConfirmReconnection: %v", err)
 	}
@@ -538,7 +566,7 @@ func TestManager_ReconnectTokenMismatchRejected(t *testing.T) {
 	if _, err := m.Apply(tok.Token, newGen); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.ConfirmReconnection("wrong-reconnect-token"); !errors.Is(err, ErrReconnectTokenBad) {
+	if _, err := m.ConfirmReconnection(validConfirmContext("wrong-reconnect-token", proposed)); !errors.Is(err, ErrReconnectTokenBad) {
 		t.Errorf("ConfirmReconnection with wrong token: err=%v, want ErrReconnectTokenBad", err)
 	}
 	if m.Status().Stage != StageAwaitingReconnection {
@@ -559,20 +587,20 @@ func TestManager_ReconnectTokenReuseRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconnectTok, _ := m.ReconnectToken()
-	if _, err := m.ConfirmReconnection(reconnectTok); err != nil {
+	if _, err := m.ConfirmReconnection(validConfirmContext(reconnectTok, proposed)); err != nil {
 		t.Fatalf("first confirm: %v", err)
 	}
 	// Start a whole new transaction so we're not just testing
 	// "wrong stage" - reuse of the OLD token string must fail even if
 	// presented while idle.
-	if _, err := m.ConfirmReconnection(reconnectTok); err == nil {
+	if _, err := m.ConfirmReconnection(validConfirmContext(reconnectTok, proposed)); err == nil {
 		t.Error("expected reconnect-token reuse to be rejected")
 	}
 }
 
 func TestManager_ConfirmBeforeApplyRejected(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
-	if _, err := m.ConfirmReconnection("anything"); !errors.Is(err, ErrNotAwaitingConfirm) {
+	if _, err := m.ConfirmReconnection(ConfirmContext{Token: "anything"}); !errors.Is(err, ErrNotAwaitingConfirm) {
 		t.Errorf("ConfirmReconnection with nothing pending: err=%v, want ErrNotAwaitingConfirm", err)
 	}
 }
@@ -750,4 +778,272 @@ func TestManagerStatus_IdempotentReads(t *testing.T) {
 	if s1.Stage != s2.Stage || s1.LastResult != s2.LastResult {
 		t.Error("repeated Status() calls should be idempotent with no state change")
 	}
+}
+
+// --- Path-aware reconnection confirmation: required negative tests ---
+//
+// These prove a configuration can never become last known good merely
+// because the daemon process is reachable - see ConfirmContext's own
+// doc comment. Every test below drives Manager directly with injected
+// ConfirmContext values; none of them touch a real network interface.
+
+func setupAwaitingReconnection(t *testing.T, proposedSSID string) (m *Manager, exec *fakeExecutor, proposed Config, reconnectTok string) {
+	t.Helper()
+	m, exec, _, _ = newTestManager(t)
+	newGen := sequentialTokenGen()
+	proposed = validAPConfig()
+	proposed.SSID = proposedSSID
+	_, tok, err := m.Preview(proposed, newGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(tok.Token, newGen); err != nil {
+		t.Fatal(err)
+	}
+	reconnectTok, ok := m.ReconnectToken()
+	if !ok {
+		t.Fatal("expected a reconnect token")
+	}
+	return m, exec, proposed, reconnectTok
+}
+
+func TestManager_ConfirmReconnection_RejectsLoopbackLocalAddr(t *testing.T) {
+	m, _, _, tok := setupAwaitingReconnection(t, "new-ssid")
+	ctx := ConfirmContext{Token: tok, LocalAddr: "127.0.0.1:80", RemoteAddr: "192.168.10.77:54321"}
+	if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+		t.Errorf("confirm via loopback local addr: err=%v, want ErrReconnectionPathInvalid", err)
+	}
+	if m.Status().Stage != StageAwaitingReconnection {
+		t.Error("a rejected-path confirmation must not disturb the pending transaction")
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsWrongLocalAddr(t *testing.T) {
+	// Simulates the request arriving via an unrelated interface (an
+	// Ethernet IP, or a client-mode Wi-Fi uplink's own address) rather
+	// than the newly-applied AP's own configured address.
+	m, _, _, tok := setupAwaitingReconnection(t, "new-ssid")
+	cases := []string{
+		"10.0.0.5:80",     // plausible Ethernet address
+		"192.168.1.50:80", // plausible client-mode-Wi-Fi-uplink address
+	}
+	for _, local := range cases {
+		ctx := ConfirmContext{Token: tok, LocalAddr: local, RemoteAddr: "192.168.10.77:54321"}
+		if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+			t.Errorf("confirm via local addr %q: err=%v, want ErrReconnectionPathInvalid", local, err)
+		}
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsOldAPAddress(t *testing.T) {
+	// When the AP address itself is changing, a confirmation arriving
+	// at the OLD address must be rejected - only the NEW address is
+	// acceptable proof of reaching the newly-applied configuration.
+	m, _, _, _ := newTestManager(t)
+	newGen := sequentialTokenGen()
+	proposed := validAPConfig()
+	proposed.IPAddress = "192.168.20.1" // changes from the default 192.168.10.1
+	_, tok, err := m.Preview(proposed, newGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(tok.Token, newGen); err != nil {
+		t.Fatal(err)
+	}
+	reconnectTok, _ := m.ReconnectToken()
+
+	oldAddrCtx := ConfirmContext{Token: reconnectTok, LocalAddr: "192.168.10.1:80", RemoteAddr: "192.168.20.77:54321"}
+	if _, err := m.ConfirmReconnection(oldAddrCtx); !errors.Is(err, ErrReconnectionPathInvalid) {
+		t.Errorf("confirm via OLD AP address: err=%v, want ErrReconnectionPathInvalid", err)
+	}
+
+	newAddrCtx := ConfirmContext{Token: reconnectTok, LocalAddr: "192.168.20.1:80", RemoteAddr: "192.168.20.77:54321"}
+	if _, err := m.ConfirmReconnection(newAddrCtx); err != nil {
+		t.Errorf("confirm via the NEW AP address should succeed: %v", err)
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsRemoteFromOldSubnet(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	newGen := sequentialTokenGen()
+	proposed := validAPConfig()
+	proposed.IPAddress = "192.168.20.1"
+	_, tok, err := m.Preview(proposed, newGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(tok.Token, newGen); err != nil {
+		t.Fatal(err)
+	}
+	reconnectTok, _ := m.ReconnectToken()
+
+	// Correct new LOCAL address, but the remote client is still in the
+	// OLD subnet (e.g. a stale ARP/lease, or a request crafted to spoof
+	// the destination while riding an old connection) - must fail.
+	ctx := ConfirmContext{Token: reconnectTok, LocalAddr: "192.168.20.1:80", RemoteAddr: "192.168.10.77:54321"}
+	if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+		t.Errorf("confirm with remote from the OLD subnet: err=%v, want ErrReconnectionPathInvalid", err)
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsSpecialRemoteAddresses(t *testing.T) {
+	m, _, proposed, tok := setupAwaitingReconnection(t, "new-ssid")
+	cases := map[string]string{
+		"loopback":    "127.0.0.1:54321",
+		"unspecified": "0.0.0.0:54321",
+		"link-local":  "169.254.1.5:54321",
+		"multicast":   "224.0.0.5:54321",
+	}
+	for name, remote := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := ConfirmContext{Token: tok, LocalAddr: proposed.IPAddress + ":80", RemoteAddr: remote}
+			if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+				t.Errorf("confirm with %s remote addr %q: err=%v, want ErrReconnectionPathInvalid", name, remote, err)
+			}
+		})
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsEmptyAddresses(t *testing.T) {
+	// The ConnContext plumbing failing to run (e.g. a misconfigured
+	// server) must be a hard rejection, never a silent bypass.
+	m, _, proposed, tok := setupAwaitingReconnection(t, "new-ssid")
+	cases := []ConfirmContext{
+		{Token: tok, LocalAddr: "", RemoteAddr: "192.168.10.77:54321"},
+		{Token: tok, LocalAddr: proposed.IPAddress + ":80", RemoteAddr: ""},
+		{Token: tok, LocalAddr: "", RemoteAddr: ""},
+	}
+	for i, ctx := range cases {
+		if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+			t.Errorf("case %d: err=%v, want ErrReconnectionPathInvalid", i, err)
+		}
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsBeforeActivation(t *testing.T) {
+	// "Before activation" = no Apply has happened yet (still Previewed)
+	// - confirming here must fail regardless of how plausible the path
+	// looks, since there is no applied configuration to confirm.
+	m, _, _, _ := newTestManager(t)
+	newGen := sequentialTokenGen()
+	proposed := validAPConfig()
+	proposed.SSID = "new-ssid"
+	if _, _, err := m.Preview(proposed, newGen); err != nil {
+		t.Fatal(err)
+	}
+	ctx := ConfirmContext{Token: "anything", LocalAddr: proposed.IPAddress + ":80", RemoteAddr: "192.168.10.77:54321"}
+	if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrNotAwaitingConfirm) {
+		t.Errorf("confirm before Apply: err=%v, want ErrNotAwaitingConfirm", err)
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsAfterTimeoutEvenWithValidPath(t *testing.T) {
+	mc, _, good, _ := newTestManagerWithShortTimeout(t)
+	newGen := sequentialTokenGen()
+	proposed := good
+	proposed.SSID = "new-ssid"
+	_, tok, err := mc.Preview(proposed, newGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mc.Apply(tok.Token, newGen); err != nil {
+		t.Fatal(err)
+	}
+	reconnectTok, _ := mc.ReconnectToken()
+	mc.testClock.Advance(1000) // well past the 1-second timeout
+
+	// A textbook-valid path, presented only after the deadline - the
+	// timeout check must still win.
+	ctx := validConfirmContext(reconnectTok, proposed)
+	if _, err := mc.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectTokenBad) {
+		t.Errorf("confirm after timeout, even with a valid path: err=%v, want ErrReconnectTokenBad", err)
+	}
+}
+
+func TestManager_ConfirmReconnection_RejectsWhenHealthCheckFails(t *testing.T) {
+	m, exec, proposed, tok := setupAwaitingReconnection(t, "new-ssid")
+	exec.forceUnhealthy = true
+	ctx := validConfirmContext(tok, proposed)
+	if _, err := m.ConfirmReconnection(ctx); !errors.Is(err, ErrReconnectionHealthCheckFailed) {
+		t.Errorf("confirm while HealthCheck reports unhealthy: err=%v, want ErrReconnectionHealthCheckFailed", err)
+	}
+	if m.Status().Stage != StageAwaitingReconnection {
+		t.Error("a failed health check must not disturb the pending transaction - it can still succeed once healthy")
+	}
+	// Once healthy, the SAME token still works (health-check failure is
+	// not itself a token-consuming event).
+	exec.forceUnhealthy = false
+	if _, err := m.ConfirmReconnection(ctx); err != nil {
+		t.Errorf("confirm after health recovers: %v", err)
+	}
+}
+
+func TestManager_ConfirmReconnection_StaleGenerationAfterCancelAndRepreview(t *testing.T) {
+	// "Stale transaction generation": a reconnect token from an earlier
+	// transaction must never satisfy a later, unrelated one. Simplest
+	// reproduction available through the public API: confirm succeeds,
+	// committing generation 1; a second, independent transaction (gen 2)
+	// is previewed+applied; the OLD (already-used) token from gen 1 must
+	// still be rejected against gen 2 - proving there is no path by
+	// which an old token can be replayed forward.
+	m, _, proposed1, tok1 := setupAwaitingReconnection(t, "gen1-ssid")
+	if _, err := m.ConfirmReconnection(validConfirmContext(tok1, proposed1)); err != nil {
+		t.Fatalf("gen1 confirm: %v", err)
+	}
+
+	// A freshly-reset sequentialTokenGen() here would coincidentally
+	// regenerate the exact same "tok-1"/"tok-2" strings gen-1's own
+	// setupAwaitingReconnection already used - defeating this test's own
+	// purpose by accident (this is never possible in production, where
+	// every token is crypto/rand-generated - see main/wifiadminapi.go's
+	// newWifiAdminToken). Use a distinctly-prefixed generator instead so
+	// gen-2's own tokens are guaranteed distinct from gen-1's.
+	n := 0
+	newGen := func() string {
+		n++
+		return "gen2tok-" + itoa(n)
+	}
+	proposed2 := validAPConfig()
+	proposed2.SSID = "gen2-ssid"
+	_, tok2, err := m.Preview(proposed2, newGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Apply(tok2.Token, newGen); err != nil {
+		t.Fatal(err)
+	}
+	// The gen-1 reconnect token, replayed now, must not be accepted as
+	// if it were gen 2's own token.
+	if _, err := m.ConfirmReconnection(validConfirmContext(tok1, proposed2)); err == nil {
+		t.Error("expected the stale gen-1 reconnect token to be rejected against the gen-2 transaction")
+	}
+}
+
+// newTestManagerWithShortTimeout mirrors newTestManager but exposes the
+// underlying fakeClock so a test can advance time deterministically
+// after Apply (Apply computes the deadline from the clock reading at
+// that moment, so the timeout must be set up front, before Preview/
+// Apply run, to produce a small, already-in-the-past-after-Advance
+// deadline).
+type managerWithClock struct {
+	*Manager
+	testClock *fakeClock
+}
+
+func newTestManagerWithShortTimeout(t *testing.T) (*managerWithClock, *fakeExecutor, Config, *fakePersistence) {
+	t.Helper()
+	good := validAPConfig()
+	good.SSID = "current-ssid"
+	exec := newFakeExecutor(good)
+	pers := &fakePersistence{}
+	if err := pers.SaveLastKnownGood(good); err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeClock{now: 1000}
+	m, err := NewManager("boot-1", clock.Now, exec, pers, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	m.SetReconnectTimeoutSeconds(1)
+	return &managerWithClock{Manager: m, testClock: clock}, exec, good, pers
 }
