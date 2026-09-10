@@ -247,6 +247,18 @@ type AutoRecordSettingsSection struct {
 	MinimumRecordingDurationSeconds float64 `json:"minimumRecordingDurationSeconds"`
 }
 
+// TrafficCPASettingsSection mirrors main.TrafficCPASettings's own
+// persisted fields, except SchemaVersion (this document has its own).
+// Every field here is durable configuration - there is no operational/
+// time-bound field to exclude, matching AutoRecordSettingsSection rather
+// than AlertSettingsSection.
+type TrafficCPASettingsSection struct {
+	EscalationEnabled     bool    `json:"escalationEnabled"`
+	HorizonSeconds        float64 `json:"horizonSeconds"`
+	MinRelativeSpeedKnots float64 `json:"minRelativeSpeedKnots"`
+	MinClosureRateKnots   float64 `json:"minClosureRateKnots"`
+}
+
 // Document is the complete, portable configuration backup.
 type Document struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -265,6 +277,7 @@ type Document struct {
 	ActiveCalibrationProfileID string                    `json:"activeCalibrationProfileId,omitempty"`
 	AlertSettings              AlertSettingsSection      `json:"alertSettings"`
 	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
+	TrafficCPASettings         TrafficCPASettingsSection `json:"trafficCpaSettings"`
 
 	// SectionChecksums/ContentChecksum detect accidental corruption and
 	// incomplete modification (a truncated download, a flipped byte, a
@@ -292,6 +305,7 @@ type BuildInputs struct {
 	ActiveCalibrationProfileID string
 	AlertSettings              AlertSettingsSection
 	AutoRecordSettings         AutoRecordSettingsSection
+	TrafficCPASettings         TrafficCPASettingsSection
 }
 
 // sectionChecksum returns the hex SHA-256 of v's canonical JSON encoding.
@@ -337,6 +351,7 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		ActiveCalibrationProfileID: in.ActiveCalibrationProfileID,
 		AlertSettings:              in.AlertSettings,
 		AutoRecordSettings:         in.AutoRecordSettings,
+		TrafficCPASettings:         in.TrafficCPASettings,
 	}
 
 	cfgSum, err := sectionChecksum(doc.Configuration)
@@ -355,11 +370,16 @@ func BuildDocument(in BuildInputs) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming automatic-recording settings: %w", err)
 	}
+	trafficCPASum, err := sectionChecksum(doc.TrafficCPASettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming traffic CPA settings: %w", err)
+	}
 	doc.SectionChecksums = map[string]string{
 		"configuration":       cfgSum,
 		"calibrationProfiles": profSum,
 		"alertSettings":       alertSum,
 		"autoRecordSettings":  autoRecordSum,
+		"trafficCpaSettings":  trafficCPASum,
 	}
 
 	contentSum, err := contentChecksum(doc)

@@ -89,6 +89,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 			ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID,
 			AlertSettings:              doc.AlertSettings,
 			AutoRecordSettings:         doc.AutoRecordSettings,
+			TrafficCPASettings:         doc.TrafficCPASettings,
 		})
 		if err != nil {
 			res.addErrorf("configbackup: could not verify checksums: %s", err)
@@ -120,6 +121,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 	validateConfiguration(doc.Configuration, &res)
 	validateAlertSettings(doc.AlertSettings, &res)
 	validateAutoRecordSettings(doc.AutoRecordSettings, &res)
+	validateTrafficCPASettings(doc.TrafficCPASettings, &res)
 	validateProfiles(doc.CalibrationProfiles, doc.ActiveCalibrationProfileID, &res)
 
 	// A document cannot honestly disclaim "no privacy-sensitive data" while
@@ -249,6 +251,36 @@ func validateAutoRecordSettings(a AutoRecordSettingsSection, res *ValidationResu
 	}
 	if a.StopGroundspeedKnots >= a.StartGroundspeedKnots {
 		res.addErrorf("%s: autoRecordSettings.stopGroundspeedKnots must be strictly lower than startGroundspeedKnots", ErrInvalidField)
+	}
+}
+
+// validateTrafficCPASettings mirrors main.TrafficCPASettings.Validate's
+// own bound rules - this package cannot import main (leaf-dependency
+// direction), so the rules are independently re-checked here against the
+// same documented bounds, exactly as validateAutoRecordSettings re-checks
+// AutoRecordSettings.Validate's rules. Mirrors that function's own
+// all-zero-means-never-configured skip too: a document verified as a
+// pre-trafficCpaSettings historical shape is normalized to a safe
+// disabled default before this function ever runs (see legacy.go), so it
+// never reaches this branch with a genuinely ambiguous zero value.
+func validateTrafficCPASettings(t TrafficCPASettingsSection, res *ValidationResult) {
+	if t == (TrafficCPASettingsSection{}) {
+		return
+	}
+	speeds := map[string]float64{
+		"trafficCpaSettings.minRelativeSpeedKnots": t.MinRelativeSpeedKnots,
+		"trafficCpaSettings.minClosureRateKnots":   t.MinClosureRateKnots,
+	}
+	for name, v := range speeds {
+		if !finite(v) || v <= 0 || v > 500 {
+			res.addErrorf("%s: %s must be greater than 0 and at most 500 knots", ErrInvalidField, name)
+		}
+	}
+	if !finite(t.HorizonSeconds) || t.HorizonSeconds <= 0 || t.HorizonSeconds > 600 {
+		res.addErrorf("%s: trafficCpaSettings.horizonSeconds must be greater than 0 and at most 600 seconds", ErrInvalidField)
+	}
+	if t.MinClosureRateKnots < t.MinRelativeSpeedKnots {
+		res.addErrorf("%s: trafficCpaSettings.minClosureRateKnots must be at least minRelativeSpeedKnots", ErrInvalidField)
 	}
 }
 

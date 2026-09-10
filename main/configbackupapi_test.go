@@ -784,6 +784,9 @@ func TestHandleApplyConfigurationBackup_AddedAndActivatedProfile(t *testing.T) {
 		// than 0 knots) - a test-construction gap, not a real restore
 		// scenario.
 		AutoRecordSettings: doc.AutoRecordSettings,
+		// Carry over TrafficCPASettings too, for exactly the same
+		// reason as AutoRecordSettings above.
+		TrafficCPASettings: doc.TrafficCPASettings,
 	})
 	if err != nil {
 		t.Fatal(err)

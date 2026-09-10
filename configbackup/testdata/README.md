@@ -1,5 +1,22 @@
 # configbackup/testdata
 
+## `legacy-pre-trafficcpa-backup.json`
+
+An **authentic** Configuration Backup document, produced by literally
+running commit `936c38e4281edf4886be4e0fe3b6c11fc2d1aa8b`'s (`master`,
+the merge of PR #18, immediately before the closure-rate/closest-point-
+of-approach traffic-alerting enhancement) exact `configbackup.BuildDocument`
+- not hand-written or simulated. Its section-checksum key set is exactly
+`{configuration, calibrationProfiles, alertSettings, autoRecordSettings}`
+- no `trafficCpaSettings` key, and no such field in the document body at
+all - the shape `legacy.go`'s `verifyLegacyPreTrafficCPAChecksum`
+recognizes.
+
+Regenerated the same way as `legacy-pre-autorecord-backup.json` below,
+substituting the commit and output filename; its one calibration profile
+is named "Legacy Backup Aircraft (pre-CPA)" for the same
+name-uniqueness reason given below.
+
 ## `legacy-pre-autorecord-backup.json`
 
 An **authentic** Configuration Backup document, produced by literally
