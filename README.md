@@ -21,10 +21,12 @@ check passed, whether a recording captured what you think it did, and being cons
 about ever deleting your data — on top of the same core receiver Stratux has always been.
 See [Fork enhancements](#fork-enhancements) for what is specifically new here.
 
-> **Stratux is supplemental, advisory equipment.** It is not FAA-certified flight
-> instrumentation and must never be used as the sole source for traffic separation,
-> navigation, terrain avoidance, or weather avoidance. See
-> [Safety and operational limitations](#safety-and-operational-limitations).
+> **Experimental / Non-Certified Aviation System:** This project provides supplemental
+> situational-awareness information only. It is not intended to replace required or approved
+> aircraft instruments, certified navigation equipment, official aviation information, or the
+> pilot's responsibility to maintain situational awareness and see and avoid traffic. See
+> [Safety, Certification, and Operational Disclaimer](#safety-certification-and-operational-disclaimer)
+> at the end of this README.
 
 **Is this fork for you?** If you already run Stratux and want richer health/readiness
 reporting, optional automatic flight recording, traffic/system alerting, configuration
@@ -44,10 +46,10 @@ of its own** (see that section for why, and the verified build path).
 - [Installation and getting started](#installation-and-getting-started)
 - [Using the system](#using-the-system)
 - [Documentation index](#documentation-index)
-- [Safety and operational limitations](#safety-and-operational-limitations)
 - [Upstream relationship and attribution](#upstream-relationship-and-attribution)
 - [Contributing and support](#contributing-and-support)
 - [Development status and roadmap](#development-status-and-roadmap)
+- [Safety, Certification, and Operational Disclaimer](#safety-certification-and-operational-disclaimer)
 
 ## Fork enhancements
 
@@ -233,29 +235,6 @@ change belong in, and are reviewed in, the same pull request. Be aware that fork
 pages (readiness, automatic recording, alerting, and the rest of the
 [enhancement table](#fork-enhancements)) are documented only here, not in the upstream wiki.
 
-## Safety and operational limitations
-
-**Stratux — including every feature added by this fork — is supplemental, advisory
-equipment. It is not FAA-certified flight instrumentation.**
-
-- It must **never** be treated as the sole source for traffic separation, navigation,
-  terrain avoidance, or weather avoidance.
-- ADS-B and FIS-B reception depend on line-of-sight RF coverage and ground-station/satellite
-  availability; traffic and weather data may be incomplete, delayed, or entirely unavailable
-  at any time, for reasons outside this software's control.
-- Alerting (this fork's traffic/system notices) is **not** collision avoidance — not TCAS,
-  not ACAS, and it never suggests a maneuver.
-- Automatic Flight Recording's detected start/stop times are approximate and are **not**
-  authoritative taxi, takeoff, landing, block, Hobbs, maintenance, or pilot-logbook times.
-- Preflight/Readiness reporting is a supplemental convenience, not an airworthiness
-  determination — it never controls the aircraft and never modifies what is sent to your EFB.
-- The pilot in command remains solely responsible for visual scanning, obtaining official
-  weather briefings, aircraft separation, regulatory compliance, and the safe operation of
-  the aircraft, regardless of what this software reports or fails to report.
-- This repository provides code and, when published, binaries to help you build your own
-  device. Building or operating one is entirely your own responsibility; no warranty of any
-  kind is provided (see [LICENSE](LICENSE)).
-
 ## Upstream relationship and attribution
 
 `ddavis83864/stratux` is a GitHub fork of [`stratux/stratux`](https://github.com/stratux/stratux),
@@ -320,3 +299,189 @@ workarounds once a Raspberry Pi-compatible Debian 13 (Trixie) base image is avai
 This section will drift as work merges — the [documentation index](#documentation-index)
 above and each linked subsystem doc are the authoritative, per-feature status source; if this
 section ever disagrees with one of them, trust the linked doc, not this README.
+
+## Safety, Certification, and Operational Disclaimer
+
+This is the authoritative source for this project's aviation safety, certification, and
+operational-use limitations. If anything elsewhere in this README, in linked documentation,
+in code comments, or in the web UI appears to conflict with this section, **this section
+controls.**
+
+### Supplemental / backup information only
+
+Stratux — the upstream baseline and every capability added by this fork — is an
+experimental, portable, non-certified device that provides **supplemental
+situational-awareness information only.** This applies to all information it generates,
+receives, processes, caches, derives, or displays, including but not limited to: ADS-B
+traffic, FIS-B weather (live and, where implemented, cached), GPS position, GPS altitude,
+groundspeed, track, AHRS-derived attitude and heading, pressure/barometric altitude, traffic
+and system-health alerts, and general system/reception status.
+
+None of this information, individually or in combination, replaces:
+
+- required aircraft instruments,
+- approved or certified navigation equipment,
+- an installed, certified traffic system,
+- an installed, certified weather system,
+- official aviation weather or NOTAM sources,
+- equipment required by your aircraft's operating limitations or applicable regulations.
+
+Stratux is not certified, approved, or intended to replace required or approved aircraft
+equipment. It does not constitute FAA certification or operational approval of any kind, and
+using it does not relieve the pilot in command of the responsibility to determine, for each
+flight, whether its use is suitable given the aircraft's equipment requirements, operating
+limitations, and the applicable regulations.
+
+### ADS-B traffic limitations
+
+Traffic displayed through Stratux may be incomplete, delayed, unavailable, or positionally
+inaccurate, and may disappear or reappear as reception conditions change. Nearby aircraft may
+fail to appear at all. Relevant factors include, without limitation: whether nearby aircraft
+are themselves ADS-B-equipped, the availability and coverage of ADS-B ground infrastructure,
+this receiver's own reception range and antenna placement, terrain, RF interference, current
+system configuration, network/link behavior between the receiver and the display device, and
+ordinary hardware or software faults.
+
+> **Absence of displayed traffic does not mean that no traffic is present.**
+
+The pilot remains responsible for appropriate visual lookout and all applicable see-and-avoid
+responsibilities regardless of what is or is not displayed. This fork's traffic/system
+alerting (see [alerting.md](docs/alerting.md)) is a conservative, supplemental notice layer
+only — it is **not** collision avoidance, not TCAS, not ACAS, not a resolution-advisory
+system, and it never suggests a maneuver. Stratux does not provide certified collision
+avoidance or guaranteed aircraft separation of any kind.
+
+### FIS-B weather limitations
+
+**FIS-B weather is not real-time weather.** A displayed product reflects the delay of every
+step between the original observation and your screen: observation time, product generation,
+FAA uplink scheduling, transmission, reception, this device's own processing, any caching,
+and display. A product's displayed age may not accurately represent the age of the underlying
+meteorological observation it is based on.
+
+FIS-B information received through Stratux is appropriate for strategic situational
+awareness, flight planning, and trend awareness — it is **not** appropriate for tactical
+maneuvering around hazardous weather. Do not use this system as the sole basis for
+maintaining separation from thunderstorms, convective activity, icing, turbulence, or any
+other hazardous weather. Always obtain an official weather briefing and use approved,
+certified sources for weather-related flight decisions.
+
+### Cached / rolling FIS-B weather
+
+This fork's own repository includes a rolling, bounded FIS-B weather **cache** — see
+[Development status and roadmap](#development-status-and-roadmap). As of this writing it is
+implemented on a separate, unmerged, draft pull request
+([#15](https://github.com/ddavis83864/stratux/pull/15)), **disabled by default**, and is not
+present on this project's default branch. When enabled, it retains the most recently received
+copy of a small set of weather products (METAR/TAF/NEXRAD/etc.) across a brief signal
+dropout, each tagged with its own age. Its own design deliberately defers ever replaying
+cached data back out to a connected EFB, specifically because that could not yet be proven
+safe to do without risking a stale product being mistaken for a live one — when and if that
+capability is merged, it is intended to remain a display/diagnostic aid, never a live weather
+feed substitute.
+
+Whether or not this specific feature is present in the build you are running, the general
+principle applies to any cached or retained weather state this project ever surfaces: a
+cached product remaining available or displayed does **not** mean the underlying weather is
+unchanged, that current uplink reception exists, or that the product is current. Always check
+a displayed product's own age before using it for any purpose, and treat a lack of fresh
+reception as a reason for increased caution, not as evidence that conditions are stable.
+
+### AHRS / attitude limitations
+
+AHRS-derived attitude information (pitch, roll, heading) is **backup / supplemental attitude
+awareness only.** It does not replace required or approved aircraft attitude instrumentation.
+Accuracy can be affected by sensor calibration, mounting orientation, vibration, sustained
+acceleration or aggressive maneuvering, magnetic interference near the installation location,
+ordinary sensor error or drift, the AHRS's initialization/warm-up state, software behavior,
+power interruption, and hardware faults.
+
+This fork adds live AHRS health reporting and named, persistent, per-airframe calibration
+profiles (see [ahrs-baro-fan-health.md](docs/ahrs-baro-fan-health.md) and
+[aircraft-calibration-profiles.md](docs/aircraft-calibration-profiles.md)), and this
+functionality has been exercised and validated during this fork's own bench and ground
+testing as part of normal development. **Successful validation of this kind does not
+constitute certification or authorization for use as required flight instrumentation** — it
+means the feature behaved as designed under the conditions it was tested in, nothing more.
+
+### Pressure / barometric altitude
+
+Where a barometric sensor is present, its accuracy depends on sensor calibration and its
+physical installation environment, including airflow and venting around the device. **In a
+pressurized aircraft, a portable sensor located inside the cabin measures cabin pressure, not
+outside ambient atmospheric pressure** — pressure-derived altitude in that situation can
+differ materially from the aircraft's own pressure altitude. Barometric information from this
+system is supplemental and does not replace approved, installed aircraft altitude
+instrumentation.
+
+### GPS and navigation
+
+GPS-derived position, altitude, groundspeed, and track can meaningfully enhance situational
+awareness in a connected EFB. **This is not a certified IFR navigator** and must not be relied
+upon as the sole source of navigation where approved or certified navigation equipment is
+required by the aircraft's operating limitations or applicable regulations. Position and
+velocity output can be affected by satellite-reception loss, antenna problems, RF
+interference, jamming, spoofing, receiver faults, software faults, configuration errors, and
+network/communication failures between the receiver and the display device. This is not a
+statement that portable GPS has no legitimate role in aviation — only that its role here is
+supplemental situational awareness, not a substitute for approved or certified navigation
+equipment where one is required.
+
+### Experimental fork features
+
+Beyond the upstream Stratux baseline, this fork adds readiness/health reporting, preflight
+summaries, on-demand and automatic flight recording, traffic/system alerting, configuration
+backup/restore, power/shutdown-resilience reporting, and the storage-lifecycle foundation (see
+[Fork enhancements](#fork-enhancements)). These features are at varying stages of maturity —
+some are bench- or ground-tested, some are additionally exercised in flight, and some (like
+the FIS-B weather cache above) remain under active development on an unmerged branch.
+**Successful testing or validation of any of these features does not constitute FAA
+certification, airworthiness approval, operational authorization, or approval for use as
+required flight equipment.** Two specific, recurring points worth calling out directly:
+
+- **Preflight/Readiness reporting** is a supplemental convenience, not an airworthiness
+  determination. It never controls the aircraft and never modifies what is sent to your EFB.
+- **Automatic Flight Recording's** detected start/stop times are approximate and are **not**
+  authoritative taxi, takeoff, landing, block, Hobbs, maintenance, or pilot-logbook times.
+
+You are responsible for understanding the maturity, configuration, and validation status of
+any feature you enable before relying on its output for any purpose.
+
+### Availability, accuracy, and system failure
+
+This system, and the hardware it runs on, come with **no guarantee** of continuous
+availability, accuracy, completeness, timeliness, reliability, or fitness for any particular
+aviation purpose. Possible sources of failure include, without limitation: hardware failures,
+software defects, configuration errors, RF interference, data corruption, network failures,
+sensor errors, power interruptions, and failures or changes in the upstream data sources this
+system depends on (ADS-B ground infrastructure, GPS satellites, FIS-B uplink, and the like).
+
+> **Never allow the availability of this system to become necessary for the safe completion
+> of a flight.**
+
+This repository provides source code, and — where published — build artifacts, to help you
+build and operate your own device. Doing so is entirely your own responsibility. This is a
+statement about aviation fitness-for-purpose specifically; it is separate from, and does not
+replace, this project's software license and warranty terms — see
+[Upstream relationship and attribution](#upstream-relationship-and-attribution) and
+[LICENSE](LICENSE) for those.
+
+### Pilot-in-command responsibility
+
+The pilot in command remains solely responsible for the safe operation of the aircraft,
+including preflight planning, maintaining situational awareness, visual lookout, compliance
+with applicable regulations and the aircraft's own operating limitations, determining the
+suitability of any equipment used, and resolving any conflicting information encountered in
+flight — regardless of what this software reports, fails to report, or appears to indicate.
+This project does not supersede FAA regulations, aircraft operating limitations, the approved
+flight manual, official weather information, ATC instructions, NOTAMs, or the pilot's own
+judgment.
+
+> **If information provided by this system conflicts with approved aircraft instrumentation,
+> certified navigation equipment, ATC instructions, official aviation information, or your
+> own visual observations, do not assume the Stratux information is correct.**
+
+This project is not affiliated with, endorsed by, or certified by ForeFlight, Sentry, or any
+other commercial EFB or portable ADS-B product or vendor. Compatibility with a given EFB (see
+[Core capabilities](#core-capabilities)) is a statement about data-format interoperability
+only, not an endorsement, partnership, or equivalence claim of any kind.
