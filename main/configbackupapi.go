@@ -325,6 +325,29 @@ func applyAutoRecordSettingsSection(base autorecord.Settings, section configback
 	return base
 }
 
+// --- TrafficCPASettings <-> configbackup.TrafficCPASettingsSection -----
+
+func trafficCPASettingsSectionFromCurrent(s TrafficCPASettings) configbackup.TrafficCPASettingsSection {
+	return configbackup.TrafficCPASettingsSection{
+		EscalationEnabled:     s.EscalationEnabled,
+		HorizonSeconds:        s.HorizonSeconds,
+		MinRelativeSpeedKnots: s.MinRelativeSpeedKnots,
+		MinClosureRateKnots:   s.MinClosureRateKnots,
+	}
+}
+
+// applyTrafficCPASettingsSection returns base (the CURRENT settings - so
+// SchemaVersion is preserved exactly as-is) with every field overwritten
+// from section. No operational/time-bound field to exclude, exactly like
+// applyAutoRecordSettingsSection.
+func applyTrafficCPASettingsSection(base TrafficCPASettings, section configbackup.TrafficCPASettingsSection) TrafficCPASettings {
+	base.EscalationEnabled = section.EscalationEnabled
+	base.HorizonSeconds = section.HorizonSeconds
+	base.MinRelativeSpeedKnots = section.MinRelativeSpeedKnots
+	base.MinClosureRateKnots = section.MinClosureRateKnots
+	return base
+}
+
 // gatherConfigBackupCurrentState takes a coherent-enough snapshot of
 // every section this subsystem exports/restores. It never holds
 // profilesMu across the AlertSettings/globalSettings reads - only around
@@ -357,6 +380,7 @@ func gatherConfigBackupCurrentState() (configbackup.CurrentState, error) {
 		ActiveProfileID:     activeID,
 		AlertSettings:       alertSettingsSectionFromCurrent(loadAlertSettings()),
 		AutoRecordSettings:  autoRecordSettingsSectionFromCurrent(loadAutoRecordSettings()),
+		TrafficCPASettings:  trafficCPASettingsSectionFromCurrent(loadTrafficCPASettings()),
 	}, nil
 }
 
@@ -404,6 +428,7 @@ func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Docum
 		ActiveCalibrationProfileID: current.ActiveProfileID,
 		AlertSettings:              current.AlertSettings,
 		AutoRecordSettings:         current.AutoRecordSettings,
+		TrafficCPASettings:         current.TrafficCPASettings,
 	})
 }
 
@@ -770,6 +795,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	originalConfig := configurationSectionFromGlobalSettings()
 	originalAlertSettings := loadAlertSettings()
 	originalAutoRecordSettings := loadAutoRecordSettings()
+	originalTrafficCPASettings := loadTrafficCPASettings()
 
 	rollback := func() bool {
 		clean := true
@@ -807,6 +833,14 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 			clean = false
 			log.Printf("configbackup: rollback could not restore automatic-recording settings: %s\n", err)
 		}
+		if err := saveTrafficCPASettings(originalTrafficCPASettings); err != nil {
+			clean = false
+			log.Printf("configbackup: rollback could not restore traffic CPA settings: %s\n", err)
+		} else {
+			trafficCPAMu.Lock()
+			trafficCPASettingsCache = originalTrafficCPASettings
+			trafficCPAMu.Unlock()
+		}
 		return clean
 	}
 
@@ -831,6 +865,21 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	autoRecordSettingsCache = newAutoRecordSettings
 	autoRecordMu.Unlock()
 	sectionsApplied = append(sectionsApplied, "autoRecordSettings")
+
+	// Traffic CPA settings - same atomic-write pattern. Applying this
+	// never itself enables CPA-based escalation from a backup that never
+	// had it (EscalationEnabled is restored exactly as the document
+	// says, and validateTrafficCPASettings/legacyDefaultTrafficCPASettings
+	// both keep it false for any document that never had this section).
+	newTrafficCPASettings := applyTrafficCPASettingsSection(originalTrafficCPASettings, doc.TrafficCPASettings)
+	if err := saveTrafficCPASettings(newTrafficCPASettings); err != nil {
+		clean := rollback()
+		return sectionsApplied, true, !clean, fmt.Errorf("applying traffic CPA settings: %w", err)
+	}
+	trafficCPAMu.Lock()
+	trafficCPASettingsCache = newTrafficCPASettings
+	trafficCPAMu.Unlock()
+	sectionsApplied = append(sectionsApplied, "trafficCpaSettings")
 
 	profilesMu.Lock()
 	for _, p := range doc.CalibrationProfiles {

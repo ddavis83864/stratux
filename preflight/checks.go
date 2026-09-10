@@ -594,3 +594,24 @@ func autoRecordChecks(in Input) []CheckResult {
 		return []CheckResult{newCheck("Recording", "auto_record", "Automatic recording", StateReady, SeverityInfo, "automatic recording armed")}
 	}
 }
+
+// trafficCPAChecks reports the closure-rate/closest-point-of-approach
+// traffic-alerting enhancement's own state - a single concise card,
+// mirroring autoRecordChecks' own restraint. Disabled (the default,
+// opt-in-required posture) is ALWAYS purely informational
+// (NOT_APPLICABLE/Info) - this enhancement's own escalation logic
+// (alerting.Config.CPAEscalationEnabled) can only ever ADD to existing
+// distance/altitude alerting, never replace or weaken it, so its own
+// disabled/degraded state is never itself a readiness concern - severity
+// never rises above Caution even when settings fail validation, since
+// that only means this enhancement falls back to distance/altitude-only
+// alerting, not that alerting stops working.
+func trafficCPAChecks(in Input) []CheckResult {
+	if !in.TrafficCPAEnabled {
+		return []CheckResult{newCheck("Traffic", "traffic_cpa", "Traffic closure-rate/CPA escalation", StateNotApplicable, SeverityInfo, "CPA-based alert escalation is disabled")}
+	}
+	if !in.TrafficCPASettingsValid {
+		return []CheckResult{newCheck("Traffic", "traffic_cpa", "Traffic closure-rate/CPA escalation", StateCaution, SeverityCaution, "CPA settings failed validation - falling back to distance/altitude-only alerting")}
+	}
+	return []CheckResult{newCheck("Traffic", "traffic_cpa", "Traffic closure-rate/CPA escalation", StateReady, SeverityInfo, "CPA-based alert escalation armed")}
+}

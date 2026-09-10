@@ -1894,6 +1894,7 @@ func main() {
 	// main/alertingapi.go. Purely additive/observational; a failure here
 	// is recovered and logged, never allowed to affect traffic ingestion
 	// or GDL90 output (see docs/alerting.md's "Failure isolation" section).
+	initTrafficCPA()
 	initAlerting()
 
 	// Initialize power/thermal health monitoring, the previous-session

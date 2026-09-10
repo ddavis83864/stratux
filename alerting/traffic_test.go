@@ -49,7 +49,7 @@ func TestClassifyTier_StaleTargetRejected(t *testing.T) {
 	cfg := DefaultConfig()
 	obs := freshObs("A1", 500, 100)
 	obs.AgeSeconds = cfg.StaleAfterSeconds + 1
-	tier, validity := classifyTier(obs, cfg)
+	tier, validity, _ := classifyTier(obs, cfg)
 	if tier != tierNone || validity != "stale" {
 		t.Errorf("tier=%d validity=%q, want tierNone/stale", tier, validity)
 	}
@@ -59,7 +59,7 @@ func TestClassifyTier_InvalidPositionRejected(t *testing.T) {
 	cfg := DefaultConfig()
 	obs := freshObs("A1", 500, 100)
 	obs.PositionValid = false
-	tier, validity := classifyTier(obs, cfg)
+	tier, validity, _ := classifyTier(obs, cfg)
 	if tier != tierNone || validity != "position-invalid" {
 		t.Errorf("tier=%d validity=%q, want tierNone/position-invalid", tier, validity)
 	}
@@ -69,14 +69,14 @@ func TestClassifyTier_NonFiniteValuesRejected(t *testing.T) {
 	cfg := DefaultConfig()
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -1} {
 		obs := freshObs("A1", bad, 100)
-		tier, _ := classifyTier(obs, cfg)
+		tier, _, _ := classifyTier(obs, cfg)
 		if tier != tierNone {
 			t.Errorf("distance=%v: tier=%d, want tierNone", bad, tier)
 		}
 	}
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		obs := freshObs("A1", 500, bad)
-		tier, _ := classifyTier(obs, cfg)
+		tier, _, _ := classifyTier(obs, cfg)
 		if tier > tierNotice {
 			t.Errorf("relAlt=%v: tier=%d, want <= tierNotice (altitude untrustworthy)", bad, tier)
 		}
@@ -97,7 +97,7 @@ func TestClassifyTier_MissingAltitudeCapsAtNotice(t *testing.T) {
 	cfg := DefaultConfig()
 	obs := freshObs("A1", 1000, 0) // well within caution/high-caution range
 	obs.RelativeAltitudeValid = false
-	tier, validity := classifyTier(obs, cfg)
+	tier, validity, _ := classifyTier(obs, cfg)
 	if tier != tierNotice || validity != "altitude-unavailable" {
 		t.Errorf("tier=%d validity=%q, want tierNotice/altitude-unavailable", tier, validity)
 	}
@@ -106,12 +106,12 @@ func TestClassifyTier_MissingAltitudeCapsAtNotice(t *testing.T) {
 func TestClassifyTier_OutsideMonitoringEnvelope(t *testing.T) {
 	cfg := DefaultConfig()
 	obs := freshObs("A1", cfg.MonitoringHorizontalMeters+1, 0)
-	tier, validity := classifyTier(obs, cfg)
+	tier, validity, _ := classifyTier(obs, cfg)
 	if tier != tierNone || validity != "outside-envelope" {
 		t.Errorf("tier=%d validity=%q, want tierNone/outside-envelope", tier, validity)
 	}
 	obs2 := freshObs("A2", 100, cfg.MonitoringVerticalFeet+1)
-	tier2, validity2 := classifyTier(obs2, cfg)
+	tier2, validity2, _ := classifyTier(obs2, cfg)
 	if tier2 != tierNone || validity2 != "outside-envelope" {
 		t.Errorf("tier=%d validity=%q, want tierNone/outside-envelope (vertical)", tier2, validity2)
 	}
@@ -132,7 +132,7 @@ func TestClassifyTier_ThresholdEntryExactBoundaries(t *testing.T) {
 	}
 	for _, c := range cases {
 		obs := freshObs("A1", c.dist, c.alt)
-		tier, _ := classifyTier(obs, cfg)
+		tier, _, _ := classifyTier(obs, cfg)
 		if tier != c.wantTier {
 			t.Errorf("%s: tier=%d, want %d", c.name, tier, c.wantTier)
 		}
@@ -393,7 +393,7 @@ func TestEvaluateTraffic_GroundSuppression(t *testing.T) {
 	cfg.SuppressGroundTraffic = true
 	obs := freshObs("A1", cfg.HighCautionHorizontalMeters-1, 0)
 	obs.OnGround = true
-	tier, _ := classifyTier(obs, cfg)
+	tier, _, _ := classifyTier(obs, cfg)
 	if tier > tierNotice {
 		t.Errorf("ground-suppressed target: tier=%d, want capped at tierNotice", tier)
 	}

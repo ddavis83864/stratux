@@ -30,7 +30,12 @@ import (
 // landing, block, Hobbs, or logbook time - only the automatic-recording
 // feature's own conservative, hedged detection state and configuration at
 // the moment this session started or stopped.
-const MetadataSchemaVersion = 5
+// MetadataSchemaVersion 6 added the TrafficCPA* fields (see
+// docs/traffic-cpa-alerting.md's "Recording integration" section) -
+// likewise purely additive. Per-event CPA data was already carried by
+// AlertEvents (Alert's own CPA* fields, added alongside this schema bump)
+// without needing its own schema bump.
+const MetadataSchemaVersion = 6
 
 // metadataFileName is the fixed sidecar filename inside one recording's own
 // directory - not a timestamped name like the rotated *.jsonl sample files,
@@ -173,6 +178,20 @@ type SessionSnapshot struct {
 	// "Restart and crash recovery" section. Empty for every ordinary
 	// session, automatic or manual.
 	AutoRecordContinuationOfRecordingID string `json:"autoRecordContinuationOfRecordingId,omitempty"`
+
+	// TrafficCPA* fields are a small, session-level snapshot of the
+	// closure-rate/closest-point-of-approach traffic-alerting
+	// enhancement's own configuration at the moment this session
+	// started - see docs/traffic-cpa-alerting.md's "Recording
+	// integration" section. Deliberately a summary (enabled flag,
+	// current thresholds), never per-target data - individual CPA
+	// estimates that actually escalated an alert are instead captured,
+	// like every other alert field, in AlertEvents below (Alert already
+	// carries its own CPA* fields).
+	TrafficCPASchemaVersion       int     `json:"trafficCpaSchemaVersion,omitempty"`
+	TrafficCPAEscalationEnabled   bool    `json:"trafficCpaEscalationEnabled"`
+	TrafficCPAHorizonSeconds      float64 `json:"trafficCpaHorizonSeconds,omitempty"`
+	TrafficCPAMinClosureRateKnots float64 `json:"trafficCpaMinClosureRateKnots,omitempty"`
 }
 
 // SessionFinalization holds the fields that legitimately change after a

@@ -1374,6 +1374,8 @@ func managementInterface() {
 	http.HandleFunc("/getAlerts", handleGetAlertsRequest)
 	http.HandleFunc("/getAlertSettings", handleGetAlertSettingsRequest)
 	http.HandleFunc("/setAlertSettings", handleSetAlertSettingsRequest)
+	http.HandleFunc("/getTrafficCPASettings", handleGetTrafficCPASettingsRequest)
+	http.HandleFunc("/setTrafficCPASettings", handleSetTrafficCPASettingsRequest)
 	http.HandleFunc("/acknowledgeAlert", handleAcknowledgeAlertRequest)
 	http.HandleFunc("/muteAlerts", handleMuteAlertsRequest)
 	http.HandleFunc("/unmuteAlerts", handleUnmuteAlertsRequest)
