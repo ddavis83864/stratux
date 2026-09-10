@@ -253,22 +253,60 @@ func ownshipTrackForCPA(ti TrafficInfo) trafficcpa.Track {
 // targetTrackForCPA builds one target's trafficcpa.Track from its
 // TrafficInfo.
 //
-// Known, disclosed limitation (see docs/traffic-cpa-alerting.md's "Known
-// limitations" section): this codebase has no dedicated validity flag
-// for Vvel (unlike Speed_valid for Speed) - a genuinely level target and
-// a target whose vertical rate was simply never reported are both
-// represented as Vvel==0. VerticalRateValid is gated on Speed_valid
-// alone (the same message class that populates Vvel for every live
-// traffic source in this project) rather than also excluding Vvel==0,
-// which would wrongly treat every genuinely level target - the single
-// most common case - as unknown. This is a deliberate, conservative-in-
-// the-other-direction choice: a wrongly-trusted zero vertical rate for a
-// target that is actually climbing/descending without having reported it
-// yet would, at worst, predict a vertical separation that itself decays
-// back toward the target's CURRENT (always trustworthy) vertical
-// separation as fresher updates arrive - it is not persisted, and it can
-// never on its own escalate past a single tier (see
-// alerting.cpaWarrantsEscalation).
+// VerticalRateValid is unconditionally false for every target - see
+// "Target vertical-rate validity" below for why this codebase cannot
+// prove a target's Vvel end-to-end for any live traffic source, and
+// docs/traffic-cpa-alerting.md's "Vertical-rate behavior" section for the
+// full design rationale. This means trafficcpa.Compute never uses a
+// target's vertical rate: PredictedVerticalSeparationFeet/
+// VerticalClosureRateFPM always report as explicitly unavailable
+// (Confidence never exceeds ConfidenceMedium for a target-vertical
+// reason), while CurrentVerticalSeparationFeet - which needs only both
+// altitudes, not either vertical rate - is unaffected and still reported
+// whenever available. Horizontal CPA calculation and escalation are also
+// unaffected: cpaWarrantsEscalation's Confidence==Medium path already
+// permits horizontal-only escalation.
+//
+// # Target vertical-rate validity
+//
+// An earlier version of this function gated VerticalRateValid on
+// Speed_valid alone, reasoning that Speed_valid was the "same message
+// class" that populates Vvel. A source-and-protocol audit for this
+// mission found that reasoning does not hold end-to-end for any live
+// traffic source this project decodes:
+//
+//   - 978 UAT (main/traffic.go's parseDownlinkReport): the DO-282
+//     "vertical rate not available" sentinel is the raw 9-bit field
+//     being all-zero, which this code converts to the plain numeric
+//     value 0 - indistinguishable from a genuine zero climb rate, and no
+//     bit survives anywhere to tell the two apart. Speed_valid is derived
+//     from the N/S and E/W velocity subfields, an entirely independent
+//     part of the message from vertical rate.
+//   - 1090ES (main/traffic.go's parseDump1090Message): the dump978/
+//     dump1090 JSON boundary DOES distinguish "vertical rate absent"
+//     (nil) from "reported" via a nilable *int16 - but that distinction
+//     is discarded at the merge into TrafficInfo.Vvel (a plain,
+//     non-nilable int16) without ever setting a validity flag, so the
+//     information is lost before this function ever sees it.
+//   - Ping/uAvionix (main/ping.go): Vvel is set unconditionally from
+//     ver_velocity even on the exact branch that just forced
+//     Speed_valid=false (hor_velocity<=0) - proving Speed_valid and Vvel
+//     reliability are set INDEPENDENTLY for this source, not coupled at
+//     all, let alone coupled in the assumed direction.
+//   - OGN (main/ogn.go) and FLARM (main/flarm-nmea.go): both hardcode
+//     Speed_valid=true unconditionally alongside every Vvel update,
+//     which asserts nothing about whether that update's own climb_mps/
+//     vspeed field was itself meaningful.
+//
+// Since no live source can be shown to prove target vertical-rate
+// validity, and no source can be excluded either (the failure mode is
+// present on every source examined), the conservative correction is to
+// never let a target's vertical rate reach trafficcpa at all, rather
+// than trust an unproven per-source or per-field heuristic. This is a
+// real reduction in the feature's predicted-vertical-separation coverage
+// for targets (it was previously computed whenever Speed_valid was
+// true), traded for not silently treating an unprovable value as
+// trustworthy input to a safety-adjacent estimate.
 //
 // ti.Alt==0 is treated as "altitude unknown," mirroring
 // relativeAltitudeFeetForAlerting's own identical, already-accepted
@@ -284,7 +322,7 @@ func targetTrackForCPA(ti TrafficInfo) trafficcpa.Track {
 		SpeedKnots:          float64(ti.Speed),
 		GroundVelocityValid: ti.Speed_valid,
 		VerticalRateFPM:     float64(ti.Vvel),
-		VerticalRateValid:   ti.Speed_valid,
+		VerticalRateValid:   false,
 		AgeSeconds:          ti.Age,
 	}
 }
@@ -292,18 +330,24 @@ func targetTrackForCPA(ti TrafficInfo) trafficcpa.Track {
 // trafficCPAConfigForCurrentAlertingEnvelope returns a trafficcpa.Config
 // built from the persisted CPA settings, EXCEPT
 // MaxHorizontalSeparationMeters, which is instead derived dynamically
-// from alertCfg's CURRENT MonitoringHorizontalMeters - this project's
-// alerting monitoring envelope and this package's own computation
-// envelope must never be allowed to drift apart (there is no value in
-// computing a CPA trend for a target the alerting system would never
-// evaluate to begin with, and a narrower CPA envelope than the alerting
-// one would silently disable escalation for a target near the outer edge
-// of what alerting itself still monitors).
-func trafficCPAConfigForCurrentAlertingEnvelope(s TrafficCPASettings, alertCfg alerting.Config) trafficcpa.Config {
+// from the CURRENT alerting.Config's own MonitoringHorizontalMeters -
+// this project's alerting monitoring envelope and this package's own
+// computation envelope must never be allowed to drift apart (there is no
+// value in computing a CPA trend for a target the alerting system would
+// never evaluate to begin with, and a narrower CPA envelope than the
+// alerting one would silently disable escalation for a target near the
+// outer edge of what alerting itself still monitors).
+//
+// monitoringHorizontalMeters is passed in already-resolved by the caller
+// (computeTrafficCPA reads it from alertEvaluator's own in-memory Config
+// via Evaluator.Config() - never a fresh settings-file read) so this
+// function itself stays a pure, allocation-only translation with no
+// opinion on where the value came from.
+func trafficCPAConfigForCurrentAlertingEnvelope(s TrafficCPASettings, monitoringHorizontalMeters float64) trafficcpa.Config {
 	cfg := trafficcpa.DefaultConfig()
 	cfg.HorizonSeconds = s.HorizonSeconds
 	cfg.MinRelativeSpeedKnots = s.MinRelativeSpeedKnots
-	cfg.MaxHorizontalSeparationMeters = alertCfg.MonitoringHorizontalMeters
+	cfg.MaxHorizontalSeparationMeters = monitoringHorizontalMeters
 	return cfg
 }
 
@@ -313,6 +357,25 @@ func trafficCPAConfigForCurrentAlertingEnvelope(s TrafficCPASettings, alertCfg a
 // values), so a defect here can never propagate into, or stop, the
 // surrounding traffic-evaluation cycle. See this file's own package doc
 // comment for why running this inline is safe.
+//
+// Reads ONLY in-memory state - currentTrafficCPASettings() (this
+// process's own settings cache) and, when alertEvaluator has already
+// been constructed, alertEvaluator.Config() (a mutex-guarded copy of its
+// own already-applied Config, never re-read from disk). This function is
+// called once per non-ownship target, every ~1Hz sendTrafficUpdates
+// cycle, while sendTrafficUpdates itself holds trafficMutex - a prior
+// version of this function called loadAlertSettings(), which performs a
+// real os.ReadFile per call, meaning a genuine filesystem read under
+// trafficMutex for every tracked target, every cycle. That was a defect
+// against this feature's own zero-filesystem-I/O-in-the-traffic-
+// evaluation-path requirement, found and fixed before deployment; there
+// is no need to reconstruct AlertSettings at all here, since the only
+// value ever needed from it (MonitoringHorizontalMeters) is already
+// sitting in alertEvaluator's own in-memory Config, kept current by
+// every settings-change call site (initAlerting,
+// handleSetAlertSettingsRequest, handleSetTrafficCPASettingsRequest),
+// each of which legitimately reads the settings file once, off this hot
+// path, exactly as before.
 func computeTrafficCPA(ti TrafficInfo) (result *trafficcpa.Result) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -327,10 +390,12 @@ func computeTrafficCPA(ti TrafficInfo) (result *trafficcpa.Result) {
 	own := ownshipTrackForCPA(ti)
 	target := targetTrackForCPA(ti)
 
-	alertSettings := loadAlertSettings()
-	alertCfg := mergedAlertingConfig(alertSettings, alertSettings.BrowserAudioEnabled, alertSettings.SystemAudioEnabled)
+	monitoringHorizontalMeters := alerting.DefaultConfig().MonitoringHorizontalMeters
+	if alertEvaluator != nil {
+		monitoringHorizontalMeters = alertEvaluator.Config().MonitoringHorizontalMeters
+	}
 	cpaSettings := currentTrafficCPASettings()
-	cfg := trafficCPAConfigForCurrentAlertingEnvelope(cpaSettings, alertCfg)
+	cfg := trafficCPAConfigForCurrentAlertingEnvelope(cpaSettings, monitoringHorizontalMeters)
 
 	res := trafficcpa.Compute(own, target, cfg)
 	trafficCPARecordEvaluation(res)

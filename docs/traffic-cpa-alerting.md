@@ -66,7 +66,7 @@ Traced from the existing call graph (`main/traffic.go`'s
 | Track/speed | `mySituation.GPSTrueCourse`/`GPSGroundSpeed` | `TrafficInfo.Track`/`Speed` |
 | Ground-velocity valid | `isGPSGroundTrackValid()` (accuracy < 30m - a stricter bar than plain `isGPSValid`, since an inaccurate ground track would corrupt the whole relative-velocity vector) | `TrafficInfo.Speed_valid` |
 | Vertical rate | `AltIsGNSS+GPS → GPSVerticalSpeed*60` (ft/s→ft/min), else `BaroVerticalSpeed` (already ft/min) | `TrafficInfo.Vvel` (already ft/min) |
-| Vertical-rate valid | same gate as altitude above | `Speed_valid` (see "Known limitations" - this codebase has no dedicated `Vvel_valid` flag) |
+| Vertical-rate valid | same gate as altitude above (real sensor-freshness checks) | always `false` (see "Vertical-rate behavior" - this codebase cannot prove `Vvel` validity end-to-end for any live traffic source) |
 | Age | `stratuxClock.Since(mySituation.GPSLastFixLocalTime)` | `TrafficInfo.Age` |
 
 ## Coordinate and relative-motion model
@@ -188,18 +188,62 @@ both altitudes) is reported whenever available regardless;
 explicitly invalid, and `Confidence` stays `MEDIUM`, whenever either
 track's vertical rate is not reliable.
 
-**Known, disclosed limitation:** this codebase has no dedicated validity
-flag for `TrafficInfo.Vvel` (unlike `Speed_valid` for `Speed`) - a
-genuinely level target and one whose vertical rate was simply never
-reported both read `Vvel == 0`. `VerticalRateValid` is gated on
-`Speed_valid` alone (the same message class that populates `Vvel` for
-every live traffic source in this project), not also on `Vvel != 0`,
-which would wrongly treat the single most common case - genuinely level
-traffic - as unknown. The failure mode this trades for (trusting a zero
-rate that was actually just never updated yet) is bounded: it can never
-escalate more than one tier, decays back toward the always-trustworthy
-*current* vertical separation as fresher data arrives, and never
-persists.
+**Target vertical rate is never treated as valid.** An earlier version of
+this feature gated a target's `VerticalRateValid` on `TrafficInfo.Speed_valid`
+alone, reasoning that `Speed_valid` was "the same message class" that
+populates `Vvel`. A source-and-protocol audit performed before this
+feature's hardware deployment found that reasoning does not hold
+end-to-end for any live traffic source this project decodes:
+
+- **978 UAT** (`main/traffic.go`'s `parseDownlinkReport`): the DO-282
+  "vertical rate not available" sentinel is the raw 9-bit field being
+  all-zero, which this code converts to the plain numeric value `0` -
+  indistinguishable from a genuine zero climb rate, with no bit
+  surviving anywhere to tell the two apart. `Speed_valid` is derived
+  from the N/S and E/W velocity subfields, an entirely independent part
+  of the message from vertical rate.
+- **1090ES** (`main/traffic.go`'s `parseDump1090Message`): the
+  dump978/dump1090 JSON boundary *does* distinguish "vertical rate
+  absent" (a nil `*int16`) from "reported" - but that distinction is
+  discarded at the merge into `TrafficInfo.Vvel` (a plain, non-nilable
+  `int16`) without ever setting a validity flag, so the information is
+  lost before this feature ever sees it.
+- **Ping/uAvionix** (`main/ping.go`): `Vvel` is set unconditionally from
+  `ver_velocity`, even on the exact branch that just forced
+  `Speed_valid=false` - proving `Speed_valid` and `Vvel` reliability are
+  set **independently** for this source, not coupled at all, let alone
+  coupled in the assumed direction.
+- **OGN** (`main/ogn.go`) and **FLARM** (`main/flarm-nmea.go`): both
+  hardcode `Speed_valid=true` unconditionally alongside every `Vvel`
+  update, which asserts nothing about whether that update's own
+  `climb_mps`/vertical-speed field was itself meaningful.
+
+Since no live source can be shown to prove target vertical-rate
+validity, and no source can be excluded either (the same failure mode is
+present on every source examined), `targetTrackForCPA`
+(`main/trafficcpaapi.go`) sets `VerticalRateValid: false`
+**unconditionally** for every target, regardless of `Speed_valid` or
+`Vvel`'s numeric value. This means `trafficcpa.Compute` never uses a
+target's vertical rate: `PredictedVerticalSeparationFeet`/
+`VerticalClosureRateFPM` always report as explicitly unavailable for a
+target-vertical reason (`Confidence` never exceeds `MEDIUM` on that
+account), while `CurrentVerticalSeparationFeet` - which needs only both
+altitudes, not either vertical rate - is unaffected. Horizontal CPA
+calculation and escalation are unaffected too:
+`cpaWarrantsEscalation`'s `Confidence == MEDIUM` path already permits
+horizontal-only escalation, exactly as it does for any other reason a
+vertical prediction is unavailable.
+
+This is a real reduction in the feature's predicted-vertical-separation
+*coverage* relative to the first deployed design (it was previously
+computed whenever `Speed_valid` was true, i.e. for nearly every live
+target) - traded deliberately for never treating an unprovable value as
+trustworthy input to a safety-adjacent estimate. Ownship's own vertical
+rate is unaffected by this change: `ownshipAltitudeAndVerticalRateForCPA`
+gates validity on `isTempPressValid()`/`isGPSValid()`, real
+freshness/availability checks on the *same sensor* producing the value,
+not a borrowed proxy field - a materially stronger claim than anything
+available on the target side.
 
 ## Closure-rate behavior
 
@@ -478,8 +522,14 @@ report, not restated here.
 ## Known limitations
 
 - No dedicated `Vvel_valid` flag exists in this codebase for target
-  vertical rate - see "Vertical-rate behavior" above for the exact,
-  disclosed, bounded-impact tradeoff this makes.
+  vertical rate, on any live source - see "Vertical-rate behavior" above
+  for the full source-and-protocol audit and the resulting conservative
+  correction (target `VerticalRateValid` is unconditionally `false`).
+  This means `PredictedVerticalSeparationFeet` is never populated for a
+  target - only `CurrentVerticalSeparationFeet` (current altitudes only)
+  - a real, disclosed reduction in coverage relative to escalating on a
+  target's own predicted vertical trend, accepted deliberately because
+  no live source can prove that trend's input data is trustworthy.
 - The equirectangular approximation is deliberately bounded (envelope
   check) rather than geodesically exact - appropriate for this project's
   own short traffic-alert ranges (a few NM), not a general-purpose
@@ -487,29 +537,63 @@ report, not restated here.
 - CPA escalation is gated on ownship's own GPS ground-track accuracy
   (<30m) - a Stratux with a poor GPS fix or no fix at all will simply
   never escalate via CPA (distance/altitude alerting is unaffected).
-- This feature was not deployed to, or validated against, real live
-  traffic on physical hardware during this mission - see the checklist
-  below.
+- A target's `AgeSeconds` (the CPA freshness gate) is derived from its
+  last **position** update timestamp, not a velocity- or vertical-rate-
+  specific one - a target whose position keeps refreshing but whose
+  velocity/vertical-rate report is materially older will still read as
+  "fresh" for CPA purposes. Bounded impact: this can only ever affect
+  the same already-conservative, single-tier-max escalation path
+  described throughout this document, never distance/altitude alerting
+  itself.
+
+## Runtime correctness fixes made before deployment
+
+Two defects were found and fixed against this feature's own stated
+requirements before any hardware deployment was attempted (see the
+mission's own final report for full detail, root-cause evidence, and
+regression tests):
+
+- **Target vertical-rate validity** (see "Vertical-rate behavior" above)
+  - the original `Speed_valid`-gated heuristic was found not to hold for
+  any live source, and was replaced with an unconditional `false`.
+- **A filesystem read on the hot traffic-evaluation path** -
+  `computeTrafficCPA` (`main/trafficcpaapi.go`) originally called
+  `loadAlertSettings()`, which performs a real `os.ReadFile`, once per
+  non-ownship target, every ~1Hz `sendTrafficUpdates` cycle, **while**
+  that function holds `trafficMutex` - a direct violation of this
+  feature's own "no filesystem I/O in the traffic-evaluation path"
+  requirement, and a real (if bounded per-call) added latency source
+  under that same broad lock other traffic/GDL90 code also needs. Fixed
+  by reading the one value actually needed
+  (`MonitoringHorizontalMeters`) from `alertEvaluator.Config()` - a
+  mutex-guarded copy of the evaluator's own already-in-memory,
+  already-current `Config` - instead of reconstructing it from a fresh
+  settings-file read. `TestComputeTrafficCPA_NeverReadsSettingsFromDisk`
+  (`main/trafficcpaapi_test.go`) proves this by deliberately making the
+  on-disk file disagree with the live evaluator config and asserting the
+  live value wins.
 
 ## Hardware-validation checklist
 
-Not performed during this implementation-only mission (see this
-mission's own explicit "no deployment" constraint). Before enabling
-`escalationEnabled` on a real device:
+This mission is performing this checklist against real hardware - items
+are checked off below only once actually confirmed, with evidence, not
+in advance. See the mission's own final report for the authoritative,
+evidence-graded record (what was directly observed vs. inferred from
+source/unit/integration evidence vs. still not obtainable).
 
 - [ ] Confirm the dashboard's CPA fields render correctly on a physical
-      iPad/iPhone, portrait and landscape (this mission verified layout
-      reuse and JavaScript syntax only, not physical rendering).
+      iPad/iPhone, portrait and landscape.
 - [ ] Confirm live GPS ground-track accuracy is actually reported below
       30m in normal flight, so CPA computation is not silently gated off
       by `isGPSGroundTrackValid` far more often than expected.
 - [ ] Confirm against real or simulated converging traffic that an
       escalation actually fires, uses the correct audio path, and never
       duplicates the existing distance/altitude alert.
-- [ ] Confirm `Vvel`'s known ambiguity (see "Known limitations") does
-      not produce misleading vertical-prediction UI text in practice for
-      the traffic sources this device actually receives (1090 ES, UAT,
-      OGN/FLARM, AIS).
+- [ ] Confirm the corrected `Vvel` handling (see "Vertical-rate
+      behavior") does not produce misleading UI text in practice for the
+      traffic sources this device actually receives - predicted vertical
+      separation should now honestly read "unavailable" for every live
+      target, rather than sometimes silently wrong.
 - [ ] Confirm settings persist correctly across a reboot and a
       Configuration Backup round trip on real hardware.
 
