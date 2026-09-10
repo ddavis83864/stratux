@@ -219,16 +219,24 @@ func (e *Evaluator) evictOldestLocked() {
 }
 
 func (e *Evaluator) updateTargetLocked(st *targetTrafficState, obs TrafficObservation, now time.Time) *Event {
-	entryTier, validity := classifyTier(obs, e.cfg)
+	entryTier, validity, entryCPAEscalated := classifyTier(obs, e.cfg)
 	prevTier := st.currentTier
 
+	// cpaEscalated tracks, for whichever tier ends up assigned to
+	// newTier below, whether THAT tier's own most recent classification
+	// was CPA-escalated - defaults to holding the previously-known value
+	// (st.cpaEscalated) for every branch that merely holds prevTier
+	// unchanged (hysteresis/dwell), and is only overwritten when newTier
+	// is freshly assigned from entryTier.
 	var newTier int
+	cpaEscalated := st.cpaEscalated
 	switch {
 	case entryTier >= prevTier:
 		newTier = entryTier
+		cpaEscalated = entryCPAEscalated
 		st.belowExitSince = time.Time{}
 	default:
-		exitTier, _ := classifyTier(obs, e.cfg.widen())
+		exitTier, _, _ := classifyTier(obs, e.cfg.widen())
 		if exitTier >= prevTier {
 			newTier = prevTier
 			st.belowExitSince = time.Time{}
@@ -238,6 +246,7 @@ func (e *Evaluator) updateTargetLocked(st *targetTrafficState, obs TrafficObserv
 			}
 			if now.Sub(st.belowExitSince).Seconds() >= e.cfg.DeescalateDwellSeconds {
 				newTier = entryTier
+				cpaEscalated = entryCPAEscalated
 				st.belowExitSince = time.Time{}
 			} else {
 				newTier = prevTier
@@ -246,6 +255,7 @@ func (e *Evaluator) updateTargetLocked(st *targetTrafficState, obs TrafficObserv
 	}
 
 	st.validity = validity
+	st.cpaEscalated = cpaEscalated
 	st.lastUpdatedAt = now
 	st.last = obs
 
@@ -276,6 +286,7 @@ func (e *Evaluator) updateTargetLocked(st *targetTrafficState, obs TrafficObserv
 		st.acknowledged = false
 		st.ackTier = tierNone
 		st.lastAudioAt = map[int]time.Time{}
+		st.cpaEscalated = false
 	} else if newTier > st.ackTier {
 		st.acknowledged = false
 	}
@@ -342,6 +353,22 @@ func (e *Evaluator) buildEventLocked(st *targetTrafficState, kind string, audioE
 		SuppressionReason:     suppressionReason,
 		DataValidity:          st.validity,
 		Disclaimer:            Disclaimer,
+		CPAEscalated:          st.cpaEscalated,
+	}
+	if cpa := st.last.CPA; cpa != nil {
+		a.CPAValid = cpa.Valid
+		a.CPAConfidence = string(cpa.Confidence)
+		a.CPARejectReason = string(cpa.RejectReason)
+		a.CPAClosureRateKnots = cpa.HorizontalClosureRateKnots
+		a.CPAClosureRateValid = cpa.HorizontalClosureRateValid
+		a.CPATCPASeconds = cpa.TCPASeconds
+		a.CPATCPAValid = cpa.TCPAValid
+		a.CPATCPAClampedToHorizon = cpa.TCPAClampedToHorizon
+		a.CPAPredictedHorizontalMeters = cpa.PredictedHorizontalSeparationMeters
+		a.CPAPredictedHorizontalValid = cpa.PredictedHorizontalSeparationValid
+		a.CPAPredictedVerticalFeet = cpa.PredictedVerticalSeparationFeet
+		a.CPAPredictedVerticalValid = cpa.PredictedVerticalSeparationValid
+		a.CPATrend = string(cpa.Trend)
 	}
 	return Event{Alert: a, Kind: kind}
 }

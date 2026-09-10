@@ -103,6 +103,37 @@ type Alert struct {
 	ClockDirection        ClockDirection `json:"clockDirection,omitempty"`
 	ClockDirectionValid   bool           `json:"clockDirectionValid"`
 
+	// CPA* fields carry this target's closure-rate/closest-point-of-
+	// approach trend estimate, when one was computed (see
+	// TrafficObservation.CPA and docs/traffic-cpa-alerting.md) - always
+	// present with CPAValid=false/omitted numeric values for a system
+	// alert, or for a traffic alert with no CPA estimate available.
+	// Never a fabricated number: every numeric field here is paired with
+	// its own *Valid flag exactly like DistanceMeters/
+	// RelativeAltitudeFeet above.
+	CPAValid        bool   `json:"cpaValid"`
+	CPAConfidence   string `json:"cpaConfidence,omitempty"`
+	CPARejectReason string `json:"cpaRejectReason,omitempty"`
+
+	CPAClosureRateKnots float64 `json:"cpaClosureRateKnots,omitempty"`
+	CPAClosureRateValid bool    `json:"cpaClosureRateValid"`
+
+	CPATCPASeconds          float64 `json:"cpaTcpaSeconds,omitempty"`
+	CPATCPAValid            bool    `json:"cpaTcpaValid"`
+	CPATCPAClampedToHorizon bool    `json:"cpaTcpaClampedToHorizon,omitempty"`
+
+	CPAPredictedHorizontalMeters float64 `json:"cpaPredictedHorizontalMeters,omitempty"`
+	CPAPredictedHorizontalValid  bool    `json:"cpaPredictedHorizontalValid"`
+	CPAPredictedVerticalFeet     float64 `json:"cpaPredictedVerticalFeet,omitempty"`
+	CPAPredictedVerticalValid    bool    `json:"cpaPredictedVerticalValid"`
+
+	CPATrend string `json:"cpaTrend,omitempty"`
+	// CPAEscalated is true only when a valid CPA estimate actually raised
+	// this alert's tier above what distance/altitude alone produced -
+	// see classifyTier's own doc comment. Always false when
+	// CPAEscalationEnabled is false or CPA is unavailable/invalid.
+	CPAEscalated bool `json:"cpaEscalated"`
+
 	FirstSeenAtMono   time.Time `json:"-"`
 	LastUpdatedAtMono time.Time `json:"-"`
 	// FirstSeenAgeSeconds/LastUpdatedAgeSeconds are populated at snapshot
