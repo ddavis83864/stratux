@@ -33,6 +33,11 @@ hardware integration). User-facing how-tos live in the
 - **[alerting.md](alerting.md)** — conservative, supplemental traffic-proximity and
   system-health notices: threshold policy, hysteresis, duplicate suppression, health
   transitions, settings, and browser-audio limitations. Not collision avoidance.
+- **[traffic-cpa-alerting.md](traffic-cpa-alerting.md)** — an additive, off-by-default
+  closure-rate/closest-point-of-approach trend input to the alerting subsystem above:
+  the coordinate/relative-motion model, TCPA/CPA equations, freshness and confidence
+  rules, and the exact policy that lets it only ever raise an existing alert one tier
+  early, never lower or suppress one. Not collision avoidance, TCAS, or ACAS.
 - **[configuration-backup-restore.md](configuration-backup-restore.md)** — backing up and
   restoring supported application configuration (radio enablement, alert settings,
   calibration profiles): export allowlist, checksums, the validate/preview/confirm/apply
