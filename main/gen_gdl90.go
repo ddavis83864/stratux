@@ -46,10 +46,10 @@ var logDirf string      // Directory for all logging
 var dataLogFilef string // Set according to OS config.
 
 const (
-	STRATUX_HOME          = "/opt/stratux"
+	STRATUX_HOME  = "/opt/stratux"
 	defaultManagementAddr = 80
-	logDir                = "/var/log/"
-	dataLogFile           = "stratux.sqlite"
+	logDir         = "/var/log/"
+	dataLogFile    = "stratux.sqlite"
 	//FlightBox: log to /root.
 	logDir_FB           = "/root/"
 	maxDatagramSize     = 8192
@@ -74,10 +74,10 @@ const (
 	MSGTYPE_BASIC_REPORT = 0x1E
 	MSGTYPE_LONG_REPORT  = 0x1F
 
-	MSGCLASS_UAT = 0
-	MSGCLASS_ES  = 1
-	MSGCLASS_OGN = 2
-	MSGCLASS_AIS = 3
+	MSGCLASS_UAT   = 0
+	MSGCLASS_ES    = 1
+	MSGCLASS_OGN   = 2
+	MSGCLASS_AIS   = 3
 
 	LON_LAT_RESOLUTION = float32(180.0 / 8388608.0)
 	TRACK_RESOLUTION   = float32(360.0 / 256.0)
@@ -91,29 +91,32 @@ const (
 		GPS_TYPE_GARMIN   = 0x06
 	*/
 
-	// for historical reasons lower nibbe contains gps type, upper nibble containsprotocol type.
+	// for historical reasons lower nibbe contains gps type, upper nibble containsprotocol type. 
 	// Additionally this enumeration has a javascript duplicte in web/plates/js/status.js, they have to be kept in sync manually
 	// This is somewhat ugly but difficult to change without breaking backward compatibility
 
 	// lower nibble gps type   (dont forget to use only numbers form 0 to 15)
 
-	GPS_TYPE_ANY        = 1 // Any generic GPS - no reconfiguring applied
+	GPS_TYPE_ANY        = 1		// Any generic GPS - no reconfiguring applied
 	GPS_TYPE_PROLIFIC   = 2
 	GPS_TYPE_OGNTRACKER = 3
 	GPS_TYPE_UBX_GEN    = 4
 	GPS_TYPE_UBX10      = 5
 	//GPS_TYPE_UBX6     	= 6
-	GPS_TYPE_UBX6or7       = 7
-	GPS_TYPE_UBX8          = 8
-	GPS_TYPE_UBX9          = 9
-	GPS_TYPE_SERIAL        = 10 // 0x0A
-	GPS_TYPE_SOFTRF_DONGLE = 11 // 0x0B
-	GPS_TYPE_NETWORK       = 12 // 0x0C
-	GPS_TYPE_SOFTRF        = 13
-	GPS_TYPE_GXAIRCOM      = 15 // 0x0F
+	GPS_TYPE_UBX6or7    = 7
+	GPS_TYPE_UBX8       = 8
+	GPS_TYPE_UBX9       = 9
+	GPS_TYPE_SERIAL     = 10 		// 0x0A
+	GPS_TYPE_SOFTRF_DONGLE 	= 11	// 0x0B
+	GPS_TYPE_NETWORK    = 12		// 0x0C
+	GPS_TYPE_SOFTRF     = 13
+	GPS_TYPE_GXAIRCOM   = 15		// 0x0F
+	
 
 	// upper nibble is used for the protocol
 	GPS_PROTOCOL_NMEA = 0x10
+	
+	
 )
 
 var STRATUX_WWW_DIR = STRATUX_HOME + "/www/"
@@ -227,12 +230,11 @@ var lastUATMessageTime, lastESMessageTime time.Time
 var timeStarted time.Time
 
 type RegionInfo struct {
-	IsSet  bool
-	Region string
+	IsSet       bool
+	Region		string
 }
 
 var RegionSettings RegionInfo
-
 type ADSBTower struct {
 	Lat                         float64
 	Lng                         float64
@@ -334,8 +336,8 @@ func makeOwnshipReport() bool {
 	// First half of byte is 0 for Alert type of 'No Traffic Alert'
 	// Second half of byte is 0 for traffic type 'ADS-B with ICAO'
 	// Send 0x01 by default, unless ICAO is set, send 0x00
-	if len(code) == 3 && code[0] != 0xF0 && code[0] != 0x00 {
-		msg[1] = 0x00    // ADS-B Out with ICAO
+	if (len(code) == 3 && code[0] != 0xF0 && code[0] != 0x00) {
+		msg[1] = 0x00 // ADS-B Out with ICAO
 		msg[2] = code[0] // Mode S address.
 		msg[3] = code[1] // Mode S address.
 		msg[4] = code[2] // Mode S address.
@@ -695,9 +697,11 @@ func makeStratuxHeartbeat() []byte {
 }
 
 /*
-ForeFlight "ID Message".
 
-Sends device information to ForeFlight.
+	ForeFlight "ID Message".
+
+	Sends device information to ForeFlight.
+
 */
 func makeFFIDMessage() []byte {
 	msg := make([]byte, 39)
@@ -721,7 +725,7 @@ func makeFFIDMessage() []byte {
 	copy(msg[19:], devLongName)
 
 	//if globalSettings.GDL90MSLAlt_Enabled {
-	msg[38] = 0x00 // Capabilities mask. MSL altitude for Ownship Geometric report. We only support HAE as in spec.
+		msg[38] = 0x00 // Capabilities mask. MSL altitude for Ownship Geometric report. We only support HAE as in spec.
 	//}
 
 	return prepareMessage(msg)
@@ -784,7 +788,7 @@ func blinkStatusLED() {
 		<-timer.C
 		ledON = !ledON
 		setActLed(ledON)
-
+		
 		if ledON != globalStatus.NightMode && len(globalStatus.Errors) == 0 { // System error was cleared - leave it on again
 			return
 		}
@@ -1127,7 +1131,7 @@ func parseInput(buf string) ([]byte, uint16) {
 	if msglen != UPLINK_FRAME_DATA_BYTES && isUplink {
 		difference := UPLINK_FRAME_DATA_BYTES - msglen
 		//s = append(s,strings.Repeat("00",difference))
-		s = s + strings.Repeat("00", difference)
+		s = s + strings.Repeat("00",difference)
 		msglen = len(s) / 2
 	}
 	if len(s)%2 != 0 { // Bad format.
@@ -1247,34 +1251,34 @@ type settings struct {
 	WiFiPassphrase       string
 	NoSleep              bool
 
-	WiFiMode                       int
-	WiFiDirectPin                  string
-	WiFiIPAddress                  string
-	WiFiClientNetworks             []wifiClientNetwork
+	WiFiMode             int
+	WiFiDirectPin        string
+	WiFiIPAddress        string
+	WiFiClientNetworks   []wifiClientNetwork
 	WiFiInternetPassThroughEnabled bool
 
 	EstimateBearinglessDist bool
-	RadarLimits             int
-	RadarRange              int
+	RadarLimits          int
+	RadarRange           int
 
-	OGNI2CTXEnabled bool
+	OGNI2CTXEnabled      bool
 
 	// External Tracker config (OGN Tracker/GXAirCom/SoftRF)
-	OGNAddr     string
-	OGNAddrType int // 0=random, 1=ICAO, 2=Flarm, 3=OGN
-	OGNAcftType int
-	OGNPilot    string
-	OGNReg      string
-	OGNTxPower  int
+	OGNAddr              string
+	OGNAddrType          int            // 0=random, 1=ICAO, 2=Flarm, 3=OGN
+	OGNAcftType          int
+	OGNPilot             string
+	OGNReg               string
+	OGNTxPower           int
 
-	PWMDutyMin int
+	PWMDutyMin           int
 
 	// manual GPS config  (versus autodetect)
-	GpsManualConfig     bool
-	GpsManualDevice     string // default: /dev/ttyAMA0
-	GpsManualChip       string // ublox8, ublox9, ublox
-	GpsManualTargetBaud int    // default: 115200
-	RegionSelected      int    // 0 - none, 1 = US, 2 = EU
+	GpsManualConfig      bool
+	GpsManualDevice	     string         // default: /dev/ttyAMA0
+    GpsManualChip        string         // ublox8, ublox9, ublox
+	GpsManualTargetBaud  int            // default: 115200
+	RegionSelected       int			// 0 - none, 1 = US, 2 = EU
 
 	// PersistentDataUUID pins the filesystem UUID expected at
 	// /var/lib/stratux-data (see readiness.CertifyPersistentStorage). Set
@@ -1284,106 +1288,106 @@ type settings struct {
 	// there - see main/health.go's ensurePersistentDataUUID. Never
 	// silently accepts an arbitrary mount: once pinned (by either path),
 	// every later check requires an exact match.
-	PersistentDataUUID string
+	PersistentDataUUID   string
 }
 
 type status struct {
-	Version                      string
-	Build                        string
-	HardwareBuild                string
-	Devices                      uint32
-	Connected_Users              uint
-	DiskBytesFree                uint64
-	UAT_messages_last_minute     uint
-	UAT_messages_max             uint
-	UAT_messages_total           uint64
-	ES_messages_last_minute      uint
-	ES_messages_max              uint
-	ES_messages_total            uint64
-	OGN_messages_last_minute     uint
-	OGN_messages_max             uint
-	OGN_messages_total           uint64
-	OGN_connected                bool
-	APRS_connected               bool
-	AIS_messages_last_minute     uint
-	AIS_messages_max             uint
-	AIS_messages_total           uint64
-	AIS_connected                bool
-	UAT_traffic_targets_tracking uint16
-	ES_traffic_targets_tracking  uint16
-	Ping_connected               bool
-	Pong_connected               bool
-	UATRadio_connected           bool
+	Version                                    string
+	Build                                      string
+	HardwareBuild                              string
+	Devices                                    uint32
+	Connected_Users                            uint
+	DiskBytesFree                              uint64
+	UAT_messages_last_minute                   uint
+	UAT_messages_max                           uint
+	UAT_messages_total                         uint64
+	ES_messages_last_minute                    uint
+	ES_messages_max                            uint
+	ES_messages_total                          uint64
+	OGN_messages_last_minute                   uint
+	OGN_messages_max                           uint
+	OGN_messages_total                         uint64
+	OGN_connected                              bool
+	APRS_connected                             bool
+	AIS_messages_last_minute                   uint
+	AIS_messages_max                           uint
+	AIS_messages_total                         uint64
+	AIS_connected                              bool
+	UAT_traffic_targets_tracking               uint16
+	ES_traffic_targets_tracking                uint16
+	Ping_connected                             bool
+	Pong_connected                             bool
+	UATRadio_connected                         bool
 	// Primary 978 UAT / 1090 ES SDR receiver status below (UAT_Enabled..
 	// ES_DiagnosticReason). These describe the dedicated RTL-SDR bound to
 	// each band by main/sdr.go, distinct from UATRadio_connected above (an
 	// external low-power UAT radio) and from the *_messages_* counters
 	// (which alone cannot distinguish "no local RF traffic" from "receiver
 	// failed"). See docs/hardware/sdr-and-bands.md.
-	UAT_Enabled                    bool
-	UAT_Detected                   bool
-	UAT_Assigned                   bool
-	UAT_DeviceSerial               string
-	UAT_DeviceIndex                int
-	UAT_AssignmentSource           string // "tagged", "anonymous", "external", or "none"
-	UAT_Ambiguous                  bool
-	UAT_Conflict                   bool
-	UAT_ExternallySatisfied        bool // true when an external (non-SDR) low-power UAT radio already serves this band; see UATRadio_connected
-	UAT_IdentityUnstable           bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
-	UAT_DecoderRunning             bool
-	UAT_Receiving                  bool
-	UAT_Degraded                   bool
-	UAT_DiagnosticReason           string
-	ES_Enabled                     bool
-	ES_Detected                    bool
-	ES_Assigned                    bool
-	ES_DeviceSerial                string
-	ES_DeviceIndex                 int
-	ES_AssignmentSource            string // "tagged", "anonymous", "external", or "none"
-	ES_Ambiguous                   bool
-	ES_Conflict                    bool
-	ES_ExternallySatisfied         bool // always false today: no external (non-SDR) 1090 ES receiver path exists
-	ES_IdentityUnstable            bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
-	ES_DecoderRunning              bool
-	ES_Receiving                   bool
-	ES_Degraded                    bool
-	ES_DiagnosticReason            string
-	GPS_satellites_locked          uint16
-	GPS_satellites_seen            uint16
-	GPS_satellites_tracked         uint16
-	GPS_position_accuracy          float32
-	GPS_connected                  bool
-	GPS_solution                   string
-	GPS_detected_type              uint
-	GPS_NetworkRemoteIp            string // for NMEA via TCP from OGN tracker: display remote IP to configure the OGN tracker
-	Uptime                         int64
-	UptimeClock                    time.Time
-	CPUTemp                        float32
-	CPUTempMin                     float32
-	CPUTempMax                     float32
-	NetworkDataMessagesSent        uint64
-	NetworkDataBytesSent           uint64
-	NetworkDataMessagesSentLastSec uint64
-	NetworkDataBytesSentLastSec    uint64
-	UAT_METAR_total                uint32
-	UAT_TAF_total                  uint32
-	UAT_NEXRAD_total               uint32
-	UAT_SIGMET_total               uint32
-	UAT_PIREP_total                uint32
-	UAT_NOTAM_total                uint32
-	UAT_OTHER_total                uint32
-	Errors                         []string
-	Logfile_Size                   int64
-	AHRS_LogFiles_Size             int64
-	BMPConnected                   bool
-	IMUConnected                   bool
-	NightMode                      bool // For turning off LEDs.
-	OGN_noise_db                   float32
-	OGN_gain_db                    float32
-	OGN_tx_enabled                 bool // If ogn-rx-eu uses a local tx module for transmission
+	UAT_Enabled                                bool
+	UAT_Detected                                bool
+	UAT_Assigned                                bool
+	UAT_DeviceSerial                            string
+	UAT_DeviceIndex                             int
+	UAT_AssignmentSource                        string // "tagged", "anonymous", "external", or "none"
+	UAT_Ambiguous                               bool
+	UAT_Conflict                                bool
+	UAT_ExternallySatisfied                     bool // true when an external (non-SDR) low-power UAT radio already serves this band; see UATRadio_connected
+	UAT_IdentityUnstable                        bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
+	UAT_DecoderRunning                          bool
+	UAT_Receiving                               bool
+	UAT_Degraded                                bool
+	UAT_DiagnosticReason                        string
+	ES_Enabled                                  bool
+	ES_Detected                                 bool
+	ES_Assigned                                 bool
+	ES_DeviceSerial                             string
+	ES_DeviceIndex                              int
+	ES_AssignmentSource                         string // "tagged", "anonymous", "external", or "none"
+	ES_Ambiguous                                bool
+	ES_Conflict                                 bool
+	ES_ExternallySatisfied                      bool // always false today: no external (non-SDR) 1090 ES receiver path exists
+	ES_IdentityUnstable                         bool // true when the assigned SDR was picked from 2+ indistinguishable untagged candidates; role is unambiguous but device identity is not proven stable across reboots
+	ES_DecoderRunning                           bool
+	ES_Receiving                                bool
+	ES_Degraded                                 bool
+	ES_DiagnosticReason                         string
+	GPS_satellites_locked                      uint16
+	GPS_satellites_seen                        uint16
+	GPS_satellites_tracked                     uint16
+	GPS_position_accuracy                      float32
+	GPS_connected                              bool
+	GPS_solution                               string
+	GPS_detected_type                          uint
+	GPS_NetworkRemoteIp                        string // for NMEA via TCP from OGN tracker: display remote IP to configure the OGN tracker
+	Uptime                                     int64
+	UptimeClock                                time.Time
+	CPUTemp                                    float32
+	CPUTempMin                                 float32
+	CPUTempMax                                 float32
+	NetworkDataMessagesSent                    uint64
+	NetworkDataBytesSent                       uint64
+	NetworkDataMessagesSentLastSec             uint64
+	NetworkDataBytesSentLastSec                uint64
+	UAT_METAR_total                            uint32
+	UAT_TAF_total                              uint32
+	UAT_NEXRAD_total                           uint32
+	UAT_SIGMET_total                           uint32
+	UAT_PIREP_total                            uint32
+	UAT_NOTAM_total                            uint32
+	UAT_OTHER_total                            uint32
+	Errors                                     []string
+	Logfile_Size                               int64
+	AHRS_LogFiles_Size                         int64
+	BMPConnected                               bool
+	IMUConnected                               bool
+	NightMode                                  bool // For turning off LEDs.
+	OGN_noise_db                               float32
+	OGN_gain_db                                float32
+	OGN_tx_enabled                             bool // If ogn-rx-eu uses a local tx module for transmission
 
-	OGNPrevRandomAddr string // when OGN is in random stealth mode, it's ID changes randomly - keep the previous one so we can filter properly
-	Pong_Heartbeats   int64  // Pong heartbeat counter
+	OGNPrevRandomAddr                          string    // when OGN is in random stealth mode, it's ID changes randomly - keep the previous one so we can filter properly
+	Pong_Heartbeats                            int64     // Pong heartbeat counter
 }
 
 var globalSettings settings
@@ -1441,12 +1445,12 @@ func defaultSettings() {
 	}
 	globalSettings.BleOutputs = []bleConnection{
 		{ // SoftRF style service
-			Capability:  NETWORK_FLARM_NMEA,
+			Capability: NETWORK_FLARM_NMEA,
 			UUIDService: "FFE0",
 			UUIDGatt:    "FFE1",
 		},
 		{ // "standard" nRF UART/Serial emulation
-			Capability:  NETWORK_FLARM_NMEA,
+			Capability: NETWORK_FLARM_NMEA,
 			UUIDService: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
 			UUIDGatt:    "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
 		},
@@ -1566,16 +1570,16 @@ func saveSettings() {
 func changeRegionSettings() {
 	// The region has been updated by the UI. Decide what to do with that information
 
-	switch globalSettings.RegionSelected {
-	case 1: // US settings
-		globalSettings.UAT_Enabled = true
-		globalSettings.OGN_Enabled = false
-		globalSettings.DeveloperMode = false
-	case 2: // EU settings
-		globalSettings.UAT_Enabled = false
-		globalSettings.OGN_Enabled = true
-		globalSettings.DeveloperMode = true
-	default: // Nothing selected
+	switch(globalSettings.RegionSelected)  {
+		case 1:	// US settings
+			globalSettings.UAT_Enabled = true
+			globalSettings.OGN_Enabled = false
+			globalSettings.DeveloperMode = false
+		case 2: // EU settings
+			globalSettings.UAT_Enabled = false
+			globalSettings.OGN_Enabled = true
+			globalSettings.DeveloperMode = true
+		default:	// Nothing selected
 
 	}
 	saveSettings()
@@ -1629,7 +1633,7 @@ func printStats() {
 		log.Printf("stats [started: %s]\n", humanize.RelTime(time.Time{}, stratuxClock.Time(), "ago", "from now"))
 		log.Printf(" - Disk bytes used = %s (%.1f %%), Disk bytes free = %s (%.1f %%)\n", humanize.Bytes(usage.Used()), 100*usage.Usage(), humanize.Bytes(usage.Free()), 100*(1-usage.Usage()))
 		log.Printf(" - CPUTemp=%.02f [%.02f - %.02f] deg C, MemStats.Alloc=%s, MemStats.Sys=%s, totalNetworkMessagesSent=%s\n", globalStatus.CPUTemp, globalStatus.CPUTempMin, globalStatus.CPUTempMax, humanize.Bytes(uint64(memstats.Alloc)), humanize.Bytes(uint64(memstats.Sys)), humanize.Comma(int64(totalNetworkMessagesSent)))
-		log.Printf(" - UAT/min/total %s/%s/%s [maxSS=%.02f%%], ES/min/total %s/%s/%s, Total traffic targets tracked=%s", humanize.Comma(int64(globalStatus.UAT_messages_last_minute)), humanize.Comma(int64(globalStatus.UAT_messages_max)), humanize.Comma(int64(globalStatus.UAT_messages_total)), float64(maxSignalStrength)/10.0, humanize.Comma(int64(globalStatus.ES_messages_last_minute)), humanize.Comma(int64(globalStatus.ES_messages_max)), humanize.Comma(int64(globalStatus.ES_messages_total)), humanize.Comma(int64(len(seenTraffic))))
+		log.Printf(" - UAT/min/total %s/%s/%s [maxSS=%.02f%%], ES/min/total %s/%s/%s, Total traffic targets tracked=%s", humanize.Comma(int64(globalStatus.UAT_messages_last_minute)), humanize.Comma(int64(globalStatus.UAT_messages_max)), humanize.Comma(int64(globalStatus.UAT_messages_total)), float64(maxSignalStrength)/10.0, humanize.Comma(int64(globalStatus.ES_messages_last_minute)), humanize.Comma(int64(globalStatus.ES_messages_max)), humanize.Comma(int64(globalStatus.ES_messages_total)),humanize.Comma(int64(len(seenTraffic))))
 		log.Printf(" - Network data messages sent: %d total.  Network data bytes sent: %d total.\n", globalStatus.NetworkDataMessagesSent, globalStatus.NetworkDataBytesSent)
 		if globalSettings.GPS_Enabled {
 			log.Printf(" - Last GPS fix: %s, GPS solution type: %d using %d satellites (%d/%d seen/tracked), NACp: %d, est accuracy %.02f m\n", stratuxClock.HumanizeTime(mySituation.GPSLastFixLocalTime), mySituation.GPSFixQuality, mySituation.GPSSatellites, mySituation.GPSSatellitesSeen, mySituation.GPSSatellitesTracked, mySituation.GPSNACp, mySituation.GPSHorizontalAccuracy)
@@ -1758,15 +1762,15 @@ func gracefulShutdown() {
 
 // Turn off green ACT LED on the Pi. Path changed to leds/ACT/brighgtness around kernel 6.1.21-v8
 func setActLed(state bool) {
-	ledPath := "/sys/class/leds/led0/brightness"
-	if _, err := os.Stat(ledPath); err != nil {
-		ledPath = "/sys/class/leds/ACT/brightness"
-	}
-	data := []byte("0\n")
-	if state {
-		data = []byte("1\n")
-	}
-	ioutil.WriteFile(ledPath, data, 0644)
+		ledPath := "/sys/class/leds/led0/brightness"
+		if _, err := os.Stat(ledPath); err != nil {
+			ledPath = "/sys/class/leds/ACT/brightness"
+		}
+		data := []byte("0\n")
+		if state {
+			data = []byte("1\n")
+		}
+		ioutil.WriteFile(ledPath, data, 0644)
 }
 
 func signalWatcher() {
@@ -1799,7 +1803,7 @@ func main() {
 		}
 		configLocation = os.Getenv("HOME") + "/.stratux.conf"
 		log.Printf("Not running as root, remapping STRATUX_WWW_DIR to %s and configLocation to %s\n",
-			STRATUX_WWW_DIR, configLocation)
+				STRATUX_WWW_DIR, configLocation);
 	}
 
 	// Set up mySituation, do it here so logging JSON doesn't panic
@@ -1914,9 +1918,7 @@ func main() {
 	initAutoRecord()
 
 	// Clear the logfile on startup
-	if globalSettings.ClearLogOnStart {
-		clearDebugLogFile()
-	}
+	if globalSettings.ClearLogOnStart { clearDebugLogFile() }
 
 	log.Printf("Stratux %s (%s) starting.\n", stratuxVersion, stratuxBuild)
 	if *writeNetworkConfig {
@@ -1943,6 +1945,7 @@ func main() {
 		pongInit()
 	}
 	initTraffic(isTraceReplayMode)
+
 
 	// Disable replay logs when replaying - so that messages replay data isn't copied into the logs.
 	// Override after reading in the settings.
@@ -2041,3 +2044,4 @@ func main() {
 		select {}
 	}
 }
+
