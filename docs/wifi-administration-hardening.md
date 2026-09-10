@@ -189,7 +189,7 @@ wrong SSID/channel for their hardware).
 
 - `wifiadmin.DefaultConfig()` returns exactly the values
   `main/gen_gdl90.go`'s existing `defaultSettings()` already ships (SSID
-  `"stratux"`, open, channel 1, AP mode, `192.168.10.1`) - verified by
+  `"Stratux"`, open, channel 1, AP mode, `192.168.10.1`) - verified by
   `wifiadmin.TestValidate_DefaultConfigIsValid` and this project's own
   existing `defaultSettings()` remaining byte-for-byte unmodified.
 - `wifiAdminManager`'s startup (`initWifiAdmin`) never touches live

@@ -348,6 +348,23 @@ func TestWifiAdminModeConstants_MatchExistingSettings(t *testing.T) {
 	}
 }
 
+// TestWifiAdminDefaultConfig_MatchesExistingDefaultSettings is a
+// regression test for a real defect found during this mission's own
+// artifact verification: wifiadmin.DefaultConfig() originally used SSID
+// "stratux" (lowercase), while main/gen_gdl90.go's defaultSettings()
+// (line ~1472: `globalSettings.WiFiSSID = "Stratux"`) and
+// main/networksettings.go's own applyNetworkSettings fallback both use
+// "Stratux" (capital S) - a genuine default-compatibility mismatch this
+// feature's own design explicitly promises never to introduce (see
+// wifiadmin.DefaultConfig's own doc comment). Caught by inspecting the
+// CI-built artifact's own embedded strings, not by a pre-existing test -
+// this test exists so it cannot regress silently again.
+func TestWifiAdminDefaultConfig_MatchesExistingDefaultSettings(t *testing.T) {
+	if got, want := wifiadmin.DefaultConfig().SSID, "Stratux"; got != want {
+		t.Errorf("wifiadmin.DefaultConfig().SSID = %q, want %q (must match main/gen_gdl90.go's defaultSettings() exactly)", got, want)
+	}
+}
+
 func TestWifiAdminDiagnosticsSummary_ReflectsCurrentStateWhenInitialized(t *testing.T) {
 	withTestWifiAdminManager(t)
 	s := wifiAdminDiagnosticsSummaryFor()

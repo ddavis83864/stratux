@@ -164,7 +164,7 @@ func (c Config) Redact() Redacted {
 func DefaultConfig() Config {
 	return Config{
 		SchemaVersion:   CurrentSchemaVersion,
-		SSID:            "stratux",
+		SSID:            "Stratux", // matches main/gen_gdl90.go's defaultSettings() exactly - see this function's own doc comment on why case matters here.
 		SecurityEnabled: false,
 		Passphrase:      "",
 		Channel:         1,
