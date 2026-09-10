@@ -51,7 +51,7 @@ var (
 // main/gen_gdl90.go.
 func initAlerting() {
 	settings := loadAlertSettings()
-	cfg := toAlertingConfig(settings, settings.BrowserAudioEnabled, settings.SystemAudioEnabled)
+	cfg := mergedAlertingConfig(settings, settings.BrowserAudioEnabled, settings.SystemAudioEnabled)
 	alertEvaluator = alerting.NewEvaluator(cfg, func() time.Time { return stratuxClock.Time() })
 
 	if settings.Muted {
@@ -81,7 +81,12 @@ func alertTrafficEvaluationLoop() {
 					log.Printf("alerting: traffic evaluation panicked (recovered): %v\n", r)
 				}
 			}()
-			alertEvaluator.EvaluateTraffic(observations, isGPSValid())
+			events := alertEvaluator.EvaluateTraffic(observations, isGPSValid())
+			for _, ev := range events {
+				if ev.Alert.CPAEscalated {
+					trafficCPARecordEscalation()
+				}
+			}
 		}()
 	}
 }
@@ -165,7 +170,7 @@ func buildTrafficObservation(ti TrafficInfo, isOwnshipTi bool) alerting.TrafficO
 		clockValid = true
 	}
 
-	return alerting.TrafficObservation{
+	obs := alerting.TrafficObservation{
 		TargetID:              fmt.Sprintf("%06X", ti.Icao_addr&0xFFFFFF),
 		IsOwnship:             isOwnshipTi,
 		PositionValid:         ti.Position_valid,
@@ -178,6 +183,16 @@ func buildTrafficObservation(ti TrafficInfo, isOwnshipTi bool) alerting.TrafficO
 		ClockDirectionValid:   clockValid,
 		ClockDirection:        clockDir,
 	}
+	// Never computed for ownship or an already-ignored target - see
+	// docs/traffic-cpa-alerting.md's "Ownship and stale-target handling"
+	// section: ownship exclusion and stale-target rejection both happen
+	// in the caller (main/traffic.go's sendTrafficUpdates,
+	// isOwnshipTrafficInfo) strictly BEFORE this function is ever called
+	// for a given target.
+	if !isOwnshipTi {
+		obs.CPA = computeTrafficCPA(ti)
+	}
+	return obs
 }
 
 // AlertingDiagnosticsSummary is the bounded, sanitized summary embedded in
@@ -325,7 +340,7 @@ func handleSetAlertSettingsRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if alertEvaluator != nil {
-		cfg := toAlertingConfig(s, s.BrowserAudioEnabled, s.SystemAudioEnabled)
+		cfg := mergedAlertingConfig(s, s.BrowserAudioEnabled, s.SystemAudioEnabled)
 		if err := alertEvaluator.SetConfig(cfg); err != nil {
 			// Should never happen - Validate() above already checked this
 			// exact config - but never silently ignore a real error.

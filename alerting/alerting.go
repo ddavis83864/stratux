@@ -14,7 +14,11 @@ import "time"
 
 // SchemaVersion is bumped whenever Config, Alert, or Event gains, removes,
 // or changes the meaning of a field a consumer should notice.
-const SchemaVersion = 1
+// SchemaVersion 2 added Config.CPAEscalationEnabled/CPAMinClosureRateKnots
+// and Alert's CPA* fields (see docs/traffic-cpa-alerting.md) - purely
+// additive: a version-1 reader ignores the new Alert fields, and the new
+// Config fields default to their safe (disabled) zero values.
+const SchemaVersion = 2
 
 // Level is the operator-facing alert severity - deliberately a small,
 // fixed vocabulary that can never be confused with maneuver guidance (no

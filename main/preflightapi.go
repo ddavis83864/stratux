@@ -211,6 +211,8 @@ func buildPreflightReport() (report preflight.Report) {
 	previousSession := powerPreviousSession
 	powerPreviousSessionMu.Unlock()
 
+	trafficCPASettingsForPreflight := currentTrafficCPASettings()
+
 	in := preflight.Input{
 		Health:                       health,
 		UptimeSeconds:                uptimeSeconds,
@@ -229,6 +231,8 @@ func buildPreflightReport() (report preflight.Report) {
 		AutoRecordEnabled:            health.AutoRecord.Enabled,
 		AutoRecordMachineState:       health.AutoRecord.MachineState,
 		AutoRecordReason:             health.AutoRecord.Reason,
+		TrafficCPAEnabled:            trafficCPASettingsForPreflight.EscalationEnabled,
+		TrafficCPASettingsValid:      trafficCPASettingsForPreflight.Validate() == nil,
 	}
 	return preflight.BuildReport(in)
 }

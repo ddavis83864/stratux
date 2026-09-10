@@ -166,6 +166,16 @@ type Input struct {
 	AutoRecordEnabled      bool
 	AutoRecordMachineState string // one of autorecord.State's own values, or "" if not yet initialized
 	AutoRecordReason       string
+
+	// TrafficCPAEnabled/TrafficCPASettingsValid mirror the closure-rate/
+	// closest-point-of-approach traffic-alerting enhancement's own
+	// state - see main/trafficcpaapi.go. This is a supplemental trend
+	// input to traffic alerting (see the alerting package), never itself
+	// authoritative for flight readiness - trafficCPAChecks accordingly
+	// never rises above Caution, mirroring autoRecordChecks' own
+	// restraint.
+	TrafficCPAEnabled       bool
+	TrafficCPASettingsValid bool
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -214,6 +224,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, powerSessionChecks(in)...)
 	automated = append(automated, storageLifecycleChecks(in)...)
 	automated = append(automated, autoRecordChecks(in)...)
+	automated = append(automated, trafficCPAChecks(in)...)
 
 	manual := manualCheckResults(in)
 
