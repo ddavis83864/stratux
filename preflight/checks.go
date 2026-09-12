@@ -615,3 +615,28 @@ func trafficCPAChecks(in Input) []CheckResult {
 	}
 	return []CheckResult{newCheck("Traffic", "traffic_cpa", "Traffic closure-rate/CPA escalation", StateReady, SeverityInfo, "CPA-based alert escalation armed")}
 }
+
+// wifiAdminChecks reports the Wi-Fi administration-hardening feature's
+// own transaction stage - a single concise card, mirroring
+// trafficCPAChecks'/autoRecordChecks' own restraint. Never rises above
+// Caution: a pending, stuck, or just-recovered Wi-Fi transaction is an
+// administrative inconvenience an owner should be aware of, never a
+// flight-readiness condition - this feature cannot affect ADS-B/GPS/
+// GDL90 traffic processing, only the AP/network stack's own
+// configuration (see docs/wifi-administration-hardening.md's own
+// "Non-goals" section).
+func wifiAdminChecks(in Input) []CheckResult {
+	const component, id, label = "Network", "wifi_admin", "Wi-Fi administration"
+	switch in.WifiAdminStage {
+	case "", "idle":
+		return []CheckResult{newCheck(component, id, label, StateReady, SeverityInfo, "no pending Wi-Fi configuration change")}
+	case "recovery_required":
+		return []CheckResult{newCheck(component, id, label, StateCaution, SeverityCaution, "a Wi-Fi configuration change needs manual recovery - see the Wi-Fi administration page")}
+	case "previewed", "applying", "awaiting_reconnection", "rolling_back":
+		return []CheckResult{newCheck(component, id, label, StateCaution, SeverityCaution, "a Wi-Fi configuration change is pending owner confirmation - it will automatically roll back if not confirmed in time")}
+	case "failed":
+		return []CheckResult{newCheck(component, id, label, StateCaution, SeverityCaution, "the last Wi-Fi configuration change failed and was automatically rolled back")}
+	default:
+		return []CheckResult{newCheck(component, id, label, StateUnknown, SeverityInfo, "Wi-Fi administration state not yet determined")}
+	}
+}

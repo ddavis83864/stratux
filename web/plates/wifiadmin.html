@@ -1,0 +1,127 @@
+<div class="panel panel-default">
+	<div class="panel-heading"><span class="panel_label">Wi-Fi Administration</span></div>
+	<div class="panel-body">
+		<p class="small text-danger">
+			Changing Wi-Fi settings can disconnect this device from the
+			Stratux. Review the preview below carefully, and be ready to
+			reconnect to the new network name if it changes. If you do not
+			confirm within the time shown, this change is automatically
+			undone and the previous, working configuration is restored.
+		</p>
+		<p class="small text-muted">
+			This page does not provide remote/cloud administration and does
+			not add a new security capability beyond what your device's
+			existing Wi-Fi mode already provides - a password only means
+			clients need it to join, not that traffic is otherwise
+			protected. Wi-Fi client presence (shown below) never proves a
+			specific app like ForeFlight is connected, only that some
+			device is.
+		</p>
+
+		<div ng-show="statusError" class="alert alert-warning">{{statusError}}</div>
+
+		<div ng-show="status">
+			<table class="table table-condensed">
+				<tr><td>Transaction state</td><td><strong>{{status.stage}}</strong></td></tr>
+				<tr ng-show="status.lastResult"><td>Last result</td><td>{{status.lastResult}}</td></tr>
+				<tr ng-show="status.lastError"><td class="text-danger">Last message</td><td class="text-danger">{{status.lastError}}</td></tr>
+				<tr><td>Current SSID</td><td>{{status.lastKnownGood.ssid}}</td></tr>
+				<tr><td>Security</td><td>{{status.lastKnownGood.securityEnabled ? 'Enabled (password set: ' + status.lastKnownGood.passphraseSet + ')' : 'Open (no password)'}}</td></tr>
+				<tr><td>Channel</td><td>{{status.lastKnownGood.channel}}</td></tr>
+				<tr><td>Management address</td><td>{{status.lastKnownGood.ipAddress}}</td></tr>
+			</table>
+
+			<div ng-show="status.stage === 'awaiting_reconnection'" class="alert alert-info">
+				<strong>Waiting for reconnection confirmation.</strong>
+				Reconnect to the network above (or the one you just set, if
+				it changed), then return to this page.
+				<div ng-show="reconnectToken">
+					<button class="btn btn-success" ng-disabled="confirming" ng-click="confirmReconnection(reconnectToken)">
+						{{confirming ? 'Confirming...' : "I've reconnected - Confirm"}}
+					</button>
+				</div>
+				<div ng-show="!reconnectToken" class="text-muted small">
+					This page lost its own reconnection token (usually because
+					the browser reloaded after the network changed). No action
+					needed here - if the new network isn't reachable, this
+					change automatically rolls back on its own; refresh this
+					page after a minute to see the result.
+				</div>
+				<div>
+					<button class="btn btn-default btn-xs" ng-click="requestRollback()">Roll back now instead</button>
+				</div>
+				<div ng-show="confirmError" class="text-danger small">{{confirmError}}</div>
+			</div>
+
+			<div ng-show="status.stage === 'recovery_required'" class="alert alert-danger">
+				<strong>Manual recovery needed.</strong> An automatic rollback
+				attempt did not succeed. {{status.lastError}}
+				<div><button class="btn btn-warning btn-xs" ng-click="requestRollback()">Retry rollback</button></div>
+			</div>
+		</div>
+
+		<hr/>
+
+		<h4>Propose a change</h4>
+		<table class="table table-condensed">
+			<tr>
+				<td>SSID</td>
+				<td><input type="text" ng-model="form.ssid" maxlength="32" style="width:16em"/></td>
+			</tr>
+			<tr>
+				<td>Security</td>
+				<td><label><input type="checkbox" ng-model="form.securityEnabled"/> WPA password-protected</label></td>
+			</tr>
+			<tr ng-show="form.securityEnabled">
+				<td>New password</td>
+				<td>
+					<input type="password" ng-model="form.passphrase" maxlength="63" style="width:16em" placeholder="8-63 characters"/>
+					<div class="small text-muted">Never pre-filled - the current password is never sent to this page. Leave the security checkbox off to run an open network instead.</div>
+				</td>
+			</tr>
+			<tr>
+				<td>Channel</td>
+				<td><input type="number" ng-model="form.channel" min="1" max="11" style="width:6em"/> (1-11)</td>
+			</tr>
+			<tr>
+				<td>Country</td>
+				<td><input type="text" ng-model="form.country" maxlength="2" style="width:4em" placeholder="e.g. US"/>
+					<div class="small text-muted">Format-checked only - this does not verify the channel is legal to operate in this country.</div>
+				</td>
+			</tr>
+			<tr>
+				<td>Management address</td>
+				<td><input type="text" ng-model="form.ipAddress" style="width:12em"/></td>
+			</tr>
+			<tr>
+				<td>Internet pass-through</td>
+				<td><label><input type="checkbox" ng-model="form.internetPassThroughEnabled"/> Share this device's own internet connection with connected clients</label></td>
+			</tr>
+		</table>
+
+		<button class="btn btn-primary" ng-disabled="previewing" ng-click="previewChange()">{{previewing ? 'Checking...' : 'Preview change'}}</button>
+		<div ng-show="previewError" class="text-danger small" style="margin-top:6px">{{previewError}}</div>
+
+		<div ng-show="preview" class="well" style="margin-top:10px">
+			<h5>Preview</h5>
+			<div ng-show="!preview.hasChanges">No changes from the current configuration.</div>
+			<div ng-show="preview.hasChanges">
+				<table class="table table-condensed">
+					<tr><th>Field</th><th>Current</th><th>Proposed</th></tr>
+					<tr ng-repeat="c in preview.changes"><td>{{c.field}}</td><td>{{c.current}}</td><td>{{c.proposed}}</td></tr>
+				</table>
+				<p ng-show="preview.willDisconnect" class="text-danger">
+					<strong>This will disconnect Wi-Fi clients</strong>, including
+					possibly this device, while the new configuration is
+					applied.
+				</p>
+				<p ng-show="preview.proposedManagementAddress">
+					New management address: <strong>{{preview.proposedManagementAddress}}</strong>
+				</p>
+				<button class="btn btn-danger" ng-disabled="applying" ng-click="applyChange()">{{applying ? 'Applying...' : 'Apply change'}}</button>
+				<button class="btn btn-default" ng-click="cancelChange()">Cancel</button>
+				<div ng-show="applyError" class="text-danger small" style="margin-top:6px">{{applyError}}</div>
+			</div>
+		</div>
+	</div>
+</div>
