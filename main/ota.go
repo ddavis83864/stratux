@@ -288,6 +288,17 @@ func otaAdvance() error {
 		return nil
 
 	case ota.ActionRequestDisable:
+		if wifiAdminTransactionActive() {
+			// Not a failure - just not the right moment. The package is
+			// already staged and verified; wait for the in-flight Wi-Fi
+			// transaction (which has its own bounded confirmation
+			// deadline) to settle rather than pull the network out from
+			// under it, exactly the way ActionAwaitReboot/
+			// ActionAwaitRebootToOverlay above already wait without
+			// recording anything as failed. The next health tick simply
+			// re-checks.
+			return nil
+		}
 		if err := requestOverlayDisable(); err != nil {
 			state = state.EnterFailed(err.Error())
 			ota.SaveState(otaDir, state, now)

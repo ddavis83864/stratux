@@ -149,6 +149,32 @@ func recordingNotActivePrecondition() error {
 	return nil
 }
 
+// wifiAdminTransactionActive reports whether a Wi-Fi administration
+// transaction is currently mid-flight (staged/durable/live writes
+// applied, or a reconnection confirmation outstanding) - the reverse
+// direction of shutdownNotPendingPrecondition/otaNotBusyPrecondition
+// above: those make wifiadmin wait for OTA/shutdown, this lets OTA (see
+// main/ota.go's otaAdvance, ActionRequestDisable) wait for wifiadmin
+// before requesting an overlay-disabled reboot. Without this, a fresh
+// OTA install could rip the network out from under an in-progress Wi-Fi
+// apply/confirm cycle mid-transaction - a different flavor of the same
+// overlapping-undefined-order-mutation problem this project's existing
+// preconditions already guard against in the other direction. Idle,
+// previewed (nothing live yet), and any terminal/needs-operator stage
+// are not "active" - only work that is actually touching the running
+// network justifies OTA waiting.
+func wifiAdminTransactionActive() bool {
+	if wifiAdminManager == nil {
+		return false
+	}
+	switch wifiAdminManager.Status().Stage {
+	case wifiadmin.StageApplying, wifiadmin.StageAwaitingReconnection, wifiadmin.StageRollingBack:
+		return true
+	default:
+		return false
+	}
+}
+
 func newWifiAdminToken(prefix string) func() string {
 	return func() string {
 		var b [16]byte

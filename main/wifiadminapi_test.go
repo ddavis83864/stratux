@@ -535,3 +535,70 @@ func TestToNetworkTemplateParams_RejectsUnparseableAddress(t *testing.T) {
 		t.Error("expected an error for an unparseable IP address (should never reach this point past Validate, but must fail safely if it does)")
 	}
 }
+
+// --- wifiAdminTransactionActive: the reverse-direction guard main/ota.go
+// uses so a fresh OTA install waits for an in-flight Wi-Fi transaction
+// rather than rebooting out from under it (see main/ota.go's otaAdvance,
+// ActionRequestDisable). ---
+
+func TestWifiAdminTransactionActive_NilManagerIsNotActive(t *testing.T) {
+	orig := wifiAdminManager
+	wifiAdminManager = nil
+	defer func() { wifiAdminManager = orig }()
+
+	if wifiAdminTransactionActive() {
+		t.Error("a nil (uninitialized) manager must never be reported as an active transaction")
+	}
+}
+
+func TestWifiAdminTransactionActive_IdleIsNotActive(t *testing.T) {
+	withTestWifiAdminManager(t)
+	if wifiAdminTransactionActive() {
+		t.Error("an idle manager must not be reported as an active transaction")
+	}
+}
+
+func TestWifiAdminTransactionActive_PreviewedIsNotActive(t *testing.T) {
+	withTestWifiAdminManager(t)
+	proposed := wifiadmin.DefaultConfig()
+	proposed.SSID = "new-plane-ssid"
+	body, _ := json.Marshal(proposed)
+	req := httptest.NewRequest(http.MethodPost, "/previewWifiAdminSettings", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handlePreviewWifiAdminSettingsRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	// Nothing live has been touched yet at StagePreviewed - OTA should
+	// not need to wait for a preview nobody has applied.
+	if wifiAdminTransactionActive() {
+		t.Error("a merely-previewed (not yet applied) transaction must not be reported as active")
+	}
+}
+
+func TestWifiAdminTransactionActive_AwaitingReconnectionIsActive(t *testing.T) {
+	withTestWifiAdminManager(t)
+	previewAndApplyForConfirmTest(t, "new-plane-ssid")
+	if wifiAdminManager.Status().Stage != wifiadmin.StageAwaitingReconnection {
+		t.Fatalf("setup: expected StageAwaitingReconnection, got %s", wifiAdminManager.Status().Stage)
+	}
+
+	if !wifiAdminTransactionActive() {
+		t.Error("a transaction awaiting reconnection confirmation must be reported as active - this is exactly the window OTA must not reboot through")
+	}
+}
+
+func TestWifiAdminTransactionActive_ConfirmedIsNotActive(t *testing.T) {
+	withTestWifiAdminManager(t)
+	reconnectToken, proposed := previewAndApplyForConfirmTest(t, "new-plane-ssid")
+	req := confirmRequestWithPath(reconnectToken, proposed.IPAddress+":80", "192.168.10.77:54321")
+	w := httptest.NewRecorder()
+	handleConfirmWifiAdminReconnectionRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	if wifiAdminTransactionActive() {
+		t.Error("a confirmed (settled) transaction must not be reported as active once more")
+	}
+}

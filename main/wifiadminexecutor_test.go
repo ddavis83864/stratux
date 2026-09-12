@@ -505,3 +505,39 @@ func TestRealWifiExecutor_Apply_SnapshotFailure_AbortsBeforeAnyWrite(t *testing.
 
 var _ apReloader = realAPReloader{}
 var _ wifiadmin.Executor = realWifiExecutor{}
+
+// TestRealAPReloader_Reload_AlwaysCyclesWlan0NeverAp0 is the direct
+// regression test for the exact point of confusion in this feature's own
+// hardware incident: the executor targeted wlan0, while the AP interface
+// that actually carries traffic is ap0. eed1c01e's commit message
+// establishes this is correct - ap0 is a virtual interface wlan0's own
+// pre-up/post-down hooks create as a side effect - but until this test,
+// nothing automated locked that in; it rested on code review and a
+// commit message alone. This calls the REAL realAPReloader.Reload
+// (ifdown/ifup are expected to fail in a test environment - see this
+// file's own package doc comment - Reload's own return value is not
+// asserted here, only which interface name it asked the OS to cycle).
+func TestRealAPReloader_Reload_AlwaysCyclesWlan0NeverAp0(t *testing.T) {
+	var invocations [][]string
+	orig := wifiAdminReloadCommandRecorder
+	wifiAdminReloadCommandRecorder = func(name string, args ...string) {
+		invocations = append(invocations, append([]string{name}, args...))
+	}
+	t.Cleanup(func() { wifiAdminReloadCommandRecorder = orig })
+
+	_ = (realAPReloader{}).Reload() // error tolerated/expected - see doc comment above
+
+	if len(invocations) != 2 {
+		t.Fatalf("expected exactly 2 recorded commands (ifdown, ifup), got %d: %v", len(invocations), invocations)
+	}
+	want := [][]string{{"ifdown", "wlan0"}, {"ifup", "wlan0"}}
+	for i, w := range want {
+		got := invocations[i]
+		if len(got) != 2 || got[0] != w[0] || got[1] != w[1] {
+			t.Errorf("invocation %d = %v, want %v", i, got, w)
+		}
+		if got[1] == "ap0" {
+			t.Fatalf("Reload targeted ap0 directly - this is the exact incident this test exists to prevent: %v", got)
+		}
+	}
+}

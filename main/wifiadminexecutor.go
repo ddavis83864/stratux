@@ -101,6 +101,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -300,9 +301,34 @@ func snapshotDualTargets(targets []dualFileTarget) ([]fileSnapshot, error) {
 	return snapshots, nil
 }
 
+// syncDir fsyncs the directory containing path, after a rename into or
+// within it - on its own, a renamed file's *contents* being durable
+// (this package's f.Sync() before every rename already guarantees that)
+// says nothing about the rename itself surviving a power loss: on most
+// Linux filesystems the directory entry update is a separate, independent
+// write that needs its own fsync to be crash-safe. Best-effort by design:
+// a directory fsync failing (e.g. an unusual filesystem that doesn't
+// support it) is logged, not fatal - the far more common and more
+// damaging failure this whole package defends against is silently
+// proceeding as if a write had landed when it had not, which this does
+// not risk, since the rename itself already either succeeded or the
+// caller already returned its error.
+func syncDir(path string) {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		log.Printf("wifiadmin: could not open %s to fsync it after a rename: %s\n", filepath.Dir(path), err)
+		return
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		log.Printf("wifiadmin: could not fsync directory %s after a rename: %s\n", filepath.Dir(path), err)
+	}
+}
+
 // atomicWriteFile writes data to path via the project's own established
 // temp-file+fsync+atomic-rename pattern (see main/wifiadminsettings.go's
-// atomicWriteJSON, main/alertsettings.go's saveAlertSettings).
+// atomicWriteJSON, main/alertsettings.go's saveAlertSettings), then
+// fsyncs the containing directory - see syncDir.
 func atomicWriteFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -330,6 +356,7 @@ func atomicWriteFile(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
+	syncDir(path)
 	return nil
 }
 
@@ -354,9 +381,14 @@ func restoreDualTargets(snapshots []fileSnapshot) error {
 			if err := atomicWriteFile(s.path, s.data); err != nil {
 				errs = append(errs, fmt.Sprintf("restoring %s: %v", s.path, err))
 			}
-		} else if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		} else if err := os.Remove(s.path); err == nil {
+			syncDir(s.path) // a real removal happened; make the directory entry change durable
+		} else if !os.IsNotExist(err) {
 			errs = append(errs, fmt.Sprintf("removing %s: %v", s.path, err))
 		}
+		// else: err is ErrNotExist - the file was already absent, nothing
+		// changed, nothing to sync (and its directory may never have
+		// existed at all, which syncDir would otherwise just log about).
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
@@ -448,6 +480,7 @@ func (realWifiExecutor) Apply(cfg wifiadmin.Config) error {
 		if err := os.Rename(t.durableOut+".wifiadmin.tmp", t.durableOut); err != nil {
 			return fail(fmt.Errorf("activating %s (durable): %w", t.name, err))
 		}
+		syncDir(t.durableOut)
 	}
 
 	// Step 5: activate live.
@@ -460,6 +493,7 @@ func (realWifiExecutor) Apply(cfg wifiadmin.Config) error {
 		if err := os.Rename(t.liveOut+".wifiadmin.tmp", t.liveOut); err != nil {
 			return fail(fmt.Errorf("activating %s (live): %w", t.name, err))
 		}
+		syncDir(t.liveOut)
 	}
 
 	// Step 6: reload the real AP stack.
@@ -520,6 +554,20 @@ func cleanupStaged(staged []stagedFilePair) {
 // realAPReloader is apReloader's real, hardware-touching implementation.
 type realAPReloader struct{}
 
+// wifiAdminReloadCommandRecorder, when non-nil, is called with the exact
+// name and arguments of every command realAPReloader.Reload is about to
+// run - solely so a test can record and assert on the real invocation
+// (specifically: that it is always "wlan0", never "ap0" - the exact
+// point of confusion in this feature's own hardware incident) without
+// needing ifdown/ifup to exist or do anything real. This file's own
+// package doc comment already establishes that no automated test may
+// rely on the real network-command-invoking parts of this file actually
+// succeeding; this hook lets one specific, narrow property - which
+// interface name is passed - be locked in by a real test anyway. Never
+// used to alter behavior or suppress the real exec.Command call;
+// production code always leaves this nil.
+var wifiAdminReloadCommandRecorder func(name string, args ...string)
+
 // Reload mirrors main/networksettings.go's own ifdown/ifup sequence
 // exactly, except ifup's failure is treated as fatal (returned to the
 // caller) rather than only logged - Manager needs to know whether the
@@ -529,8 +577,14 @@ type realAPReloader struct{}
 // this apply attempt. Cycling wlan0, not ap0, is intentional - see this
 // file's own package doc comment on apReloader.
 func (realAPReloader) Reload() error {
+	if wifiAdminReloadCommandRecorder != nil {
+		wifiAdminReloadCommandRecorder("ifdown", "wlan0")
+	}
 	if cmd := exec.Command("ifdown", "wlan0"); cmd.Run() != nil {
 		// tolerated - see doc comment above.
+	}
+	if wifiAdminReloadCommandRecorder != nil {
+		wifiAdminReloadCommandRecorder("ifup", "wlan0")
 	}
 	cmd := exec.Command("ifup", "wlan0")
 	if err := cmd.Run(); err != nil {

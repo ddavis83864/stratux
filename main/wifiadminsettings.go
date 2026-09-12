@@ -111,6 +111,7 @@ func atomicWriteJSON(path string, v interface{}) error {
 		os.Remove(tmp)
 		return err
 	}
+	syncDir(path) // see main/wifiadminexecutor.go's syncDir doc comment
 	return nil
 }
 
