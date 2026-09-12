@@ -258,11 +258,13 @@ func otaAdvance() error {
 		return nil
 	}
 
+	now := time.Now().UTC()
+
 	root, err := readiness.FindMount("/")
 	if err != nil {
 		return fmt.Errorf("could not determine root filesystem type: %w", err)
 	}
-	signals := ota.RealSignals{RootFSType: root.FSType}
+	signals := ota.RealSignals{RootFSType: root.FSType, Now: now}
 	if state.PackagePath != "" {
 		if _, statErr := os.Stat(state.PackagePath); statErr == nil {
 			signals.PackageFileExists = true
@@ -274,18 +276,20 @@ func otaAdvance() error {
 	signals.RunningCommit = globalStatus.Build
 
 	decision := ota.Decide(state, signals)
-	now := time.Now().UTC()
 
 	switch decision.Action {
 	case ota.ActionNone, ota.ActionAwaitReboot, ota.ActionAwaitRebootToOverlay:
-		// Nothing for the daemon to do; either idle/terminal, or waiting
-		// on a reboot that has not happened yet.
+		// Nothing for the daemon to do; either idle/terminal, waiting on
+		// a reboot that has not happened yet, or (ActionNone from
+		// StageFailed specifically) a recovery backoff still in effect -
+		// ota.Decide already logged nothing here, so surface it once at
+		// the caller (otaAdvanceLogged) is unnecessary; the state file
+		// itself carries s.Recovery for GET /getOTAStatus to report.
 		return nil
 
 	case ota.ActionRequestDisable:
 		if err := requestOverlayDisable(); err != nil {
-			state.Stage = ota.StageFailed
-			state.LastError = err.Error()
+			state = state.EnterFailed(err.Error())
 			ota.SaveState(otaDir, state, now)
 			return err
 		}
@@ -305,31 +309,41 @@ func otaAdvance() error {
 			otaCleanup(state)
 			return nil
 		}
-		state.Stage = ota.StageFailed
-		state.LastError = decision.Reason
+		state = state.EnterFailed(decision.Reason)
 		ota.SaveState(otaDir, state, now)
 		log.Printf("OTA: verification failed (%s); requesting rollback\n", decision.Reason)
-		if err := requestOverlayDisable(); err != nil {
-			return err
-		}
-		go delayReboot()
-		return nil
+		return otaRequestRollbackReboot(&state, now)
 
 	case ota.ActionFail, ota.ActionRollback:
-		// A failure was recorded (by this daemon or by the bare-ext4
-		// install stage) while we are back under the overlay. Hand off
-		// to the same disable/reboot path the install stage itself
-		// uses; debian/stratux-pre-start.sh's "failed" handling
-		// restores the pre-install backup and re-enables the overlay.
-		state.Stage = ota.StageFailed
-		state.LastError = decision.Reason
+		// A failure was recorded - either freshly (by this daemon, e.g.
+		// ActionFail from an earlier stage, or by the bare-ext4 install
+		// stage) or as a bounded retry of an *existing* StageFailed
+		// episode (ota.Decide's StageFailed case, bounded by
+		// MaxRecoveryAttempts/RecoveryBackoff - see ota/decide.go). Only
+		// the fresh case resets State.LastError/Recovery; a retry of an
+		// existing episode must not, or the original cause would be lost
+		// exactly as it was before this hotfix.
+		if state.Stage != ota.StageFailed {
+			state = state.EnterFailed(decision.Reason)
+		}
 		ota.SaveState(otaDir, state, now)
 		log.Printf("OTA: %s; requesting rollback boot\n", decision.Reason)
-		if err := requestOverlayDisable(); err != nil {
+		return otaRequestRollbackReboot(&state, now)
+
+	case ota.ActionRecoveryExhausted:
+		// StageFailed's recovery budget (MaxRecoveryAttempts) is spent -
+		// stop retrying, land in a quiescent terminal state, and require
+		// an explicit operator POST /resetOTA to leave it. This is the
+		// fix for the exact incident: the overlay-disable/rollback
+		// handoff kept failing (overlayctl lock: exit status 32: mount
+		// point is busy) and the pre-fix StageFailed case retried it
+		// unconditionally, every five-second health tick, forever.
+		state.Stage = ota.StageRecoveryExhausted
+		if err := ota.SaveState(otaDir, state, now); err != nil {
 			return err
 		}
-		go delayReboot()
-		return nil
+		log.Printf("OTA: %s\n", decision.Reason)
+		return fmt.Errorf("%s", decision.Reason)
 
 	default:
 		// ActionInstall / ActionRequestEnable / ActionComplete are either
@@ -340,6 +354,27 @@ func otaAdvance() error {
 		log.Printf("OTA: no daemon-side handling for action %s (%s)\n", decision.Action, decision.Reason)
 		return nil
 	}
+}
+
+// otaRequestRollbackReboot attempts requestOverlayDisable on behalf of an
+// already-StageFailed state (state.Stage must already be ota.StageFailed
+// and already persisted by the caller). On success it hands off to the
+// existing reboot path exactly as before. On failure - the incident's
+// exact "overlayctl lock: exit status 32: mount point is busy" condition -
+// it records the attempt via State.RecordRecoveryFailure (bumping
+// Recovery.Attempts and setting the next backoff deadline) instead of
+// letting the caller's decision.Reason overwrite State.LastError, which is
+// what previously produced the unbounded
+// "update previously marked failed: update previously marked failed: ..."
+// nesting once per five-second tick.
+func otaRequestRollbackReboot(state *ota.State, now time.Time) error {
+	if err := requestOverlayDisable(); err != nil {
+		*state = state.RecordRecoveryFailure(err, now)
+		ota.SaveState(otaDir, *state, now)
+		return err
+	}
+	go delayReboot()
+	return nil
 }
 
 // otaCleanup removes staged packages and backups beyond
@@ -392,4 +427,82 @@ func otaStateJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.MarshalIndent(&state, "", "  ")
+}
+
+// handleResetOTARequest serves POST /resetOTA: the supported, guarded way
+// to leave StageFailed/StageRecoveryExhausted before the next update can
+// be staged. Before this handler existed, the only way to recover from a
+// stuck OTA state was to hand-edit or remove state.json directly on the
+// device - exactly what this hotfix's own incident report required doing
+// once, absent any supported alternative.
+//
+// Guarded: only StageFailed and StageRecoveryExhausted may be reset (an
+// update genuinely mid-flight - staged/disable_requested/installing/
+// installed/verifying - is refused, so this can never be used to abandon
+// real in-progress work); Idle/Complete/RolledBack report "nothing to
+// reset" rather than an error, so a repeated or racing call is a safe
+// no-op (idempotent); and a concurrently active recording or configuration
+// restore also blocks it, mirroring the existing OTA/restore/recording
+// mutual-exclusion precedents in main/powerapi.go and
+// main/configbackupapi.go.
+//
+// Preserves evidence: the pre-reset state.json is copied (not moved) to a
+// timestamped backup under otaDir before being cleared, so every reset -
+// automatic audit trail, not a manually-remembered step - leaves the
+// original failure/recovery history on disk for later diagnosis. Never
+// touches otaStagedDir()/otaBackupDir(): a staged package or an install's
+// pre-install backup is not deleted by a reset, only the pointer to it.
+func handleResetOTARequest(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
+	setJSONHeaders(w)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state, err := ota.LoadState(otaDir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"success": false, "error": fmt.Sprintf("could not read OTA state: %s", err)})
+		return
+	}
+
+	switch state.Stage {
+	case ota.StageIdle, ota.StageComplete, ota.StageRolledBack:
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "reset": false, "stage": string(state.Stage), "message": "OTA is already idle; nothing to reset"})
+		return
+	case ota.StageFailed, ota.StageRecoveryExhausted:
+		// the only stages a reset may act on - fall through below.
+	default:
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": fmt.Sprintf("an OTA update is actively in progress (stage=%s); cannot reset", state.Stage)})
+		return
+	}
+
+	recMu.Lock()
+	recordingActive := recCurrent != nil && recCurrent.State == recordingStateActive
+	recMu.Unlock()
+	if recordingActive {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": "cannot reset OTA state while a recording is active"})
+		return
+	}
+	if err := configBackupNotBusyPrecondition(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+
+	now := time.Now().UTC()
+	backupPath := filepath.Join(otaDir, fmt.Sprintf("%s.reset-%s", ota.StateFileName, now.Format("20060102T150405Z")))
+	if data, err := os.ReadFile(ota.StatePath(otaDir)); err == nil {
+		if err := os.WriteFile(backupPath, data, 0o644); err != nil {
+			log.Printf("OTA: reset could not preserve pre-reset state at %s: %s\n", backupPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		log.Printf("OTA: reset could not read pre-reset state to preserve it: %s\n", err)
+	}
+
+	if err := ota.ClearState(otaDir); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]interface{}{"success": false, "error": fmt.Sprintf("could not clear OTA state: %s", err)})
+		return
+	}
+	log.Printf("OTA: reset from stage=%s (original failure: %q) to idle by operator request; pre-reset state preserved at %s\n", state.Stage, state.LastError, backupPath)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "reset": true, "previousStage": string(state.Stage), "preservedAt": backupPath})
 }

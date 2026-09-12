@@ -1,6 +1,9 @@
 package ota
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // MaxInstallAttempts bounds how many times StageInstalling will retry
 // before Decide gives up and calls for a rollback - protecting against an
@@ -8,6 +11,74 @@ import "fmt"
 // ENOSPC on the real partition, not just the overlay-mistake case this
 // mechanism otherwise prevents).
 const MaxInstallAttempts = 3
+
+// MaxRecoveryAttempts bounds how many times StageFailed will retry the
+// overlay-disable/rollback handoff (requestOverlayDisable) before Decide
+// gives up into StageRecoveryExhausted. Deliberately a separate constant
+// from MaxInstallAttempts: this bounds a different operation (relocking
+// the overlay, not running dpkg) with a different observed failure mode
+// (a persistently busy mount, not disk space) - see the exit-status-32
+// "mount point is busy" incident this constant, RecoveryBackoff, and
+// StageRecoveryExhausted exist to bound. Five attempts, spaced by
+// RecoveryBackoff, gives a transient busy condition a real chance to clear
+// (about four and a half minutes total, see RecoveryBackoff) while still
+// guaranteeing the retry loop ends on its own within a human-scale window
+// even if the condition is permanent for the rest of the boot.
+const MaxRecoveryAttempts = 5
+
+// recoveryBackoffBase and recoveryBackoffMax bound RecoveryBackoff's
+// doubling schedule: 5s, 10s, 20s, 40s, 80s (capped at recoveryBackoffMax)
+// - roughly 4m35s of total elapsed time across MaxRecoveryAttempts
+// attempts before StageRecoveryExhausted, versus the unbounded
+// every-five-seconds-forever behavior this replaces.
+const (
+	recoveryBackoffBase = 5 * time.Second
+	recoveryBackoffMax  = 2 * time.Minute
+)
+
+// RecoveryBackoff returns how long to wait before the next StageFailed
+// recovery retry, given attemptsSoFar prior attempts have already been
+// made in the current failure episode (0 before the first retry). It
+// doubles from recoveryBackoffBase each attempt, capped at
+// recoveryBackoffMax, so a persistently busy overlay is retried with
+// increasing patience rather than on every five-second health tick, while
+// MaxRecoveryAttempts still guarantees a bounded total wait before giving
+// up.
+func RecoveryBackoff(attemptsSoFar int) time.Duration {
+	d := recoveryBackoffBase
+	for i := 0; i < attemptsSoFar; i++ {
+		d *= 2
+		if d >= recoveryBackoffMax {
+			return recoveryBackoffMax
+		}
+	}
+	return d
+}
+
+// EnterFailed returns a copy of s transitioned into StageFailed for
+// reason, starting a fresh Recovery budget. Call this exactly once per
+// failure episode - at the moment Stage first becomes StageFailed - not
+// on each subsequent retry of the same failure (see RecordRecoveryFailure
+// for retries, and Decide's StageFailed case for how the budget is spent).
+func (s State) EnterFailed(reason string) State {
+	s.Stage = StageFailed
+	s.LastError = reason
+	s.Recovery = Recovery{}
+	return s
+}
+
+// RecordRecoveryFailure returns a copy of s with one more StageFailed
+// recovery attempt recorded: Recovery.Attempts incremented,
+// Recovery.LastError set to err (never touching the original
+// State.LastError), and Recovery.NextAttemptAt pushed out by
+// RecoveryBackoff. Call this when a recovery attempt
+// (requestOverlayDisable) itself fails while already in StageFailed.
+func (s State) RecordRecoveryFailure(err error, now time.Time) State {
+	s.Recovery.Attempts++
+	s.Recovery.LastError = err.Error()
+	s.Recovery.NextAttemptAt = now.Add(RecoveryBackoff(s.Recovery.Attempts - 1))
+	return s
+}
 
 // Action is what the caller should actually do next, as decided by
 // Decide. Both the Go daemon and debian/stratux-pre-start.sh drive their
@@ -61,6 +132,13 @@ const (
 	// distinct from ActionRollback, which implies a backup exists to
 	// restore because installation was actually attempted.
 	ActionFail Action = "fail"
+
+	// ActionRecoveryExhausted: StageFailed's automatic recovery
+	// (requestOverlayDisable retries) did not succeed within
+	// MaxRecoveryAttempts. The caller should transition to
+	// StageRecoveryExhausted and take no further automatic action -
+	// leaving this state requires an explicit operator POST /resetOTA.
+	ActionRecoveryExhausted Action = "recovery_exhausted"
 )
 
 // RealSignals is everything Decide needs to observe about the actual,
@@ -86,6 +164,13 @@ type RealSignals struct {
 	// (e.g. via /getStatus's Build field). Empty if not queryable (for
 	// example, immediately after a reboot before the service is up).
 	RunningCommit string
+
+	// Now is the current time, used only by StageFailed's backoff check
+	// (State.Recovery.NextAttemptAt). A field here, not a hidden
+	// time.Now() call inside Decide, for the same reason every other
+	// signal is passed in explicitly: tests can supply any value without
+	// depending on wall-clock timing.
+	Now time.Time
 }
 
 // Decision is Decide's result.
@@ -108,6 +193,10 @@ func Decide(s State, r RealSignals) Decision {
 	switch s.Stage {
 	case StageIdle, StageComplete, StageRolledBack:
 		return decision(ActionNone, "no update in progress")
+
+	case StageRecoveryExhausted:
+		return decision(ActionNone, "automatic recovery exhausted after %d attempts; original failure: %s; last recovery error: %s; operator reset required (POST /resetOTA)",
+			s.Recovery.Attempts, s.LastError, s.Recovery.LastError)
 
 	case StageStaged:
 		if !r.PackageFileExists {
@@ -164,7 +253,29 @@ func Decide(s State, r RealSignals) Decision {
 		return decision(ActionRollback, "post-reboot verification failed: running commit %q does not match expected %q", r.RunningCommit, s.ExpectedCommit)
 
 	case StageFailed:
-		return decision(ActionRollback, "update previously marked failed: %s", s.LastError)
+		// StageFailed's own bounded retry of the overlay-disable/rollback
+		// handoff - see MaxRecoveryAttempts, RecoveryBackoff, and
+		// StageRecoveryExhausted's doc comment for why this exists.
+		// Unlike the pre-fix behavior, this deliberately does NOT format
+		// its reason from s.LastError the way earlier stages' Reason
+		// strings feed into the next stage's LastError elsewhere in this
+		// file - doing that here is exactly what produced the historical
+		// unbounded "update previously marked failed: update previously
+		// marked failed: ..." nesting, since main/ota.go's caller used to
+		// write decision.Reason straight back into State.LastError on
+		// every retry. State.LastError now stays fixed at the original
+		// failure for the whole episode; only State.Recovery tracks retry
+		// progress.
+		if s.Recovery.Attempts >= MaxRecoveryAttempts {
+			return decision(ActionRecoveryExhausted, "automatic recovery exhausted after %d attempts; original failure: %s; last recovery error: %s",
+				s.Recovery.Attempts, s.LastError, s.Recovery.LastError)
+		}
+		if !s.Recovery.NextAttemptAt.IsZero() && r.Now.Before(s.Recovery.NextAttemptAt) {
+			return decision(ActionNone, "recovery backoff in effect until %s (attempt %d of %d pending; original failure: %s)",
+				s.Recovery.NextAttemptAt.Format(time.RFC3339), s.Recovery.Attempts+1, MaxRecoveryAttempts, s.LastError)
+		}
+		return decision(ActionRollback, "retrying overlay-disable recovery (attempt %d of %d); original failure: %s",
+			s.Recovery.Attempts+1, MaxRecoveryAttempts, s.LastError)
 
 	default:
 		return decision(ActionFail, "unrecognized OTA stage %q", s.Stage)
