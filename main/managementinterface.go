@@ -1321,6 +1321,7 @@ func managementInterface() {
 	http.HandleFunc("/getClients", handleClientsGetRequest)
 	http.HandleFunc("/updateUpload", handleOTAUploadRequest)
 	http.HandleFunc("/getOTAStatus", handleOTAStatusRequest)
+	http.HandleFunc("/resetOTA", handleResetOTARequest)
 	http.HandleFunc("/updatePong", handlePongUpdatePostRequest)
 	http.HandleFunc("/roPartitionRebuild", handleroPartitionRebuild)
 	http.HandleFunc("/develmodetoggle", handleDevelModeToggle)
