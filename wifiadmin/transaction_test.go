@@ -1030,6 +1030,63 @@ type managerWithClock struct {
 	testClock *fakeClock
 }
 
+// TestDefaultReconnectTimeoutSeconds_MatchesRealHardwareFinding pins the
+// production default at 180s, not the original 90s - real-hardware
+// validation of this exact feature (a real iPhone/iPad against a real
+// device, several independent attempts) repeatedly missed a 90s
+// deadline performing nothing but an ordinary, unhurried reconnect-and-
+// confirm sequence, with the automatic rollback correctly firing every
+// time. See defaultReconnectTimeoutSeconds's own doc comment for the
+// full account. This test exists so that value can never silently drift
+// back down without a deliberate, reviewed change.
+func TestDefaultReconnectTimeoutSeconds_MatchesRealHardwareFinding(t *testing.T) {
+	if defaultReconnectTimeoutSeconds != 180 {
+		t.Errorf("defaultReconnectTimeoutSeconds = %v, want 180 (see its own doc comment for why 90 was insufficient on real hardware)", defaultReconnectTimeoutSeconds)
+	}
+}
+
+// TestNewManager_UsesDefaultReconnectTimeoutUnlessOverridden proves the
+// production default is what a freshly constructed Manager actually
+// uses for its reconnect deadline when nothing calls
+// SetReconnectTimeoutSeconds - every other test in this file does call
+// it (for a fast, deterministic deadline), so without this test nothing
+// would catch defaultReconnectTimeoutSeconds silently becoming disconnected
+// from what NewManager actually wires up.
+func TestNewManager_UsesDefaultReconnectTimeoutUnlessOverridden(t *testing.T) {
+	good := validAPConfig()
+	good.SSID = "current-ssid"
+	exec := newFakeExecutor(good)
+	pers := &fakePersistence{}
+	if err := pers.SaveLastKnownGood(good); err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeClock{now: 1000}
+	m, err := NewManager("boot-1", clock.Now, exec, pers, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	// Deliberately do NOT call SetReconnectTimeoutSeconds.
+	newGen := sequentialTokenGen()
+
+	proposed := good
+	proposed.SSID = "new-ssid"
+	_, token, err := m.Preview(proposed, newGen)
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if _, err := m.Apply(token.Token, newGen); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	got := m.Status().ReconnectDeadlineMonotonic
+	if got == nil {
+		t.Fatal("expected a reconnect deadline after Apply")
+	}
+	want := clock.now + defaultReconnectTimeoutSeconds
+	if *got != want {
+		t.Errorf("reconnect deadline = %v, want %v (now=%v + defaultReconnectTimeoutSeconds=%v)", *got, want, clock.now, defaultReconnectTimeoutSeconds)
+	}
+}
+
 func newTestManagerWithShortTimeout(t *testing.T) (*managerWithClock, *fakeExecutor, Config, *fakePersistence) {
 	t.Helper()
 	good := validAPConfig()

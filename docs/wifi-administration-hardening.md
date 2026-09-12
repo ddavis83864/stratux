@@ -165,8 +165,9 @@ wrong SSID/channel for their hardware).
 - **Two-step preview/apply, with a reconnection-confirmation step** -
   see "Preview/apply/confirm workflow" below.
 - **Automatic rollback** if reconnection is not confirmed within
-  `defaultReconnectTimeoutSeconds` (90s, derived - see that constant's
-  own doc comment in `wifiadmin/transaction.go` for the reasoning).
+  `defaultReconnectTimeoutSeconds` (180s, revised from an original 90s
+  after real-hardware validation - see that constant's own doc comment
+  in `wifiadmin/transaction.go` for the reasoning).
 - **Last-known-good retained** until a NEW configuration is explicitly
   confirmed - never overwritten by an unconfirmed apply.
 - **Crash/reboot recovery**: a pending transaction record survives a
@@ -283,11 +284,14 @@ limitation (network-level liveness only).
 
 ## Automatic rollback and last-known-good
 
-`defaultReconnectTimeoutSeconds` = 90s (`wifiadmin/transaction.go`) -
+`defaultReconnectTimeoutSeconds` = 180s (`wifiadmin/transaction.go`) -
 derived from the existing `ifdown`/`ifup` cycle's own observed latency
 plus realistic client-side Wi-Fi reassociation/DHCP-lease time plus
-margin for a human to notice and switch networks by hand; injectable per
-test via `SetReconnectTimeoutSeconds`. The last-known-good configuration
+margin for a human to notice and switch networks by hand; revised
+upward from an original 90s after real-hardware validation repeatedly
+missed that deadline performing nothing but an ordinary, unhurried
+reconnect - see that constant's own doc comment for the full account.
+Injectable per test via `SetReconnectTimeoutSeconds`. The last-known-good configuration
 is never overwritten until a NEW configuration is explicitly confirmed -
 an apply failure, a missed confirmation, or a startup-recovery rollback
 all restore it, never silently accept something else in its place.
@@ -452,9 +456,13 @@ future deployment mission:
 - [ ] Confirm the atomic four-file-batch apply behaves correctly against
       the real `/overlay/robase` overlay-unlock/lock cycle on real
       hardware (only exercised via a fake `Executor` this mission).
-- [ ] Confirm a real `ifdown`/`ifup wlan0` cycle's actual timing on
-      target hardware still comfortably fits within the 90s reconnect
-      deadline.
+- [x] Confirm a real `ifdown`/`ifup wlan0` cycle's actual timing on
+      target hardware still comfortably fits within the reconnect
+      deadline - checked on real hardware; the `ifdown`/`ifup` cycle
+      itself is fast, but the original 90s deadline did not comfortably
+      fit a real human's own reconnect-and-confirm sequence. Raised to
+      180s as a result - see `defaultReconnectTimeoutSeconds`'s own doc
+      comment.
 - [ ] Confirm the dashboard's preview/apply/confirm flow end-to-end on a
       physical device, including an owner actually reconnecting to a
       renamed/re-secured network.

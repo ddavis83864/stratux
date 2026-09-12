@@ -61,25 +61,36 @@ var (
 
 // defaultReconnectTimeoutSeconds bounds how long an applied,
 // connectivity-affecting change may go unconfirmed before this package
-// automatically rolls back to the last known good configuration. This
-// value is deliberately conservative and derived, not guessed: it must
-// exceed the existing ifdown/ifup wlan0 cycle's own observed latency
-// (main/networksettings.go sleeps 1s before ifdown, then runs ifdown and
-// ifup each as a blocking exec.Command.Wait() - unbounded in the
-// existing code, but a healthy wpa_supplicant/dnsmasq restart on this
-// project's target hardware is a low-single-digit-second operation) PLUS
-// realistic client-side Wi-Fi reassociation/DHCP-lease time on a
-// phone/tablet (commonly 5-20s including the OS's own network-change
-// settling delay) PLUS margin for a human to notice the SSID changed and
-// switch to it manually. 90 seconds is chosen to comfortably cover a
-// human reconnecting to a renamed/re-secured AP by hand, without leaving
-// a badly misconfigured AP unreachably live for so long that a second,
-// unrelated attempt to fix it (e.g. physical console access) becomes the
-// only realistic recourse. It is a package-level var, not a const, and
-// is also directly settable per-Manager via SetReconnectTimeoutSeconds,
-// specifically so tests can use a tiny deadline instead of waiting on a
-// real clock.
-var defaultReconnectTimeoutSeconds float64 = 90
+// automatically rolls back to the last known good configuration. It
+// must exceed the existing ifdown/ifup wlan0 cycle's own observed
+// latency (main/networksettings.go sleeps 1s before ifdown, then runs
+// ifdown and ifup each as a blocking exec.Command.Wait() - unbounded in
+// the existing code, but a healthy wpa_supplicant/dnsmasq restart on
+// this project's target hardware is a low-single-digit-second
+// operation) PLUS realistic client-side Wi-Fi reassociation/DHCP-lease
+// time PLUS the time an actual human takes to notice the SSID changed,
+// switch to Settings, join it, and switch back to confirm.
+//
+// This was originally 90 - a reasoned estimate, not a measured one.
+// Real-hardware validation of this exact feature (a real iPhone/iPad
+// against a real device, several independent attempts, no code changes
+// between them) repeatedly missed a 90s deadline performing nothing but
+// that ordinary, unhurried reconnect-and-confirm sequence - not a
+// stopwatch-paced worst case, just normal phone use. Every one of those
+// misses correctly triggered this package's own automatic rollback
+// exactly as designed; nothing here was ever a confirmation-logic
+// defect. 90s simply left no real margin once actual app-switching and
+// Wi-Fi settings UI navigation are accounted for, only the network
+// layer's own latency. 180s is still conservative against this
+// function's other goal (never leaving a badly misconfigured AP
+// unreachably live so long that physical console access becomes the
+// only recourse), while giving a real human's real reconnection
+// sequence room to actually complete.
+//
+// It is a package-level var, not a const, and is also directly settable
+// per-Manager via SetReconnectTimeoutSeconds, specifically so tests can
+// use a tiny deadline instead of waiting on a real clock.
+var defaultReconnectTimeoutSeconds float64 = 180
 
 // Precondition is a caller-supplied check that must pass (return nil)
 // before a Wi-Fi transaction may be previewed or applied - main/ wires
