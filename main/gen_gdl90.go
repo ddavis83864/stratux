@@ -1904,6 +1904,15 @@ func main() {
 	// id and as the shutdown-token boot-session binding).
 	initPower()
 
+	// Initialize Wi-Fi administration hardening - see
+	// main/wifiadminapi.go and docs/wifi-administration-hardening.md.
+	// Off unless an owner explicitly starts a transaction through its
+	// own API; never mutates the pre-existing WiFi* settings/API this
+	// project already has. Must run after initPreflight() (boot-session
+	// binding, matching initPower's own ordering requirement) and after
+	// initPower() (its own preconditions check shutdownManager).
+	initWifiAdmin()
+
 	// Initialize the storage-lifecycle inventory foundation - see
 	// main/storagelifecycleapi.go and docs/storage-lifecycle.md.
 	// Observational only: no automatic eviction, no automatic recording,

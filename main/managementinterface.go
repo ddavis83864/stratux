@@ -13,6 +13,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -966,8 +968,32 @@ func setJSONHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 }
 
+// wifiAdminNoCachePaths are served with forced revalidation instead of
+// defaultServer's own general 5-minute cache - real-hardware validation
+// found that a browser's ordinary (non-hard-refresh) navigation back to
+// the Wi-Fi Admin page within that 5-minute window can silently keep
+// running JS fetched before an OTA update, with no visible sign to the
+// owner that anything is stale. For most of this project's static
+// content, a brief window of staleness after an update is a deliberately
+// accepted tradeoff (see defaultServer's own comment) - but this
+// specific page's correctness is safety-relevant: an owner unable to see
+// a since-fixed Confirm button within the reconnect-confirmation
+// deadline has no way to know their browser, not the device, is what's
+// out of date. "no-cache" here still allows caching, it just requires a
+// conditional GET (a cheap round trip) before ever reusing a cached
+// copy, so a genuinely unchanged file after a no-op OTA still costs
+// nothing extra beyond one 304 response.
+var wifiAdminNoCachePaths = map[string]bool{
+	"/plates/js/wifiadmin.js": true,
+	"/plates/wifiadmin.html":  true,
+}
+
 func defaultServer(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "max-age=360") // 5 min, so that if user installs update, he will revalidate soon enough
+	if wifiAdminNoCachePaths[r.URL.Path] {
+		w.Header().Set("Cache-Control", "no-cache")
+	} else {
+		w.Header().Set("Cache-Control", "max-age=360") // 5 min, so that if user installs update, he will revalidate soon enough
+	}
 	//	setNoCache(w)
 	http.FileServer(http.Dir(STRATUX_WWW_DIR)).ServeHTTP(w, r)
 }
@@ -1377,6 +1403,12 @@ func managementInterface() {
 	http.HandleFunc("/setAlertSettings", handleSetAlertSettingsRequest)
 	http.HandleFunc("/getTrafficCPASettings", handleGetTrafficCPASettingsRequest)
 	http.HandleFunc("/setTrafficCPASettings", handleSetTrafficCPASettingsRequest)
+	http.HandleFunc("/getWifiAdminStatus", handleGetWifiAdminStatusRequest)
+	http.HandleFunc("/previewWifiAdminSettings", handlePreviewWifiAdminSettingsRequest)
+	http.HandleFunc("/applyWifiAdminSettings", handleApplyWifiAdminSettingsRequest)
+	http.HandleFunc("/confirmWifiAdminReconnection", handleConfirmWifiAdminReconnectionRequest)
+	http.HandleFunc("/cancelWifiAdminChange", handleCancelWifiAdminChangeRequest)
+	http.HandleFunc("/rollbackWifiAdminChange", handleRollbackWifiAdminChangeRequest)
 	http.HandleFunc("/acknowledgeAlert", handleAcknowledgeAlertRequest)
 	http.HandleFunc("/muteAlerts", handleMuteAlertsRequest)
 	http.HandleFunc("/unmuteAlerts", handleUnmuteAlertsRequest)
@@ -1414,7 +1446,25 @@ func managementInterface() {
 
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	// A plain http.ListenAndServe(addr, nil) - unchanged for every other
+	// handler in this file - does not let a handler learn which of this
+	// device's own local addresses an incoming connection was actually
+	// accepted on (only http.Request.RemoteAddr, the CLIENT's address,
+	// is exposed by default). ConnContext stashes each accepted
+	// connection's own LocalAddr into that connection's request
+	// context, additively: nothing here changes request routing,
+	// timeouts, or any existing handler's behavior - see
+	// localAddrFromContext (main/wifiadminapi.go) for the one consumer,
+	// wifiadmin's path-aware reconnection confirmation, which needs to
+	// prove a confirming request arrived via the newly-applied AP's own
+	// address rather than loopback/Ethernet/client-mode Wi-Fi.
+	server := &http.Server{
+		Addr: addr,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, connLocalAddrContextKey, c.LocalAddr())
+		},
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Printf("managementInterface ListenAndServe: %s\n", err.Error())
 	}
 }

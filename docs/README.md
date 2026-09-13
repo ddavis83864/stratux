@@ -43,6 +43,11 @@ hardware integration). User-facing how-tos live in the
   calibration profiles): export allowlist, checksums, the validate/preview/confirm/apply
   flow, transactional rollback, and what is deliberately excluded (credentials,
   recordings, diagnostics, OS configuration).
+- **[wifi-administration-hardening.md](wifi-administration-hardening.md)** — strict
+  server-side validation and a safe preview/apply/reconnect-confirm/automatic-rollback
+  workflow layered on top of the existing Wi-Fi settings surface: threat model, exact
+  validation rules, confirmation-token reuse, crash recovery, and why Wi-Fi remains
+  excluded from Configuration Backup by existing, unchanged policy.
 - **[power-shutdown-resilience.md](power-shutdown-resilience.md)** — power/thermal-health
   reporting built on the Raspberry Pi's own `get_throttled` signal, the honest capability
   limits on typical USB-power-bank hardware (no battery percentage, no automatic shutdown),

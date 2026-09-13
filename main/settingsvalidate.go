@@ -103,12 +103,49 @@ func validateSettingsKeyCount(msg map[string]interface{}) error {
 	return nil
 }
 
+// legacyWifiSettingsKeys are still present in settingsFieldTypes (and
+// handleSettingsSetRequest's switch) so the types/shapes documented there
+// stay accurate history, but are no longer reachable through
+// /setSettings - see validateSettingsValue's own rejection below for why.
+var legacyWifiSettingsKeys = map[string]bool{
+	"WiFiCountry":                    true,
+	"WiFiSSID":                       true,
+	"WiFiChannel":                    true,
+	"WiFiSecurityEnabled":            true,
+	"WiFiPassphrase":                 true,
+	"WiFiIPAddress":                  true,
+	"WiFiMode":                       true,
+	"WiFiDirectPin":                  true,
+	"WiFiClientNetworks":             true,
+	"WiFiInternetPassThroughEnabled": true,
+}
+
 // validateSettingsValue reports whether val is the exact JSON shape key
 // requires, without mutating any package state. It never includes val
 // itself in the returned error: some recognized keys (WiFiPassphrase,
 // WiFiClientNetworks) carry values that must not reach a log line or an
 // HTTP error response.
+//
+// Every legacyWifiSettingsKeys entry is rejected outright, before any
+// type check - real-hardware validation of the Wi-Fi Administration
+// Hardening feature (see docs/wifi-administration-hardening.md) found
+// that this endpoint's own Wi-Fi fields still applied an immediate,
+// disruptive network-interface change (applyNetworkSettings's
+// ifdown/ifup wlan0 cycle, triggered unconditionally at the end of
+// every /setSettings request whenever any Wi-Fi field actually changed)
+// with none of that feature's safety guarantees: no preview, no
+// path-validated reconnection confirmation, and no automatic rollback
+// if the owner is never able to reconnect. Worse, applying a change this
+// way left wifiadmin's own persisted last-known-good silently
+// out of sync with the device's actual live configuration - exactly the
+// stale-diagnostics inconsistency that surfaced this defect during PR
+// #20's own hardware validation. Every one of these fields must now be
+// changed exclusively through /previewWifiAdminSettings +
+// /applyWifiAdminSettings + /confirmWifiAdminReconnection.
 func validateSettingsValue(key string, val interface{}) error {
+	if legacyWifiSettingsKeys[key] {
+		return fmt.Errorf("setting %q is no longer changed via /setSettings - use the Wi-Fi Administration API (/previewWifiAdminSettings) instead, which adds a confirmation step and automatic rollback this endpoint never had", key)
+	}
 	kind, known := settingsFieldTypes[key]
 	if !known {
 		return fmt.Errorf("unrecognized setting %q", key)

@@ -233,6 +233,7 @@ func buildPreflightReport() (report preflight.Report) {
 		AutoRecordReason:             health.AutoRecord.Reason,
 		TrafficCPAEnabled:            trafficCPASettingsForPreflight.EscalationEnabled,
 		TrafficCPASettingsValid:      trafficCPASettingsForPreflight.Validate() == nil,
+		WifiAdminStage:               wifiAdminStageForPreflight(),
 	}
 	return preflight.BuildReport(in)
 }
