@@ -1,0 +1,70 @@
+#!/bin/sh -e
+#
+# Generates unique SSH host keys on this device's own first boot.
+#
+# Why the stock Raspberry Pi OS regenerate_ssh_host_keys.service cannot be
+# used as-is on this image: this project's root filesystem runs behind a
+# protected read-only overlay (image_build/stage2/10-stratux/files/init-overlay,
+# see docs/ota.md), whose writable upper layer is tmpfs and is discarded on
+# every reboot. A plain write to /etc/ssh/ssh_host_* only ever lands in that
+# tmpfs layer, so it - and the stock unit's own self-disable, which is
+# itself just a write under /etc/systemd/system/ - would both be lost on the
+# very next boot. That would make the stock unit regenerate a brand new,
+# unstable key set on every single boot instead of once per device, which is
+# worse than this defect's own starting point. Host key material must
+# instead be written through this codebase's own established persistence
+# convention: /sbin/overlayctl unlock, write under /overlay/robase/<path>
+# (the real ext4 lower layer), /sbin/overlayctl lock - the same pattern
+# already used by main/networksettings.go, stratux-pre-start.sh's timezone
+# correction, and mapdata/download_mapdata.sh.
+#
+# The actual key generation is still the established OS mechanism,
+# unmodified: ssh-keygen -A. Per its own documented behavior it only fills
+# in whichever default host key types (rsa, ecdsa, ed25519) do not already
+# exist at the target path and never touches one that is already present -
+# so this script is always safe to re-run, including after a prior
+# invocation was interrupted partway (power loss, killed process) and left
+# a partial key set: the next run simply completes whatever is missing.
+#
+# This script intentionally ships only as part of the image build
+# (image_build/stage2/10-stratux/01-run.sh), not the .deb package - an
+# already-configured device's OTA upgrade never installs or runs this at
+# all, so it can never be a vector for touching an existing device's host
+# keys.
+
+overlay_active() {
+    [ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = "overlay" ]
+}
+
+if overlay_active; then
+    ETC_SSH=/overlay/robase/etc/ssh
+else
+    ETC_SSH=/etc/ssh
+fi
+
+# Fast, read-only check performed BEFORE ever unlocking the overlay: if
+# every default host key type already exists at the persistent location,
+# this device has already completed key generation - either at a prior
+# first boot under this same mechanism - and nothing further happens. The
+# overlay is never remounted read-write on this (the overwhelmingly common,
+# every-boot-after-the-first) path.
+if [ -s "$ETC_SSH/ssh_host_rsa_key" ] && \
+   [ -s "$ETC_SSH/ssh_host_ecdsa_key" ] && \
+   [ -s "$ETC_SSH/ssh_host_ed25519_key" ]; then
+    exit 0
+fi
+
+if overlay_active; then
+    /sbin/overlayctl unlock
+    # ssh-keygen -A's own "-f prefix" support (documented in ssh-keygen(1):
+    # "If -f has also been specified, its argument is used as a prefix to
+    # the default path for the resulting host key files") is exactly the
+    # mechanism this needs to target the persistent lower layer directly,
+    # with no separate copy/move step and no window where a key exists
+    # only in the volatile overlay.
+    ssh-keygen -A -v -f /overlay/robase
+    sync
+    /sbin/overlayctl lock
+else
+    ssh-keygen -A -v
+fi

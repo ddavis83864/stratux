@@ -1,0 +1,17 @@
+[Unit]
+Description=Generate unique per-device SSH host keys (Stratux first boot)
+Documentation=https://github.com/ddavis83864/stratux/blob/master/docs/known-limitations.md
+# Must complete (successfully or not) before sshd is allowed to accept
+# connections, so a fresh device never advertises host keys shared with
+# any other device flashed from the same image, and never accepts a
+# connection before its own identity has been established.
+Before=ssh.service sshd.service
+ConditionFileIsExecutable=/usr/sbin/stratux-generate-ssh-hostkeys
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/stratux-generate-ssh-hostkeys
+
+[Install]
+WantedBy=multi-user.target

@@ -31,21 +31,18 @@ GPS/AHRS limitations, and the no-certification statement).
   compare correctly (`2.0.0~rc1` sorts before `2.0.0`, verified with
   `dpkg --compare-versions`) for anyone using standard Debian tooling, but the running
   daemon does not use that comparison to gate an OTA upload today.
-- **Default SSH credentials.** The public clean-install image ships with SSH enabled and the
-  pi-gen-standard default password. Standard Raspberry Pi OS practice, not unique to this
-  project, but explicitly called out here: change it (or disable password auth) before
-  relying on the device on an untrusted network.
-- **Shared SSH host keys across images built from the same process.** This project's
-  `image_build/stage2` deliberately disables `regenerate_ssh_host_keys` (the systemd unit
-  that would otherwise generate fresh host keys on a cloned image's first boot) and bakes in
-  the keys generated at image-*build* time instead. This is an intentional, pre-existing
-  tradeoff (the accompanying comment: minimizing SD-card writes on first boot, since a
-  power-loss-prone embedded appliance can be bricked by an interrupted write) — not a defect
-  introduced by this release, and not changed by it. The practical consequence: every device
-  flashed from the exact same published image shares the same SSH host keys, unlike a normal
-  Raspberry Pi OS install. If this matters for your deployment, regenerate host keys
-  yourself after first boot (`ssh-keygen -A` after removing the existing host key files, then
-  reboot) — this is not currently automated.
+- **SSH host keys are unique per device, generated on first boot.** Fixed after `v2.0.0-rc2`
+  (which shipped a build-time-baked, shared key set — see that release's own notes for the
+  original defect). The clean-install image now ships with no SSH host private key material
+  at all; `stratux-ssh-hostkeys.service` generates a fresh, unique key set the first time each
+  device boots, before `ssh.service` is allowed to accept connections. See
+  [ssh-host-keys.md](ssh-host-keys.md) for the full lifecycle (clean install, OTA upgrade,
+  recovery/reflash, and card-cloning implications).
+- **Default SSH password.** The public clean-install image still ships with SSH enabled and
+  the pi-gen-standard default password (host *keys* are now unique per device — see above;
+  the *password* is a separate, still-shared default). Standard Raspberry Pi OS practice, not
+  unique to this project, but explicitly called out here: change it (or disable password
+  auth) before relying on the device on an untrusted network.
 - **Reproducibility is functional, not bit-for-bit.** Two independent builds of this release
   from the same commit produced content-identical files except for one deliberately
   timestamped cache-busting file (`stratux.appcache`); the packages themselves differ only
