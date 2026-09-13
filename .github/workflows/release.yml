@@ -9,6 +9,14 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# Publishing a release requires write access to repository contents -
+# many repos now default GITHUB_TOKEN to read-only, which otherwise
+# fails softprops/action-gh-release with "403: Resource not accessible
+# by integration" (confirmed directly by running this workflow before
+# this permissions block was added).
+permissions:
+  contents: write
+
 jobs:
   build_image:
     runs-on: ubuntu-24.04-arm
@@ -129,6 +137,15 @@ jobs:
       - name: Publish draft release
         uses: softprops/action-gh-release@v2
         with:
+          # Pinned explicitly (rather than left to the action's own
+          # ref-based inference) so this step behaves identically
+          # whether triggered by an actual tag push or a manual
+          # workflow_dispatch test run on a branch - github.ref_name is
+          # the tag name on a real trigger, and a harmless/inert branch
+          # name on a workflow_dispatch test (which resolves to no
+          # existing release either way, since real releases are always
+          # tag-named).
+          tag_name: ${{ github.ref_name }}
           draft: true
           prerelease: true
           files: |
