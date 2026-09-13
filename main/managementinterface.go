@@ -968,8 +968,32 @@ func setJSONHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 }
 
+// wifiAdminNoCachePaths are served with forced revalidation instead of
+// defaultServer's own general 5-minute cache - real-hardware validation
+// found that a browser's ordinary (non-hard-refresh) navigation back to
+// the Wi-Fi Admin page within that 5-minute window can silently keep
+// running JS fetched before an OTA update, with no visible sign to the
+// owner that anything is stale. For most of this project's static
+// content, a brief window of staleness after an update is a deliberately
+// accepted tradeoff (see defaultServer's own comment) - but this
+// specific page's correctness is safety-relevant: an owner unable to see
+// a since-fixed Confirm button within the reconnect-confirmation
+// deadline has no way to know their browser, not the device, is what's
+// out of date. "no-cache" here still allows caching, it just requires a
+// conditional GET (a cheap round trip) before ever reusing a cached
+// copy, so a genuinely unchanged file after a no-op OTA still costs
+// nothing extra beyond one 304 response.
+var wifiAdminNoCachePaths = map[string]bool{
+	"/plates/js/wifiadmin.js": true,
+	"/plates/wifiadmin.html":  true,
+}
+
 func defaultServer(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "max-age=360") // 5 min, so that if user installs update, he will revalidate soon enough
+	if wifiAdminNoCachePaths[r.URL.Path] {
+		w.Header().Set("Cache-Control", "no-cache")
+	} else {
+		w.Header().Set("Cache-Control", "max-age=360") // 5 min, so that if user installs update, he will revalidate soon enough
+	}
 	//	setNoCache(w)
 	http.FileServer(http.Dir(STRATUX_WWW_DIR)).ServeHTTP(w, r)
 }
