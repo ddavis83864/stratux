@@ -18,10 +18,11 @@ GPS/AHRS limitations, and the no-certification statement).
 
 ## This release specifically
 
-- **First formal release.** `v2.0.0-rc1` is this fork's first tagged, checksummed,
-  independently-verifiable release. Everything before it was build-it-yourself only; treat
-  this RC with the scrutiny appropriate to a first release, not an N-th point release with a
-  long track record.
+- **First formal release.** `v2.0.0-rc2` is this fork's first published, tagged,
+  checksummed, independently-verifiable release (`v2.0.0-rc1` was superseded before
+  publication - see [releases/v2.0.0-rc1.md](releases/v2.0.0-rc1.md)). Everything before it
+  was build-it-yourself only; treat this RC with the scrutiny appropriate to a first
+  release, not an N-th point release with a long track record.
 - **Release candidate, not stable.** See [release-process.md](release-process.md) for exactly
   what separates an RC from stable, and what has to happen before this line is promoted.
 - **No OTA version-ordering enforcement.** This codebase's OTA mechanism (`docs/ota.md`)
@@ -49,7 +50,7 @@ GPS/AHRS limitations, and the no-certification statement).
   from the same commit produced content-identical files except for one deliberately
   timestamped cache-busting file (`stratux.appcache`); the packages themselves differ only
   in incidental build-time file-modification metadata, not behavior. See this release's own
-  notes (`docs/releases/v2.0.0-rc1.md`) for the exact comparison evidence.
+  notes (`docs/releases/v2.0.0-rc2.md`) for the exact comparison evidence.
 - **Image build performance/timing is untested at scale.** The `pi-gen`-based image build
   (`image_build/`) is this project's own established mechanism, but this release is the
   first time it has been exercised as part of a formal, checksum-verified release process.
@@ -60,7 +61,17 @@ GPS/AHRS limitations, and the no-certification statement).
 
 ## Feature-specific limitations
 
-Each feature's own documentation carries its own scoped limitations (e.g. alerting's
-browser-audio-path constraints, Wi-Fi Admin's IP-address-based rather than kernel-
-interface-based reconnection proof, Configuration Backup's explicit non-goals). See
-[CHANGELOG.md](../CHANGELOG.md) for the full feature-to-doc mapping.
+- **Browser/app audio-alert path.** Not every alert type is supported identically across
+  the browser, iPad, and Bose A30 audio paths - see [alerting.md](alerting.md) for the
+  exact per-path constraints.
+- **No fan tachometer.** The fan-controller hardware has no rotation-feedback sensor, so
+  fan operation is never electronically confirmed by this project, only inferred from
+  commanded duty cycle and thermal trend. The dashboard states this plainly rather than
+  implying a confirmation that doesn't exist - see [ahrs-baro-fan-health.md](ahrs-baro-fan-health.md)
+  and [preflight-readiness.md](preflight-readiness.md).
+- **Wi-Fi Admin's reconnection proof is IP-address-based, not kernel-interface-based** -
+  see [wifi-administration-hardening.md](wifi-administration-hardening.md).
+- **Configuration Backup's explicit non-goals** (credentials, Wi-Fi/network configuration,
+  OS-level settings) - see [configuration-backup-restore.md](configuration-backup-restore.md).
+
+See [CHANGELOG.md](../CHANGELOG.md) for the full feature-to-doc mapping.
