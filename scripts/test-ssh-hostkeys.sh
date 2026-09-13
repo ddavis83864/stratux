@@ -66,7 +66,7 @@ run_gen() {
 echo "=== test_first_boot_generates_full_set (non-overlay) ==="
 r="$(newroot)"
 out="$(run_gen "$r" 0 2>&1)"
-assert_no_secret_material "$out" && ok "no secret material in captured output" || bad "secret material leaked in output"
+if assert_no_secret_material "$out"; then ok "no secret material in captured output"; else bad "secret material leaked in output"; fi
 if [ -s "$r/etc/ssh/ssh_host_rsa_key" ] && [ -s "$r/etc/ssh/ssh_host_ecdsa_key" ] && [ -s "$r/etc/ssh/ssh_host_ed25519_key" ] \
    && [ -s "$r/etc/ssh/ssh_host_rsa_key.pub" ] && [ -s "$r/etc/ssh/ssh_host_ecdsa_key.pub" ] && [ -s "$r/etc/ssh/ssh_host_ed25519_key.pub" ]; then
     ok "first boot generates full key set (3 private + 3 public, all non-empty)"
@@ -85,8 +85,8 @@ for f in ssh_host_rsa_key.pub ssh_host_ecdsa_key.pub ssh_host_ed25519_key.pub; d
     mode="$(stat -c %a "$r/etc/ssh/$f")"
     [ "$mode" = "644" ] || pub_ok=0
 done
-[ "$priv_ok" = 1 ] && ok "private key files are mode 600" || bad "a private key file is not mode 600"
-[ "$pub_ok" = 1 ] && ok "public key files are mode 644" || bad "a public key file is not mode 644"
+if [ "$priv_ok" = 1 ]; then ok "private key files are mode 600"; else bad "a private key file is not mode 600"; fi
+if [ "$pub_ok" = 1 ]; then ok "public key files are mode 644"; else bad "a public key file is not mode 644"; fi
 
 echo "=== test_second_boot_does_not_replace ==="
 before_hash="$(sha256sum "$r"/etc/ssh/ssh_host_*_key | sort)"
@@ -128,6 +128,30 @@ if [ -n "$fp3" ] && [ "$fp3" != "$fp4" ]; then
     ok "two independently generated instances have different fingerprints ($fp3 != $fp4)"
 else
     bad "two independent instances produced the same fingerprint - not unique per install"
+fi
+
+echo "=== test_generation_failure_surfaces_honestly_no_false_complete_marker ==="
+r6="$(newroot)"
+fakebin="$r6/fakebin"
+mkdir -p "$fakebin"
+# A stub ssh-keygen that always fails, simulating a real failure mid
+# generation (disk error, out of entropy, etc.) - proves the script does
+# NOT leave any success/complete marker behind and itself exits non-zero,
+# so the surrounding systemd oneshot unit is left correctly marked failed
+# rather than silently reporting done.
+cat > "$fakebin/ssh-keygen" <<'STUB'
+#!/bin/sh
+exit 1
+STUB
+chmod +x "$fakebin/ssh-keygen"
+if PATH="$fakebin:$PATH" STRATUX_TEST_ROOT="$r6" STRATUX_TEST_FORCE_OVERLAY=0 "$GEN_SCRIPT" >/dev/null 2>&1; then
+    bad "script exited successfully despite key generation failing - false complete marker risk"
+else
+    if [ ! -s "$r6/etc/ssh/ssh_host_rsa_key" ] && [ ! -s "$r6/etc/ssh/ssh_host_ed25519_key" ]; then
+        ok "generation failure exits non-zero and leaves no false-complete key set behind"
+    else
+        bad "generation failure left partial files that could be mistaken for success"
+    fi
 fi
 
 echo "=== test_overlay_active_writes_through_robase_and_calls_unlock_lock_in_order ==="
