@@ -30,11 +30,11 @@ type component struct {
 }
 
 type sbom struct {
-	BOMFormat    string     `json:"bomFormat"`
-	SpecVersion  string     `json:"specVersion"`
-	SerialNumber string     `json:"serialNumber"`
-	Version      int        `json:"version"`
-	Metadata     bomMeta    `json:"metadata"`
+	BOMFormat    string      `json:"bomFormat"`
+	SpecVersion  string      `json:"specVersion"`
+	SerialNumber string      `json:"serialNumber"`
+	Version      int         `json:"version"`
+	Metadata     bomMeta     `json:"metadata"`
 	Components   []component `json:"components"`
 }
 
