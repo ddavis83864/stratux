@@ -41,6 +41,21 @@ appControllers.controller('WifiAdminCtrl', function ($scope, $http, $interval) {
 		$http.get(URL_WIFIADMIN_STATUS).then(function (response) {
 			$scope.status = response.data;
 			$scope.statusError = '';
+			// Recovers a reconnect token this page's own Apply call never
+			// received (a real, observed failure: that response can lose
+			// its race against the very AP reload it describes) - the
+			// server only ever includes this field once this exact
+			// request has already independently proven it arrived
+			// through the newly-applied AP, the same proof Confirm
+			// itself requires; see main/wifiadminapi.go's
+			// handleGetWifiAdminStatusRequest. Only ever SET, never
+			// cleared, by an absent field here - the 5-second poll
+			// below means an owner who reconnects and simply waits
+			// (no reload needed) sees the Confirm button appear on its
+			// own once the server can prove they are on the new network.
+			if (response.data.reconnectToken) {
+				$scope.reconnectToken = response.data.reconnectToken;
+			}
 			if ($scope.status.lastKnownGood && !$scope.formSeeded) {
 				var g = $scope.status.lastKnownGood;
 				$scope.form.ssid = g.ssid || '';

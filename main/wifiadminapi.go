@@ -221,6 +221,20 @@ func wifiAdminStatusCode(err error) int {
 	}
 }
 
+// wifiAdminStatusResponse adds one optional field on top of
+// wifiadmin.ManagerStatus's own general-purpose, safe-for-any-caller
+// shape: the real reconnect token, included only when this specific
+// request's own path already proves it arrived through the newly-
+// applied AP (see handleGetWifiAdminStatusRequest and
+// wifiadmin.Manager.ReconnectTokenForPath). Kept as a wrapper here
+// rather than a new field on ManagerStatus itself, since ManagerStatus
+// is also used in contexts (e.g. a future general status broadcast)
+// that must never carry a real token regardless of who receives them.
+type wifiAdminStatusResponse struct {
+	wifiadmin.ManagerStatus
+	ReconnectToken string `json:"reconnectToken,omitempty"`
+}
+
 func handleGetWifiAdminStatusRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
@@ -232,7 +246,25 @@ func handleGetWifiAdminStatusRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"success": false, "error": "wifiadmin not initialized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, wifiAdminManager.Status())
+	status := wifiAdminManager.Status()
+	resp := wifiAdminStatusResponse{ManagerStatus: status}
+	// Recovers a reconnect token lost to the Apply response's own race
+	// against the AP reload it describes (see ReconnectTokenForPath's
+	// doc comment) - but only for a request that already independently
+	// proves it is reachable through the newly-applied AP, exactly the
+	// same proof ConfirmReconnection itself requires. A request that
+	// fails that check (e.g. still on the old network, or no pending
+	// transaction at all) simply gets no token, same as before this
+	// field existed.
+	if status.ReconnectTokenAvailable {
+		if token, err := wifiAdminManager.ReconnectTokenForPath(wifiadmin.ConfirmContext{
+			RemoteAddr: r.RemoteAddr,
+			LocalAddr:  localAddrFromContext(r.Context()),
+		}); err == nil {
+			resp.ReconnectToken = token
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type previewWifiAdminRequest = wifiadmin.Config

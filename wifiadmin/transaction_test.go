@@ -1087,6 +1087,83 @@ func TestNewManager_UsesDefaultReconnectTimeoutUnlessOverridden(t *testing.T) {
 	}
 }
 
+// --- ReconnectTokenForPath: recovers a token lost to the Apply
+// response's own race against the AP reload it describes (see
+// ReconnectTokenForPath's own doc comment). Every test below proves this
+// recovery path requires the IDENTICAL path proof ConfirmReconnection
+// itself already requires - it must never succeed as a weaker substitute.
+
+func TestManager_ReconnectTokenForPath_ValidPathSucceeds(t *testing.T) {
+	m, _, proposed, tok := setupAwaitingReconnection(t, "new-ssid")
+	got, err := m.ReconnectTokenForPath(validConfirmContext("", proposed))
+	if err != nil {
+		t.Fatalf("ReconnectTokenForPath: %v", err)
+	}
+	if got != tok {
+		t.Errorf("recovered token = %q, want %q (the same token Apply originally issued)", got, tok)
+	}
+	// Recovering the token is read-only - it must still be usable to
+	// actually confirm afterwards, and must not have consumed anything.
+	if m.Status().Stage != StageAwaitingReconnection {
+		t.Error("recovering the token must not disturb the pending transaction")
+	}
+	if _, err := m.ConfirmReconnection(validConfirmContext(got, proposed)); err != nil {
+		t.Errorf("confirm using the recovered token: %v", err)
+	}
+}
+
+func TestManager_ReconnectTokenForPath_RejectsWrongPath(t *testing.T) {
+	m, _, proposed, _ := setupAwaitingReconnection(t, "new-ssid")
+	cases := []ConfirmContext{
+		{LocalAddr: "127.0.0.1:80", RemoteAddr: "192.168.10.77:54321"},       // loopback
+		{LocalAddr: "10.0.0.5:80", RemoteAddr: "192.168.10.77:54321"},        // unrelated local addr
+		{LocalAddr: proposed.IPAddress + ":80", RemoteAddr: "203.0.113.5:1"}, // remote from wrong subnet
+		{LocalAddr: "", RemoteAddr: "192.168.10.77:54321"},                   // missing ConnContext plumbing
+	}
+	for i, ctx := range cases {
+		if _, err := m.ReconnectTokenForPath(ctx); !errors.Is(err, ErrReconnectionPathInvalid) {
+			t.Errorf("case %d: err=%v, want ErrReconnectionPathInvalid", i, err)
+		}
+	}
+	// None of the rejected attempts may have disturbed the pending
+	// transaction or leaked the token some other way.
+	if m.Status().Stage != StageAwaitingReconnection {
+		t.Error("a rejected-path token recovery attempt must not disturb the pending transaction")
+	}
+}
+
+func TestManager_ReconnectTokenForPath_RejectsWrongStage(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	// Idle - nothing pending at all.
+	if _, err := m.ReconnectTokenForPath(ConfirmContext{LocalAddr: "192.168.10.1:80", RemoteAddr: "192.168.10.77:54321"}); !errors.Is(err, ErrNotAwaitingConfirm) {
+		t.Errorf("idle: err=%v, want ErrNotAwaitingConfirm", err)
+	}
+
+	newGen := sequentialTokenGen()
+	proposed := validAPConfig()
+	proposed.SSID = "new-ssid"
+	if _, _, err := m.Preview(proposed, newGen); err != nil {
+		t.Fatal(err)
+	}
+	// Previewed but not yet applied - still too early.
+	if _, err := m.ReconnectTokenForPath(validConfirmContext("", proposed)); !errors.Is(err, ErrNotAwaitingConfirm) {
+		t.Errorf("previewed: err=%v, want ErrNotAwaitingConfirm", err)
+	}
+}
+
+func TestManager_ReconnectTokenForPath_RejectsAfterTokenAlreadyUsed(t *testing.T) {
+	m, _, proposed, tok := setupAwaitingReconnection(t, "new-ssid")
+	if _, err := m.ConfirmReconnection(validConfirmContext(tok, proposed)); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	// The transaction has already committed and returned to idle - a
+	// later recovery attempt (e.g. a stray delayed poll) must not be able
+	// to fetch a now-meaningless, already-spent token.
+	if _, err := m.ReconnectTokenForPath(validConfirmContext("", proposed)); !errors.Is(err, ErrNotAwaitingConfirm) {
+		t.Errorf("after commit: err=%v, want ErrNotAwaitingConfirm", err)
+	}
+}
+
 func newTestManagerWithShortTimeout(t *testing.T) (*managerWithClock, *fakeExecutor, Config, *fakePersistence) {
 	t.Helper()
 	good := validAPConfig()

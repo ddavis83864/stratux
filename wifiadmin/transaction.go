@@ -324,6 +324,46 @@ func (m *Manager) ReconnectToken() (string, bool) {
 	return m.reconnectToken, true
 }
 
+// ReconnectTokenForPath returns the current reconnect token, but only if
+// ctx already satisfies the identical address/subnet path-validation
+// ConfirmReconnection itself enforces (see validateConfirmationPath) -
+// proving the caller is genuinely reachable through the newly-applied
+// AP's own address, not merely that some client asked.
+//
+// This exists for a real failure mode ConfirmReconnection's own doc
+// comment does not cover: the Apply response - historically the only
+// place a reconnect token was ever handed out - can itself lose its
+// race against the very AP reload it triggers, if the requesting client
+// was only reachable over the network being torn down. Confirmed
+// directly on real hardware: multiple genuine clients (not a fake
+// Executor) submitted a real Apply request and never received its HTTP
+// response, because the interface cycle that response describes had
+// already disrupted the connection carrying it. A client in that state
+// has no way to ever reach `/confirmWifiAdminReconnection` with a token
+// it was never given, and StageAwaitingReconnection's automatic-rollback
+// safety net - not a hung or falsely-successful state - is all that
+// currently protects it, which is safe but leaves a change that DID
+// apply successfully unconfirmable by the very client that requested it.
+//
+// A client that reconnects and asks again, now genuinely on the new
+// network, recovers the same token this way without weakening anything:
+// the path check performed here is the identical proof of reachability
+// ConfirmReconnection itself already relies on as its strongest
+// guarantee - this does not introduce a new, weaker one, it just stops
+// requiring that proof be presented exactly once, by exactly the
+// process that happened to keep the original HTTP response in memory.
+func (m *Manager) ReconnectTokenForPath(ctx ConfirmContext) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stage != StageAwaitingReconnection || m.reconnectTokenUsed {
+		return "", ErrNotAwaitingConfirm
+	}
+	if err := validateConfirmationPath(m.pendingProposed, ctx); err != nil {
+		return "", err
+	}
+	return m.reconnectToken, nil
+}
+
 func (m *Manager) runPreconditionsLocked() error {
 	for _, p := range m.preconditions {
 		if p == nil {

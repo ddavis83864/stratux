@@ -439,6 +439,117 @@ func TestWifiAdminAPI_ConfirmReconnection_ValidPathSucceeds(t *testing.T) {
 	}
 }
 
+// statusRequestWithPath builds a GET /getWifiAdminStatus request carrying
+// the same ConnContext-derived LocalAddr/RemoteAddr pair a real request
+// would have, mirroring confirmRequestWithPath above.
+func statusRequestWithPath(localAddr, remoteAddr string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/getWifiAdminStatus", nil)
+	if localAddr != "" {
+		host, portStr, _ := net.SplitHostPort(localAddr)
+		port := 0
+		fmt.Sscanf(portStr, "%d", &port)
+		req = req.WithContext(context.WithValue(req.Context(), connLocalAddrContextKey, &net.TCPAddr{IP: net.ParseIP(host), Port: port}))
+	}
+	req.RemoteAddr = remoteAddr
+	return req
+}
+
+// TestHandleGetWifiAdminStatusRequest_RecoversTokenForValidPath is the
+// HTTP-level proof of the token-recovery fix for the real failure this
+// mission root-caused: a client whose original /applyWifiAdminSettings
+// response never arrived (lost to the very AP reload it describes) can
+// still obtain the reconnect token, by simply asking
+// /getWifiAdminStatus again once actually on the new network - without
+// ever having seen that original response.
+func TestHandleGetWifiAdminStatusRequest_RecoversTokenForValidPath(t *testing.T) {
+	withTestWifiAdminManager(t)
+	// Deliberately discard the reconnect token this helper returns - the
+	// point of this test is that a client can recover it WITHOUT ever
+	// having captured that original apply response.
+	_, proposed := previewAndApplyForConfirmTest(t, "recovered-ssid")
+
+	req := statusRequestWithPath(proposed.IPAddress+":80", "192.168.10.77:54321")
+	w := httptest.NewRecorder()
+	handleGetWifiAdminStatusRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var resp wifiAdminStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if resp.ReconnectToken == "" {
+		t.Fatal("expected a non-empty recovered reconnectToken for a request arriving via the new AP's own path")
+	}
+
+	// The recovered token must actually work to confirm.
+	confirmReq := confirmRequestWithPath(resp.ReconnectToken, proposed.IPAddress+":80", "192.168.10.77:54321")
+	confirmW := httptest.NewRecorder()
+	handleConfirmWifiAdminReconnectionRequest(confirmW, confirmReq)
+	if confirmW.Code != http.StatusOK {
+		t.Errorf("confirm using recovered token: status = %d, want 200: %s", confirmW.Code, confirmW.Body.String())
+	}
+}
+
+// TestHandleGetWifiAdminStatusRequest_OmitsTokenForWrongPath proves the
+// recovery above is never a weaker substitute for path validation: a
+// request that does NOT prove it arrived via the newly-applied AP gets no
+// token at all, exactly as if this field did not exist.
+func TestHandleGetWifiAdminStatusRequest_OmitsTokenForWrongPath(t *testing.T) {
+	withTestWifiAdminManager(t)
+	_, _ = previewAndApplyForConfirmTest(t, "still-old-network-ssid")
+
+	cases := []struct {
+		name      string
+		localAddr string
+		remote    string
+	}{
+		{"loopback-local", "127.0.0.1:80", "192.168.10.77:54321"},
+		{"unrelated-remote-subnet", "192.168.10.1:80", "203.0.113.5:54321"},
+		{"missing-connctext", "", "192.168.10.77:54321"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := statusRequestWithPath(tc.localAddr, tc.remote)
+			w := httptest.NewRecorder()
+			handleGetWifiAdminStatusRequest(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var resp wifiAdminStatusResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if resp.ReconnectToken != "" {
+				t.Errorf("expected no reconnectToken for an unproven path, got %q", resp.ReconnectToken)
+			}
+			if !resp.ReconnectTokenAvailable {
+				t.Error("ReconnectTokenAvailable should still be true - a token exists, this request just didn't prove it should receive it")
+			}
+		})
+	}
+}
+
+// TestHandleGetWifiAdminStatusRequest_OmitsTokenWhenNonePending proves
+// the field is simply absent (never an empty-but-present string, and
+// never populated) when there is no outstanding transaction at all - the
+// common case for every ordinary status poll.
+func TestHandleGetWifiAdminStatusRequest_OmitsTokenWhenNonePending(t *testing.T) {
+	withTestWifiAdminManager(t)
+	req := statusRequestWithPath("192.168.10.1:80", "192.168.10.77:54321")
+	w := httptest.NewRecorder()
+	handleGetWifiAdminStatusRequest(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	// Deliberately `"reconnectToken":` (with the colon) rather than just
+	// "reconnectToken" - the always-present reconnectTokenAvailable field
+	// contains that substring too.
+	if strings.Contains(w.Body.String(), `"reconnectToken":`) {
+		t.Errorf("expected no reconnectToken field at all (omitempty) when idle: %s", w.Body.String())
+	}
+}
+
 func TestWifiAdminAPI_CancelAndRollbackEndpoints(t *testing.T) {
 	withTestWifiAdminManager(t)
 	proposed := wifiadmin.DefaultConfig()
