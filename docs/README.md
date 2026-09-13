@@ -11,6 +11,17 @@ hardware integration). User-facing how-tos live in the
   patterns, fusion and output, the web UI. Read this first.
 - **[building.md](building.md)** — build targets, CI/release workflows, repo organization, and
   the OTA update process.
+- **[release-process.md](release-process.md)** — versioning scheme, the tag/build/publish
+  pipeline, and the release-candidate-to-stable promotion plan.
+  **[releases/](releases/)** holds each tagged release's own notes and validation evidence.
+- **[upgrade-guide.md](upgrade-guide.md)**, **[clean-install-guide.md](clean-install-guide.md)**,
+  **[rollback-recovery.md](rollback-recovery.md)**,
+  **[artifact-verification.md](artifact-verification.md)** — the practical how-to guides for
+  installing, upgrading, verifying, and recovering a release.
+- **[hardware-compatibility.md](hardware-compatibility.md)** — release-scoped hardware
+  requirement summary (full detail in [hardware/README.md](hardware/README.md)).
+- **[known-limitations.md](known-limitations.md)** — release-engineering limitations, supplementing
+  the [README's aviation disclaimer](../README.md#safety-certification-and-operational-disclaimer).
 - **[dev-setup.md](dev-setup.md)** — setting up a development environment (remote on a Pi, or
   local Linux).
 - **[readiness-and-time-trust.md](readiness-and-time-trust.md)** — the unified component health
