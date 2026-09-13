@@ -45,9 +45,11 @@ GPS/AHRS limitations, and the no-certification statement).
   Raspberry Pi OS install. If this matters for your deployment, regenerate host keys
   yourself after first boot (`ssh-keygen -A` after removing the existing host key files, then
   reboot) — this is not currently automated.
-- **Reproducibility is functional, not bit-for-bit**, unless the release notes for a specific
-  build explicitly state otherwise with the exact comparison evidence. See that build's own
-  release notes for what was actually compared.
+- **Reproducibility is functional, not bit-for-bit.** Two independent builds of this release
+  from the same commit produced content-identical files except for one deliberately
+  timestamped cache-busting file (`stratux.appcache`); the packages themselves differ only
+  in incidental build-time file-modification metadata, not behavior. See this release's own
+  notes (`docs/releases/v2.0.0-rc1.md`) for the exact comparison evidence.
 - **Image build performance/timing is untested at scale.** The `pi-gen`-based image build
   (`image_build/`) is this project's own established mechanism, but this release is the
   first time it has been exercised as part of a formal, checksum-verified release process.
