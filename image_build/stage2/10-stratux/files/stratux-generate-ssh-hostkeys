@@ -31,15 +31,40 @@
 # already-configured device's OTA upgrade never installs or runs this at
 # all, so it can never be a vector for touching an existing device's host
 # keys.
+#
+# Test hooks - unset in every real (image/device) invocation, in which
+# case every path and command below resolves exactly as if these hooks
+# did not exist at all:
+#   STRATUX_TEST_ROOT       prefixes every filesystem path this script
+#                           touches, so a test can point the whole script
+#                           at a throwaway temp directory instead of the
+#                           real root filesystem.
+#   STRATUX_TEST_FORCE_OVERLAY  "1" or "0", overrides the overlay-active
+#                           detection so a test can exercise both branches
+#                           deterministically without a real overlay
+#                           filesystem or root privileges.
+#   STRATUX_TEST_OVERLAYCTL replaces /sbin/overlayctl, so a test can
+#                           supply a stub instead of performing a real
+#                           mount -o remount.
+# See scripts/test-ssh-hostkeys.sh, which sets these and nothing else.
+
+ROOT="${STRATUX_TEST_ROOT:-}"
+OVERLAYCTL="${STRATUX_TEST_OVERLAYCTL:-/sbin/overlayctl}"
 
 overlay_active() {
+    if [ -n "${STRATUX_TEST_FORCE_OVERLAY:-}" ]; then
+        [ "$STRATUX_TEST_FORCE_OVERLAY" = "1" ]
+        return $?
+    fi
     [ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = "overlay" ]
 }
 
 if overlay_active; then
-    ETC_SSH=/overlay/robase/etc/ssh
+    ETC_SSH="${ROOT}/overlay/robase/etc/ssh"
+    KEYGEN_PREFIX="${ROOT}/overlay/robase"
 else
-    ETC_SSH=/etc/ssh
+    ETC_SSH="${ROOT}/etc/ssh"
+    KEYGEN_PREFIX="${ROOT}"
 fi
 
 # Fast, read-only check performed BEFORE ever unlocking the overlay: if
@@ -55,16 +80,22 @@ if [ -s "$ETC_SSH/ssh_host_rsa_key" ] && \
 fi
 
 if overlay_active; then
-    /sbin/overlayctl unlock
+    "$OVERLAYCTL" unlock
     # ssh-keygen -A's own "-f prefix" support (documented in ssh-keygen(1):
     # "If -f has also been specified, its argument is used as a prefix to
     # the default path for the resulting host key files") is exactly the
     # mechanism this needs to target the persistent lower layer directly,
     # with no separate copy/move step and no window where a key exists
     # only in the volatile overlay.
-    ssh-keygen -A -v -f /overlay/robase
+    ssh-keygen -A -v -f "$KEYGEN_PREFIX"
     sync
-    /sbin/overlayctl lock
+    "$OVERLAYCTL" lock
 else
-    ssh-keygen -A -v
+    # An empty -f prefix (the real-device, non-test default: KEYGEN_PREFIX
+    # is "" when STRATUX_TEST_ROOT is unset) is equivalent to omitting -f
+    # entirely - ssh-keygen(1) uses it only as a path prefix, and prepending
+    # an empty string is a no-op - so this is identical to plain
+    # `ssh-keygen -A -v` on a real device, while still letting a test point
+    # KEYGEN_PREFIX at a temp directory.
+    ssh-keygen -A -v -f "$KEYGEN_PREFIX"
 fi
