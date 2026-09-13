@@ -9,6 +9,14 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# Publishing a release requires write access to repository contents -
+# many repos now default GITHUB_TOKEN to read-only, which otherwise
+# fails softprops/action-gh-release with "403: Resource not accessible
+# by integration" (confirmed directly by running this workflow before
+# this permissions block was added).
+permissions:
+  contents: write
+
 jobs:
   build_image:
     runs-on: ubuntu-24.04-arm
@@ -18,23 +26,131 @@ jobs:
         with:
           fetch-depth: 0 # fetch the full repository, necessary as the latest tag is used during the build of the deb
 
+      - name: Verify checkout matches the pushed tag (release provenance)
+        run: |
+          actual="$(git rev-parse HEAD)"
+          echo "releaseCommit=$actual"
+          echo "releaseTag=${GITHUB_REF_NAME}"
+          # On a workflow_dispatch run (no tag push), there is nothing to
+          # cross-check against - this only guards the tag-push trigger,
+          # where the checked-out commit MUST be the exact commit the
+          # pushed tag names, never a moved/retagged reference.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tagged="$(git rev-list -n1 "${GITHUB_REF_NAME}")"
+            if [ "$actual" != "$tagged" ]; then
+              echo "::error::checked out $actual but tag ${GITHUB_REF_NAME} names $tagged - refusing to build release artifacts from the wrong commit"
+              exit 1
+            fi
+          fi
+
       - name: Update submodule
         run: git submodule update --init --recursive
+
+      - name: Resolve version string
+        id: version
+        run: echo "version=$(./scripts/getversion.sh)" >> "$GITHUB_OUTPUT"
 
       - name: build.sh
         run: |
           cd image_build
           ./build.sh
 
-      - name: Pi Image
-        uses: softprops/action-gh-release@v2
-        with:
-          files: image_build/pi-gen/deploy/*
-          draft: true
+      - name: Locate and canonically rename build artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p release-out
 
-      - name: Debian Package
+          deb_src=$(find image_build/pi-gen/stratux -maxdepth 1 -name '*.deb' | head -1)
+          if [ -z "$deb_src" ]; then
+            echo "::error::no .deb found under image_build/pi-gen/stratux"
+            exit 1
+          fi
+          deb_out="release-out/stratux-${VERSION}-arm64.deb"
+          cp "$deb_src" "$deb_out"
+
+          # pi-gen's own "export-image" stage (image_build/pi-gen/stage2/
+          # ...05-finalise) zips the raw .img it produces - confirmed by
+          # actually running this build, not assumed - so extract that
+          # single .img and recompress it as .img.xz ourselves: smaller
+          # than zip's deflate for this kind of content, and the far
+          # more common format in the Raspberry Pi ecosystem generally.
+          zip_src=$(find image_build/pi-gen/deploy -maxdepth 1 -name '*.zip' | head -1)
+          if [ -z "$zip_src" ]; then
+            echo "::error::no .zip found under image_build/pi-gen/deploy (pi-gen's own export-image output)"
+            exit 1
+          fi
+          extract_dir=$(mktemp -d)
+          unzip -q "$zip_src" -d "$extract_dir"
+          raw_img=$(find "$extract_dir" -maxdepth 1 -name '*.img' | head -1)
+          if [ -z "$raw_img" ]; then
+            echo "::error::no .img found inside $zip_src"
+            exit 1
+          fi
+          img_out="release-out/stratux-${VERSION}.img.xz"
+          xz -T0 -c "$raw_img" > "$img_out"
+          rm -rf "$extract_dir"
+
+          echo "deb=$deb_out" >> "$GITHUB_OUTPUT"
+          echo "img=$img_out" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        # go run needs the project's own containerized Go toolchain -
+        # the bare runner has no Go installed directly (everything else
+        # in this workflow/ci.yml routes through docker_run.sh/the "cli"
+        # compose service for exactly this reason). release-out/ is
+        # under the bind-mounted repo root (/data inside the
+        # container), so the output file persists back to the runner
+        # filesystem after the container exits. The version/commit
+        # values are GitHub Actions expressions, substituted into the
+        # command string before it ever reaches the runner's shell - so
+        # they arrive as plain literals inside the container's own env
+        # assignment, with no host-side variable indirection needed.
+        env:
+          SBOM_VERSION: ${{ steps.version.outputs.version }}
+          SBOM_COMMIT: ${{ github.sha }}
+        run: |
+          MY_UID="$(id -u)" MY_GID="$(id -g)" ./docker_run.sh \
+            "cd data && STRATUX_SBOM_VERSION='$SBOM_VERSION' STRATUX_SBOM_COMMIT='$SBOM_COMMIT' go run ./scripts/gensbom > release-out/stratux-${SBOM_VERSION}.sbom.json"
+
+      - name: Generate build provenance
+        env:
+          STRATUX_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          STRATUX_TAG: ${{ github.ref_name }}
+          STRATUX_RUN_ID: ${{ github.run_id }}
+          STRATUX_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          STRATUX_RUNNER_ARCH: ${{ runner.arch }}
+          STRATUX_RUNNER_OS: ${{ runner.os }}
+        run: |
+          ./scripts/genprovenance.sh \
+            "${{ steps.artifacts.outputs.deb }}" \
+            "${{ steps.artifacts.outputs.img }}" \
+            > "release-out/stratux-${{ steps.version.outputs.version }}.provenance.json"
+
+      - name: Generate checksum manifest
+        run: |
+          cd release-out
+          sha256sum *.deb *.img.xz *.sbom.json *.provenance.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish draft release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            image_build/pi-gen/stratux/*.deb
+          # Pinned explicitly (rather than left to the action's own
+          # ref-based inference) so this step behaves identically
+          # whether triggered by an actual tag push or a manual
+          # workflow_dispatch test run on a branch - github.ref_name is
+          # the tag name on a real trigger, and a harmless/inert branch
+          # name on a workflow_dispatch test (which resolves to no
+          # existing release either way, since real releases are always
+          # tag-named).
+          tag_name: ${{ github.ref_name }}
           draft: true
+          prerelease: true
+          files: |
+            release-out/*.deb
+            release-out/*.img.xz
+            release-out/SHA256SUMS
+            release-out/*.sbom.json
+            release-out/*.provenance.json

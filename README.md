@@ -35,8 +35,8 @@ adds those on top. If you just want the well-established, widely deployed baseli
 experience, the upstream [`stratux/stratux`](https://github.com/stratux/stratux) project and
 its [wiki](https://github.com/stratux/stratux/wiki) remain the right starting point. Either
 way, read [Installation and getting started](#installation-and-getting-started) below before
-you build anything — **this fork does not currently publish a ready-made image or package
-of its own** (see that section for why, and the verified build path).
+you build anything — this fork publishes tagged release candidates (see that section for
+current status and the verified build-it-yourself path).
 
 ## Table of contents
 
@@ -131,10 +131,13 @@ having personally validated every variant of it.
 
 ## Installation and getting started
 
-**This fork does not currently publish a pre-built release image, `.deb` package, or
-GitHub Release of its own.** `git tag`/`git describe` versioning (currently `v2.0-pre5`) and
-a `release.yml` workflow capable of producing a full Pi SD-card image both exist in this
-repository, but no release has been cut from this fork's own history — do not use an
+**This fork publishes tagged, checksummed release candidates** as GitHub Releases — see the
+[Releases page](https://github.com/ddavis83864/stratux/releases) for the latest one,
+[docs/release-process.md](docs/release-process.md) for the versioning scheme and the
+release-candidate-to-stable promotion plan, and
+[docs/artifact-verification.md](docs/artifact-verification.md) for how to verify a downloaded
+`.deb` or SD-card image before trusting it. A release candidate has passed automated and
+real-hardware validation but has not yet completed its acceptance/soak period. Do not use an
 upstream `stratux/stratux` release and expect this fork's enhancements to be present; it
 will be the unmodified upstream build.
 
