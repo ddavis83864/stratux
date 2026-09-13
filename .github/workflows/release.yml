@@ -62,13 +62,27 @@ jobs:
           deb_out="release-out/stratux-${VERSION}-arm64.deb"
           cp "$deb_src" "$deb_out"
 
-          img_src=$(find image_build/pi-gen/deploy -maxdepth 1 -name '*.img.xz' | head -1)
-          if [ -z "$img_src" ]; then
-            echo "::error::no .img.xz found under image_build/pi-gen/deploy"
+          # pi-gen's own "export-image" stage (image_build/pi-gen/stage2/
+          # ...05-finalise) zips the raw .img it produces - confirmed by
+          # actually running this build, not assumed - so extract that
+          # single .img and recompress it as .img.xz ourselves: smaller
+          # than zip's deflate for this kind of content, and the far
+          # more common format in the Raspberry Pi ecosystem generally.
+          zip_src=$(find image_build/pi-gen/deploy -maxdepth 1 -name '*.zip' | head -1)
+          if [ -z "$zip_src" ]; then
+            echo "::error::no .zip found under image_build/pi-gen/deploy (pi-gen's own export-image output)"
+            exit 1
+          fi
+          extract_dir=$(mktemp -d)
+          unzip -q "$zip_src" -d "$extract_dir"
+          raw_img=$(find "$extract_dir" -maxdepth 1 -name '*.img' | head -1)
+          if [ -z "$raw_img" ]; then
+            echo "::error::no .img found inside $zip_src"
             exit 1
           fi
           img_out="release-out/stratux-${VERSION}.img.xz"
-          cp "$img_src" "$img_out"
+          xz -T0 -c "$raw_img" > "$img_out"
+          rm -rf "$extract_dir"
 
           echo "deb=$deb_out" >> "$GITHUB_OUTPUT"
           echo "img=$img_out" >> "$GITHUB_OUTPUT"
