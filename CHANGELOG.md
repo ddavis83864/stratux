@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to this fork are documented here. This file starts with `v2.0.0-rc1`,
+All notable changes to this fork are documented here. This file starts with `v2.0.0-rc2`,
 the fork's first formal, tagged, independently-verifiable release — everything merged before
 that tag is listed once, below, as this release's starting inventory rather than as a
 sequence of prior "releases" that never formally existed.
@@ -8,7 +8,7 @@ sequence of prior "releases" that never formally existed.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/); versions follow the
 scheme described in [docs/release-process.md](docs/release-process.md).
 
-## [v2.0.0-rc1] — release candidate
+## [v2.0.0-rc2] — release candidate
 
 Base: `upstream/stratux` `v2.0-pre5` (`7398769595c0d41fef489267294508b1264fc5f7`). Everything
 below is this fork's own work on top of that base, merged into `master` via PRs #1–#22
@@ -44,7 +44,7 @@ below is this fork's own work on top of that base, merged into `master` via PRs 
   is deliberately not part of this release candidate. No `fisbcache` code, settings section,
   dashboard page, or documentation from PR #15 is present in this release — verified by
   commit-reachability and file-tree inspection, not merely by PR state (see
-  `docs/releases/v2.0.0-rc1.md` for the exact verification).
+  `docs/releases/v2.0.0-rc2.md` for the exact verification).
 - Internet-sourced weather of any kind (this fork adds no internet-weather client).
 - LCD/e-paper display support.
 - Carbon-monoxide hardware integration (not implemented in this codebase).

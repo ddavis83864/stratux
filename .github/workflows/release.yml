@@ -48,7 +48,29 @@ jobs:
 
       - name: Resolve version string
         id: version
-        run: echo "version=$(./scripts/getversion.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(./scripts/getversion.sh)" >> "$GITHUB_OUTPUT"
+          # Published asset filenames use a SEPARATE, deliberately
+          # GitHub-safe form - confirmed directly by publishing a real
+          # release: GitHub silently rewrites "~" to "." in uploaded
+          # asset filenames (the release's own display "label" keeps
+          # the original string, but the actual downloadable filename
+          # does not), which broke SHA256SUMS's own filename references
+          # the moment it was checked against what actually got
+          # published. The git tag itself is already GitHub-safe (no
+          # "~" - git tag names can't contain one at all) and
+          # human-readable, so filenames derive from it instead of from
+          # getversion.sh's own (Debian-correct, tilde-bearing) output.
+          # A workflow_dispatch test run (no tag) falls back to the
+          # getversion.sh string as-is, which never contains "~" unless
+          # building from an actual RC tag - moot for a real release,
+          # since real releases are always tag-triggered.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            filename_version="${GITHUB_REF_NAME#v}"
+          else
+            filename_version="$(./scripts/getversion.sh)"
+          fi
+          echo "filenameVersion=$filename_version" >> "$GITHUB_OUTPUT"
 
       - name: build.sh
         run: |
@@ -59,7 +81,7 @@ jobs:
         id: artifacts
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ steps.version.outputs.filenameVersion }}"
           mkdir -p release-out
 
           deb_src=$(find image_build/pi-gen/stratux -maxdepth 1 -name '*.deb' | head -1)
@@ -110,9 +132,10 @@ jobs:
         env:
           SBOM_VERSION: ${{ steps.version.outputs.version }}
           SBOM_COMMIT: ${{ github.sha }}
+          SBOM_FILENAME_VERSION: ${{ steps.version.outputs.filenameVersion }}
         run: |
           MY_UID="$(id -u)" MY_GID="$(id -g)" ./docker_run.sh \
-            "cd data && STRATUX_SBOM_VERSION='$SBOM_VERSION' STRATUX_SBOM_COMMIT='$SBOM_COMMIT' go run ./scripts/gensbom > release-out/stratux-${SBOM_VERSION}.sbom.json"
+            "cd data && STRATUX_SBOM_VERSION='$SBOM_VERSION' STRATUX_SBOM_COMMIT='$SBOM_COMMIT' go run ./scripts/gensbom > release-out/stratux-${SBOM_FILENAME_VERSION}.sbom.json"
 
       - name: Generate build provenance
         env:
@@ -126,7 +149,7 @@ jobs:
           ./scripts/genprovenance.sh \
             "${{ steps.artifacts.outputs.deb }}" \
             "${{ steps.artifacts.outputs.img }}" \
-            > "release-out/stratux-${{ steps.version.outputs.version }}.provenance.json"
+            > "release-out/stratux-${{ steps.version.outputs.filenameVersion }}.provenance.json"
 
       - name: Generate checksum manifest
         run: |

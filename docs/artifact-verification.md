@@ -14,6 +14,15 @@ install it. This is how.
 | `stratux-<version>.provenance.json` | Build provenance: repository, tag, exact commit, workflow run, runner architecture, toolchain versions. |
 | Release notes | This release's own `docs/releases/<version>.md`, also in the GitHub Release description. |
 
+`<version>` in every published filename is the git tag with its leading `v` stripped (e.g.
+`2.0.0-rc1`) - deliberately **not** the Debian package's own internal version string
+(`2.0.0~rc1`, with a `~`). GitHub silently rewrites `~` to `.` in uploaded asset filenames
+(confirmed by publishing a real release), which would otherwise make `SHA256SUMS`'s own
+filename references not match what actually got published - so filenames use the
+already-GitHub-safe git tag instead. `dpkg-deb -f <file> Version` on the downloaded package
+will still correctly report `2.0.0~rc1` - that mismatch between the filename and the
+package's own internal version is expected, not a defect.
+
 ## 1. Verify the checksums
 
 ```sh
@@ -43,8 +52,8 @@ it isn't.
 ## 3. Verify the package
 
 ```sh
-dpkg-deb -f stratux-2.0.0~rc1-arm64.deb Version Architecture
-dpkg-deb -x stratux-2.0.0~rc1-arm64.deb /tmp/stratux-extract
+dpkg-deb -f stratux-2.0.0-rc1-arm64.deb Version Architecture
+dpkg-deb -x stratux-2.0.0-rc1-arm64.deb /tmp/stratux-extract
 strings /tmp/stratux-extract/opt/stratux/bin/stratuxrun | grep -o 'vcs.revision=[0-9a-f]\{40\}'
 ```
 
@@ -53,9 +62,9 @@ The embedded `vcs.revision` must equal the exact commit from step 2.
 ## 4. Verify the image (structural check, no private data expected)
 
 ```sh
-xz -t stratux-2.0.0~rc1.img.xz   # integrity of the compressed stream
-xz -d -k stratux-2.0.0~rc1.img.xz
-fdisk -l stratux-2.0.0~rc1.img   # confirm partition table looks sane
+xz -t stratux-2.0.0-rc1.img.xz   # integrity of the compressed stream
+xz -d -k stratux-2.0.0-rc1.img.xz
+fdisk -l stratux-2.0.0-rc1.img   # confirm partition table looks sane
 ```
 
 See [clean-install-guide.md](clean-install-guide.md) for writing it to media, and this
@@ -65,7 +74,7 @@ before publication.
 ## 5. Verify the SBOM
 
 ```sh
-python3 -m json.tool stratux-2.0.0~rc1.sbom.json > /dev/null   # valid JSON
+python3 -m json.tool stratux-2.0.0-rc1.sbom.json > /dev/null   # valid JSON
 ```
 
 The SBOM lists Go modules, native library dependencies, and included binaries. It should
