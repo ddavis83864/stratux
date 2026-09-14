@@ -134,6 +134,38 @@ legitimate host-key change).
   cloned spare, regenerate its host keys (see the manual procedure above) before ever running
   it alongside the original.
 
+## A defect physical validation found (and fixed) before this shipped
+
+Automated tests alone did not prove this design worked: `scripts/test-ssh-hostkeys.sh` stubs
+`overlayctl` out entirely, so it only ever proved the generator script's own control flow was
+correct, never that the real `overlayctl unlock`/`lock` mechanism actually succeeds on a real
+device. Booting the corrected image on real hardware found that it didn't, every time:
+
+`stratux-ssh-hostkeys.service` failed on first boot with `mount: /overlay/robase: mount point
+is busy` the moment it tried to relock the overlay after generating keys — key generation
+itself had already succeeded (keys existed at both `/overlay/robase/etc/ssh/...` and the live
+`/etc/ssh/...` view, confirmed by matching device/inode numbers and content hashes, proving the
+overlay's live/durable path relationship itself works exactly as designed), but the unit still
+ended up `failed` because the final `overlayctl lock` call errored out.
+
+Root cause: `/overlay/robase` is a bind mount of the same block device that `init-overlay`'s own
+`pivot_root` leaves separately mounted at `/overlay/pivot` (the relocated old root). `overlayctl`
+locked/unlocked it with a plain `mount -o remount,ro|rw` — but per `mount(8)`, changing a bind
+mount's own flags requires including `bind` in the remount, otherwise the kernel treats the
+request as targeting the whole shared superblock. Going to read-write plain-remounts the whole
+superblock (works fine, and must stay this way — a bind remount cannot escalate a mount that
+inherited a locked-read-only flag from a still-read-only source, which matters on a device's
+very first boot). Going back to read-only that same way conflicts with `/overlay/pivot` still
+holding a live reference to that superblock, and fails `EBUSY`. Fixed by using a bind remount
+specifically for the read-only direction (`overlayctl`'s `lock`, and `enable`/`disable`'s own
+internal re-lock step) while leaving the read-write direction a plain remount. Confirmed on real
+hardware: first boot completes, keys generate and persist, and a subsequent reboot leaves them
+unchanged.
+
+This fix lives in `overlayctl` itself (used by every other caller of `overlayctl unlock`/`lock`
+in this codebase, not just this feature) — see `scripts/test-overlayctl-remount.sh` for the
+regression coverage.
+
 ## Not implemented (deliberately, this release)
 
 - **No automatic key-rotation dashboard control.** Regenerating host keys on an existing,
