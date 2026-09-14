@@ -166,56 +166,44 @@ This fix lives in `overlayctl` itself (used by every other caller of `overlayctl
 in this codebase, not just this feature) — see `scripts/test-overlayctl-remount.sh` for the
 regression coverage.
 
-## A second physical finding: first-boot entropy availability
+## A second physical finding, and a correction to the original diagnosis
 
-Repeating physical validation with the overlay fix in place surfaced a second issue: on a
-genuinely fresh clean-install boot, `ssh.service` sometimes did not become reachable for many
-minutes, while every other subsystem (the dashboard, DNS, GDL90/traffic ports) came up normally
-and stayed healthy the whole time. This is consistent with `ssh-keygen -A`'s underlying
-`getrandom()` call blocking until the kernel's CRNG has enough real entropy to seed itself - a
-known characteristic of embedded ARM boards early in their very first boot, before their
-hardware RNG has been read from even once. This project's base image ships `rng-tools` (which
-feeds the board's own hardware RNG into the kernel's entropy pool) but leaves it disabled, the
-same as stock Raspberry Pi OS - confirmed directly: `systemctl is-active rng-tools` reported
-`inactive` on the affected device.
+Repeating physical validation with the overlay fix in place surfaced a second issue: on the very
+first bare-metal boot of a genuinely fresh clean-install card, `ssh.service` sometimes did not
+become reachable for many minutes, while every other subsystem (the dashboard, DNS, GDL90/traffic
+ports) came up normally and stayed healthy the whole time.
 
-This was not seen on any *subsequent* boot of an already-initialized device (where no key
-generation - and therefore no `getrandom()` call - happens at all), only on the very first boot
-of a freshly-flashed card, where it matters most for the fix this document describes.
+The first hypothesis was entropy starvation: `ssh-keygen -A`'s underlying `getrandom()` call
+blocking until the kernel's CRNG has enough real entropy to seed itself, a known characteristic of
+embedded ARM boards very early in their first boot. This project's base image ships `rng-tools`
+support but doesn't install it by default, so `rng-tools5` was installed and enabled
+(`image_build/stage2/10-stratux/01-run.sh`), and `stratux-ssh-hostkeys.service` was given an
+explicit `After=` ordering on the entropy daemon so `ssh-keygen -A` could never race its startup.
 
-**This is a strong, evidence-backed hypothesis rather than something inspected line-by-line at
-the kernel level** — the affected boot's own `ssh-keygen` process could not be examined directly
-while it was blocking, precisely because that same block was what made SSH unreachable. The fix
-(enabling `rng-tools`) is a standard, low-risk mitigation for exactly this class of problem
-regardless of the precise internal mechanism, and does not depend on the hypothesis being exactly
-right to be worth shipping.
+**Re-testing on real hardware with both of those fixes in place found the exact same delay,
+unchanged.** That result disproves entropy starvation as the explanation - if it were the cause,
+guaranteeing the entropy daemon starts first would have measurably helped. Capturing
+`systemd-analyze critical-chain`, monotonic `journalctl` timestamps, and the state of
+`/var/grow_root_part` and the root partition's own size on a boot immediately following the delay
+found the real cause: this project's pre-existing, unrelated first-boot behavior
+(`image_build/stage2/10-stratux/files/init-overlay`) grows the root partition to fill the card and
+then unconditionally `reboot -f`s, every time `/var/grow_root_part` is still present - which it
+always is on a device's true first boot, regardless of anything this fix changes. A `resize2fs` of
+a large partition on a real SD card is genuinely slow, and the delay observed was that first-boot
+grow-and-reboot cycle running its course, not `stratux-ssh-hostkeys.service` hanging. A boot
+captured immediately afterward, with `/var/grow_root_part` already gone and the root partition
+already at its full grown size, completed in 9.4 seconds total -
+`stratux-ssh-hostkeys.service` included, ordered correctly after `rngd.service`, `ssh.service`
+listening within the same second, zero failed units.
 
-Fixed by installing `rng-tools5` and enabling whichever unit it provides in the image build
-(`image_build/stage2/10-stratux/01-run.sh`), so hardware entropy starts feeding the kernel from
-as early in boot as possible. (A first attempt just enabled `rng-tools` without installing
-anything first, on the mistaken belief - based on `systemctl is-active rng-tools` returning
-`inactive` rather than an error on the live device - that the package was already present but
-disabled; `systemctl is-active` returns exactly the same `inactive` for a unit that doesn't
-exist at all, so that check proved nothing, and the actual image build failed outright with
-"unit rng-tools.service does not exist" - caught by CI before it reached hardware again.)
-
-Re-testing on real hardware with `rng-tools5` installed and enabled found the same multi-minute
-delay recurred unchanged. The most likely remaining explanation: `stratux-ssh-hostkeys.service`
-had no ordering relationship with the entropy daemon at all - both are pulled in independently by
-`multi-user.target`, so `ssh-keygen -A` could start racing the entropy daemon's own startup and
-still end up blocking on entropy that daemon simply hadn't had a chance to provide yet. Added
-`After=rng-tools.service rng-tools5.service rngd.service` to `stratux-ssh-hostkeys.service`
-(unrelated names are harmless no-ops in `After=` when an image doesn't ship one of them, so this
-needs no dynamic discovery the way enabling the unit at build time did).
-
-**This ordering fix has not yet been independently re-confirmed on hardware as of this writing**
-- the owner ended a multi-minute wait on the affected test boot to move the validation forward
-rather than let it run indefinitely, so the exact race was never caught with direct timing
-evidence (e.g. comparing `journalctl`'s own monotonic timestamps for the entropy daemon against
-`stratux-ssh-hostkeys.service`). If a future physical test still shows the same delay with this
-ordering in place, the entropy hypothesis itself should be treated as unconfirmed and a different
-root cause investigated - reaching that certainty needs direct console/serial access to the
-device while it is still blocking, which this validation did not have.
+This means the delay is **not a defect in this fix** and is **out of this PR's own scope** to
+correct - it is a pre-existing characteristic of `init-overlay`'s own partition-growth mechanism,
+present before this fix existed and unrelated to SSH host keys. The `rng-tools5` install and the
+`After=` ordering are kept anyway: guaranteeing hardware entropy is available before this security-
+sensitive key generation runs is independently good practice, verified as harmless (CI green,
+9.4-second clean boot with both in place), even though neither was the actual fix for the delay
+originally observed. A device's first-ever boot after flashing a clean-install image should be
+expected to take longer than any subsequent boot, for reasons that have nothing to do with SSH.
 
 ## Not implemented (deliberately, this release)
 
