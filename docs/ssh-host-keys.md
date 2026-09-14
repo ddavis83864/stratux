@@ -190,8 +190,14 @@ while it was blocking, precisely because that same block was what made SSH unrea
 regardless of the precise internal mechanism, and does not depend on the hypothesis being exactly
 right to be worth shipping.
 
-Fixed by enabling `rng-tools` in the image build (`image_build/stage2/10-stratux/01-run.sh`), so
-hardware entropy starts feeding the kernel from as early in boot as possible.
+Fixed by installing `rng-tools5` and enabling whichever unit it provides in the image build
+(`image_build/stage2/10-stratux/01-run.sh`), so hardware entropy starts feeding the kernel from
+as early in boot as possible. (A first attempt just enabled `rng-tools` without installing
+anything first, on the mistaken belief - based on `systemctl is-active rng-tools` returning
+`inactive` rather than an error on the live device - that the package was already present but
+disabled; `systemctl is-active` returns exactly the same `inactive` for a unit that doesn't
+exist at all, so that check proved nothing, and the actual image build failed outright with
+"unit rng-tools.service does not exist" - caught by CI before it reached hardware again.)
 
 ## Not implemented (deliberately, this release)
 

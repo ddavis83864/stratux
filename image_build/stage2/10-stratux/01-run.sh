@@ -53,12 +53,24 @@ on_chroot << EOF
     # entropy pool from early boot. Physical validation of a genuinely
     # fresh clean-install boot found ssh-keygen -A blocking for many
     # minutes (dashboard and every other service fully up the whole time -
-    # only key generation, which needs real random bytes, was stuck) -
-    # this project's base image ships rng-tools but leaves it disabled by
-    # default, same as stock Raspberry Pi OS. Enabling it directly serves
-    # stratux-ssh-hostkeys.service's own first-boot reliability - see
-    # docs/ssh-host-keys.md for the physical evidence.
-    systemctl enable rng-tools
+    # only key generation, which needs real random bytes, was stuck).
+    # This project's base image does not install it by default (an
+    # earlier attempt to just "systemctl enable rng-tools" without
+    # installing it first failed the build outright - "unit rng-tools.
+    # service does not exist" - caught by CI, not assumed). The exact
+    # unit name a given Debian release installs it under has changed
+    # across versions (rng-tools / rng-tools5 / rng-tools-debian), so
+    # this discovers whatever unit the installed package actually
+    # provides rather than hardcoding a name that could silently stop
+    # matching on a future base-image bump.
+    apt install --yes rng-tools5
+    RNGUNIT="\$(systemctl list-unit-files 'rng*' --no-legend | awk '{print \$1}' | head -1)"
+    if [ -n "\$RNGUNIT" ]; then
+        systemctl enable "\$RNGUNIT"
+    else
+        echo "ERROR: rng-tools5 installed but no rng*.service unit found to enable" >&2
+        exit 1
+    fi
     # This is usually done by the console-setup service that takes quite long of first boot..
     /lib/console-setup/console-setup.sh
 
