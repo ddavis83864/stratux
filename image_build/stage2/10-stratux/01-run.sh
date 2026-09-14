@@ -48,6 +48,17 @@ on_chroot << EOF
     # stratux-ssh-hostkeys.service is enabled further below, once its unit
     # file and script have actually been installed into the image (systemctl
     # enable needs the unit file to exist first).
+
+    # rng-tools feeds this hardware's own RNG output into the kernel's
+    # entropy pool from early boot. Physical validation of a genuinely
+    # fresh clean-install boot found ssh-keygen -A blocking for many
+    # minutes (dashboard and every other service fully up the whole time -
+    # only key generation, which needs real random bytes, was stuck) -
+    # this project's base image ships rng-tools but leaves it disabled by
+    # default, same as stock Raspberry Pi OS. Enabling it directly serves
+    # stratux-ssh-hostkeys.service's own first-boot reliability - see
+    # docs/ssh-host-keys.md for the physical evidence.
+    systemctl enable rng-tools
     # This is usually done by the console-setup service that takes quite long of first boot..
     /lib/console-setup/console-setup.sh
 

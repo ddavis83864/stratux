@@ -166,6 +166,33 @@ This fix lives in `overlayctl` itself (used by every other caller of `overlayctl
 in this codebase, not just this feature) — see `scripts/test-overlayctl-remount.sh` for the
 regression coverage.
 
+## A second physical finding: first-boot entropy availability
+
+Repeating physical validation with the overlay fix in place surfaced a second issue: on a
+genuinely fresh clean-install boot, `ssh.service` sometimes did not become reachable for many
+minutes, while every other subsystem (the dashboard, DNS, GDL90/traffic ports) came up normally
+and stayed healthy the whole time. This is consistent with `ssh-keygen -A`'s underlying
+`getrandom()` call blocking until the kernel's CRNG has enough real entropy to seed itself - a
+known characteristic of embedded ARM boards early in their very first boot, before their
+hardware RNG has been read from even once. This project's base image ships `rng-tools` (which
+feeds the board's own hardware RNG into the kernel's entropy pool) but leaves it disabled, the
+same as stock Raspberry Pi OS - confirmed directly: `systemctl is-active rng-tools` reported
+`inactive` on the affected device.
+
+This was not seen on any *subsequent* boot of an already-initialized device (where no key
+generation - and therefore no `getrandom()` call - happens at all), only on the very first boot
+of a freshly-flashed card, where it matters most for the fix this document describes.
+
+**This is a strong, evidence-backed hypothesis rather than something inspected line-by-line at
+the kernel level** — the affected boot's own `ssh-keygen` process could not be examined directly
+while it was blocking, precisely because that same block was what made SSH unreachable. The fix
+(enabling `rng-tools`) is a standard, low-risk mitigation for exactly this class of problem
+regardless of the precise internal mechanism, and does not depend on the hypothesis being exactly
+right to be worth shipping.
+
+Fixed by enabling `rng-tools` in the image build (`image_build/stage2/10-stratux/01-run.sh`), so
+hardware entropy starts feeding the kernel from as early in boot as possible.
+
 ## Not implemented (deliberately, this release)
 
 - **No automatic key-rotation dashboard control.** Regenerating host keys on an existing,
