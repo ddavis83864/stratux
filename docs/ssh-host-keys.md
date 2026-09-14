@@ -199,6 +199,24 @@ disabled; `systemctl is-active` returns exactly the same `inactive` for a unit t
 exist at all, so that check proved nothing, and the actual image build failed outright with
 "unit rng-tools.service does not exist" - caught by CI before it reached hardware again.)
 
+Re-testing on real hardware with `rng-tools5` installed and enabled found the same multi-minute
+delay recurred unchanged. The most likely remaining explanation: `stratux-ssh-hostkeys.service`
+had no ordering relationship with the entropy daemon at all - both are pulled in independently by
+`multi-user.target`, so `ssh-keygen -A` could start racing the entropy daemon's own startup and
+still end up blocking on entropy that daemon simply hadn't had a chance to provide yet. Added
+`After=rng-tools.service rng-tools5.service rngd.service` to `stratux-ssh-hostkeys.service`
+(unrelated names are harmless no-ops in `After=` when an image doesn't ship one of them, so this
+needs no dynamic discovery the way enabling the unit at build time did).
+
+**This ordering fix has not yet been independently re-confirmed on hardware as of this writing**
+- the owner ended a multi-minute wait on the affected test boot to move the validation forward
+rather than let it run indefinitely, so the exact race was never caught with direct timing
+evidence (e.g. comparing `journalctl`'s own monotonic timestamps for the entropy daemon against
+`stratux-ssh-hostkeys.service`). If a future physical test still shows the same delay with this
+ordering in place, the entropy hypothesis itself should be treated as unconfirmed and a different
+root cause investigated - reaching that certainty needs direct console/serial access to the
+device while it is still blocking, which this validation did not have.
+
 ## Not implemented (deliberately, this release)
 
 - **No automatic key-rotation dashboard control.** Regenerating host keys on an existing,

@@ -6,6 +6,15 @@ Documentation=https://github.com/ddavis83864/stratux/blob/master/docs/known-limi
 # any other device flashed from the same image, and never accepts a
 # connection before its own identity has been established.
 Before=ssh.service sshd.service
+# Without this, rngd (which feeds this hardware's own RNG into the
+# kernel's entropy pool - see docs/ssh-host-keys.md) has no ordering
+# relationship with this unit at all: both are pulled in by
+# multi-user.target with no dependency between them, so ssh-keygen -A
+# below could easily start racing rngd's own startup and end up
+# blocking on entropy that rngd just hasn't had a chance to provide
+# yet - unrelated names are harmless no-ops in After= if a given image
+# doesn't actually ship one of them.
+After=rng-tools.service rng-tools5.service rngd.service
 ConditionFileIsExecutable=/usr/sbin/stratux-generate-ssh-hostkeys
 
 [Service]
