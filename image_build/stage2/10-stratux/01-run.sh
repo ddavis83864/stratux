@@ -29,9 +29,48 @@ on_chroot << EOF
     # Run DHCP on eth0 when cable is plugged in
     sed -i -e 's/INTERFACES=""/INTERFACES="eth0"/g' /etc/default/ifplugd
 
-    # Generate ssh key for all installs. Otherwise it would have to be done on each boot, which takes a couple of seconds
-    ssh-keygen -A -v
+    # Do NOT generate SSH host keys at image-build time: a key generated
+    # here is baked into this exact image file and is therefore shared,
+    # byte-for-byte, by every device ever flashed from it - a real,
+    # confirmed defect (see docs/known-limitations.md and
+    # docs/releases/v2.0.0-rc2.md for the evidence). Unique keys are
+    # instead generated once per device on that device's own first boot,
+    # by stratux-ssh-hostkeys.service (enabled below).
+    #
+    # The stock Raspberry Pi OS regenerate_ssh_host_keys.service is not a
+    # substitute here and stays disabled: it writes host keys and its own
+    # self-disable through the plain /etc path, which under this image's
+    # protected read-only overlay (init-overlay/overlayctl - see
+    # docs/ota.md) lands only in the volatile tmpfs upper layer and is
+    # discarded every reboot, so it would silently regenerate a brand-new
+    # key set on every single boot rather than once per device.
     systemctl disable regenerate_ssh_host_keys
+    # stratux-ssh-hostkeys.service is enabled further below, once its unit
+    # file and script have actually been installed into the image (systemctl
+    # enable needs the unit file to exist first).
+
+    # rng-tools feeds this hardware's own RNG output into the kernel's
+    # entropy pool from early boot. Physical validation of a genuinely
+    # fresh clean-install boot found ssh-keygen -A blocking for many
+    # minutes (dashboard and every other service fully up the whole time -
+    # only key generation, which needs real random bytes, was stuck).
+    # This project's base image does not install it by default (an
+    # earlier attempt to just "systemctl enable rng-tools" without
+    # installing it first failed the build outright - "unit rng-tools.
+    # service does not exist" - caught by CI, not assumed). The exact
+    # unit name a given Debian release installs it under has changed
+    # across versions (rng-tools / rng-tools5 / rng-tools-debian), so
+    # this discovers whatever unit the installed package actually
+    # provides rather than hardcoding a name that could silently stop
+    # matching on a future base-image bump.
+    apt install --yes rng-tools5
+    RNGUNIT="\$(systemctl list-unit-files 'rng*' --no-legend | awk '{print \$1}' | head -1)"
+    if [ -n "\$RNGUNIT" ]; then
+        systemctl enable "\$RNGUNIT"
+    else
+        echo "ERROR: rng-tools5 installed but no rng*.service unit found to enable" >&2
+        exit 1
+    fi
     # This is usually done by the console-setup service that takes quite long of first boot..
     /lib/console-setup/console-setup.sh
 
@@ -147,6 +186,19 @@ on_chroot << EOF
     # init-overlay replaces raspis initial partition size growing.. Make sure we call that manually (see init-overlay script)
     touch /var/grow_root_part
     mkdir -p /overlay/robase # prepare so we can bind-mount root even if overlay is disabled
+EOF
+
+# unique per-device SSH host keys, generated on first boot (see the script's
+# own comments and 01-run.sh's earlier ssh-keygen/regenerate_ssh_host_keys
+# section for the full rationale) - must be installed after overlayctl
+# above, since the script itself calls overlayctl, and enabled only after
+# the unit file below actually exists in the image (systemctl enable reads
+# the unit file's own [Install] section).
+install files/stratux-generate-ssh-hostkeys ${ROOTFS_DIR}/usr/sbin/
+install -m 644 files/stratux-ssh-hostkeys.service ${ROOTFS_DIR}/etc/systemd/system/
+
+on_chroot << EOF
+    systemctl enable stratux-ssh-hostkeys
 EOF
 
 # So we can import network settings if needed

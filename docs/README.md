@@ -30,6 +30,9 @@ hardware integration). User-facing how-tos live in the
 - **[ota.md](ota.md)** — the `.deb` OTA update mechanism: the overlay-disable marker's proven
   persistent location (with mount/device evidence), and the deterministic, resumable install
   state machine built on it.
+- **[ssh-host-keys.md](ssh-host-keys.md)** — unique per-device SSH host key generation on
+  first boot, why the stock Raspberry Pi OS mechanism doesn't work under this project's
+  read-only overlay, and OTA/recovery/cloning key-identity guarantees.
 - **[ahrs-baro-fan-health.md](ahrs-baro-fan-health.md)** — the live health model for the
   ICM-20948 AHRS, BMP280 barometer, and dual-fan PWM controller, wired into the readiness
   model above.
