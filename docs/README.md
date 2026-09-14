@@ -22,6 +22,9 @@ hardware integration). User-facing how-tos live in the
   requirement summary (full detail in [hardware/README.md](hardware/README.md)).
 - **[known-limitations.md](known-limitations.md)** — release-engineering limitations, supplementing
   the [README's aviation disclaimer](../README.md#safety-certification-and-operational-disclaimer).
+- **[ota-version-ordering-audit.md](ota-version-ordering-audit.md)** — current OTA
+  version-ordering/downgrade/reinstall behavior (as-is, not enforced today) and a bounded
+  recommendation for if/when enforcement is added.
 - **[dev-setup.md](dev-setup.md)** — setting up a development environment (remote on a Pi, or
   local Linux).
 - **[readiness-and-time-trust.md](readiness-and-time-trust.md)** — the unified component health
