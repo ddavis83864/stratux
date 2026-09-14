@@ -39,6 +39,9 @@ hardware integration). User-facing how-tos live in the
 - **[preflight-readiness.md](preflight-readiness.md)** — the simplified, supplemental preflight
   checklist built on top of the readiness health model: state definitions, the blocking-vs-
   caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
+- **[real-flight-acceptance-checklist.md](real-flight-acceptance-checklist.md)** — a short,
+  owner-executed checklist and evidence template for accepting a specific build in an actual
+  flight, built on top of (not a replacement for) the preflight page above.
 - **[recording.md](recording.md)** — the on-demand recording subsystem and the durable,
   versioned session-level Preflight metadata captured once at recording start.
 - **[alerting.md](alerting.md)** — conservative, supplemental traffic-proximity and
