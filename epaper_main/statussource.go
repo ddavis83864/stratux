@@ -103,6 +103,8 @@ func (s *StatusSource) Gather(now time.Time) (epaper.Content, error) {
 	storageM, _ := s.getJSON("/getStorageLifecycle")
 	autoRecordM, _ := s.getJSON("/getAutoRecordStatus")
 	powerM, _ := s.getJSON("/getPowerHealth")
+	alertSettingsM, _ := s.getJSON("/getAlertSettings")
+	alertsM, _ := s.getJSON("/getAlerts")
 
 	c := epaper.Content{
 		SampledAt: now,
@@ -113,6 +115,7 @@ func (s *StatusSource) Gather(now time.Time) (epaper.Content, error) {
 		UATReceiving:          bl(statusM, "UAT_Receiving") || bl(statusM, "ES_Receiving"), // UAT-specific field name varies by build; ES covers the common case
 		ESReceiving:           bl(statusM, "ES_Receiving"),
 		ConnectedGDL90Clients: in(statusM, "Connected_Users"),
+		TrafficTargets:        in(statusM, "UAT_traffic_targets_tracking") + in(statusM, "ES_traffic_targets_tracking"),
 
 		OverallReady: str(healthM, "Overall"),
 		AHRSState:    str(nested(healthM, "AHRS"), "State"),
@@ -127,6 +130,9 @@ func (s *StatusSource) Gather(now time.Time) (epaper.Content, error) {
 
 		StoragePressure: str(storageM, "pressure"),
 		AutoRecordArmed: str(nested(autoRecordM, "snapshot"), "State") != "" && str(nested(autoRecordM, "snapshot"), "State") != "DISABLED",
+
+		AlertsEnabled: bl(alertSettingsM, "masterEnabled"),
+		AlertsMuted:   bl(alertsM, "muted"),
 	}
 	if c.StoragePressure == "" {
 		c.StoragePressure = "UNKNOWN"
