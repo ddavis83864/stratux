@@ -7,7 +7,7 @@ ARCH = $(shell ./scripts/getarch.sh)
 LFLAGS=-X main.stratuxVersion=$(VERSIONSTR) -X main.stratuxBuild=`git log -n 1 --pretty=%H`
 BUILDINFO=-ldflags "$(LFLAGS)"
 BUILDINFO_STATIC=-ldflags "-extldflags -static $(LFLAGS)"
-PLATFORMDEPENDENT=fancontrol
+PLATFORMDEPENDENT=fancontrol epaperd
 
 ifeq ($(debug),true)
 	BUILDINFO := -gcflags '-N -l' $(BUILDINFO)
@@ -28,6 +28,15 @@ stratuxrun: main/*.go common/*.go libdump978.so
 
 fancontrol: fancontrol_main/*.go common/*.go
 	go build $(BUILDINFO) -o fancontrol -p 4 ./fancontrol_main/
+
+# epaperd is the optional Waveshare e-paper display service - a separate
+# binary/systemd unit, never linked into stratuxrun, matching fancontrol's
+# own build pattern above. Safe to build on every platform: like
+# fancontrol_main, it only touches real GPIO/SPI hardware at runtime, never
+# at compile time. Named epaperd (not epaper) to avoid colliding with the
+# epaper/ package directory this binary's own source imports.
+epaperd: epaper_main/*.go epaper/*.go common/*.go
+	go build $(BUILDINFO) -o epaperd -p 4 ./epaper_main/
 
 xdump1090:
 	cd dump1090 && make BLADERF=no
@@ -74,6 +83,7 @@ optinstall: www ogn/ddb.json
 	# binaries
 	cp -f stratuxrun $(STRATUX_HOME)/bin/
 	cp -f fancontrol $(STRATUX_HOME)/bin/
+	cp -f epaperd $(STRATUX_HOME)/bin/
 	cp -f dump1090/dump1090 $(STRATUX_HOME)/bin
 	cp -f rtl-ais/rtl_ais $(STRATUX_HOME)/bin
 	cp -f $(OGN_RX_BINARY) $(STRATUX_HOME)/bin/ogn-rx-eu
@@ -149,6 +159,8 @@ dpkg: all prep_dpkg wwwdpkg ogn/ddb.json optinstall_dpkg
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux.service
 	cp debian/stratux_fancontrol.service $(DEBPKG_BASE)/lib/systemd/system
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_fancontrol.service
+	cp debian/stratux_epaper.service $(DEBPKG_BASE)/lib/systemd/system
+	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_epaper.service
 	#ln -s $(DEBPKG_BASE)/lib/systemd/system/stratux.service $(DEBPKG_BASE)/etc/systemd/system/multi-user.target.wants/stratux.service
 	# Set up the versioning inside of the dpkg system. This puts the version number inside of the config file
 	sed -i 's/VERSION/$(VERSIONSTR)/g' $(DEBPKG_BASE)/DEBIAN/control
@@ -167,7 +179,7 @@ dpkg: all prep_dpkg wwwdpkg ogn/ddb.json optinstall_dpkg
 	mv -f $(DEBPKG_BASE)/../stratux.deb ./stratux-$(VERSIONSTR)-$(ARCH).deb
 
 clean:
-	rm -f stratuxrun libdump978.so fancontrol ahrs_approx *.deb
+	rm -f stratuxrun libdump978.so fancontrol epaperd ahrs_approx *.deb
 	cd dump1090 && make clean
 	cd dump978 && make clean
 	cd rtl-ais && make clean

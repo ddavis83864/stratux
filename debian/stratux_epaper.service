@@ -1,0 +1,36 @@
+[Unit]
+Description=Stratux Waveshare e-paper display (optional, disabled by default)
+After=stratux.service
+Wants=stratux.service
+
+[Service]
+ExecStart=/opt/stratux/bin/epaperd
+KillMode=process
+Restart=always
+RestartSec=5
+LimitCORE=1073741824
+
+# RAM-backed (tmpfs) runtime status directory for this service's own
+# self-reported status file (common.EpaperStatusPath) - created and owned
+# by systemd, removed automatically when the unit stops. The Go code also
+# creates this directory itself (MkdirAll) so behavior is identical when
+# run manually, e.g. during development.
+RuntimeDirectory=stratux-epaper
+RuntimeDirectoryMode=0755
+
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target
+
+# This unit is installed but NOT enabled or started automatically by the
+# package's postinst script, unlike stratux_fancontrol (mandatory cooling
+# hardware present on every supported board). The e-paper display is
+# genuinely optional owner-installed hardware: even though epaper_main is
+# safe to run with EpaperEnabled=false in settings (it idles, touching no
+# GPIO/SPI at all), leaving this unit disabled-by-default at the systemd
+# level too means a system that never had this display added carries zero
+# extra background process or periodic localhost HTTP polling from it.
+# See docs/waveshare-epaper-display.md's installation procedure for the
+# `systemctl enable --now stratux_epaper` step the owner runs deliberately
+# as part of physically installing this hardware.
