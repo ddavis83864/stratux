@@ -89,6 +89,12 @@ var settingsFieldTypes = map[string]settingsFieldKind{
 	"OGNReg":                         settingsFieldString,
 	"OGNTxPower":                     settingsFieldNumber,
 	"PWMDutyMin":                     settingsFieldNumber,
+	"EpaperEnabled":                  settingsFieldBool,
+	"EpaperPanel":                    settingsFieldString,
+	"EpaperRotation":                 settingsFieldNumber,
+	"EpaperRefreshIntervalSeconds":   settingsFieldNumber,
+	"EpaperFullRefreshEvery":         settingsFieldNumber,
+	"EpaperPage":                     settingsFieldString,
 }
 
 // validateSettingsKeyCount rejects a request carrying more top-level keys
