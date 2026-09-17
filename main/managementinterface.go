@@ -648,6 +648,19 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 			globalSettings.PWMDutyMin = int(val.(float64))
 			reconfigureFancontrol = true
 
+		case "EpaperEnabled":
+			globalSettings.EpaperEnabled = val.(bool)
+		case "EpaperPanel":
+			globalSettings.EpaperPanel = val.(string)
+		case "EpaperRotation":
+			globalSettings.EpaperRotation = int(val.(float64))
+		case "EpaperRefreshIntervalSeconds":
+			globalSettings.EpaperRefreshIntervalSeconds = int(val.(float64))
+		case "EpaperFullRefreshEvery":
+			globalSettings.EpaperFullRefreshEvery = int(val.(float64))
+		case "EpaperPage":
+			globalSettings.EpaperPage = val.(string)
+
 		default:
 			// Unreachable: validateSettingsMessage above already
 			// rejected any key not in settingsFieldTypes.

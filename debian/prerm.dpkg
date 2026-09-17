@@ -15,6 +15,12 @@ arch=$(uname -m)
 if  [ "$arch" == "aarch64" ]; then
 	if [ -f "/boot/firmware/config.txt" ]; then
 		systemctl stop stratux_fancontrol
+		# stratux_epaper is optional, owner-enabled hardware (see
+		# docs/waveshare-epaper-display.md) - unlike stratux_fancontrol
+		# above it is never enabled/started automatically by postinst,
+		# so most systems will have it inactive already; this only
+		# matters for the minority that opted in.
+		systemctl stop stratux_epaper 2>/dev/null || true
 	fi
 fi
 # Example: Stop the stratux service before removing this version

@@ -158,6 +158,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			controller: 'AutoRecordCtrl',
 			reloadOnSearch: false
 		})
+		.state('epaper', {
+			url: '/epaper',
+			templateUrl: 'plates/epaper.html',
+			controller: 'EpaperCtrl',
+			reloadOnSearch: false
+		})
 		.state('towers', {
 			url: '/towers',
 			templateUrl: 'plates/towers.html',
