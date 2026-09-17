@@ -45,6 +45,19 @@ type HealthReport struct {
 	// NOT_INSTALLED, which Rollup excludes from the Overall computation -
 	// the feature being off never degrades overall system readiness.
 	AutoRecord AutoRecordHealth
+
+	// Epaper reports the optional Waveshare e-paper display service's own
+	// state - see EpaperHealth's doc comment. Disabled (the default, and
+	// the state of any system with no display ever configured) reports
+	// NOT_INSTALLED, which Rollup excludes from the Overall computation -
+	// the feature being off never degrades overall system readiness. Like
+	// AHRS/Baro/Fan above, an *enabled* display that is actually failing
+	// can still surface in Overall (see BuildEpaperHealth's policy) - the
+	// same non-certified-supplemental treatment those three already
+	// receive - but it is always reported in its own dedicated field
+	// regardless, never folded into or confused with UAT978/ES1090/GPS/
+	// GDL90's own state.
+	Epaper EpaperHealth
 }
 
 // RadioHealth is the health record for one receiver band (978 UAT or 1090
@@ -415,7 +428,7 @@ func BuildSystemHealth(version, commit string, uptime time.Duration, cpuTempC fl
 // Rollup, so the aggregate always reflects the mission's color rules
 // (StateNotInstalled/StateUnknown components never drag down an otherwise-
 // healthy Overall; any real StateNotReady always shows).
-func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs AHRSHealth, baro BaroHealth, fan FanHealth, storageLifecycle StorageLifecycleHealth, autoRecord AutoRecordHealth) HealthReport {
+func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth, gdl90 GDL90Health, system SystemHealth, storage, overlay StorageHealth, timeHealth TimeHealth, timeState TimeState, ahrs AHRSHealth, baro BaroHealth, fan FanHealth, storageLifecycle StorageLifecycleHealth, autoRecord AutoRecordHealth, epaper EpaperHealth) HealthReport {
 	r := HealthReport{
 		GeneratedAt:      now,
 		UAT978:           uat978,
@@ -431,12 +444,13 @@ func BuildHealthReport(now time.Time, uat978, es1090 RadioHealth, gps GPSHealth,
 		Fan:              fan,
 		StorageLifecycle: storageLifecycle,
 		AutoRecord:       autoRecord,
+		Epaper:           epaper,
 	}
 	r.Overall = Rollup(
 		uat978.State, es1090.State, gps.State, gdl90.State, system.State,
 		storage.State, timeStateToComponentState(timeState),
 		ahrs.State, baro.State, fan.State, storageLifecycle.State,
-		autoRecord.State,
+		autoRecord.State, epaper.State,
 	)
 	return r
 }

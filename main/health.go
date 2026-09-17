@@ -209,8 +209,9 @@ func updateHealth() {
 	fan := buildFanHealth(now)
 	storageLifecycle := buildStorageLifecycleHealth()
 	autoRecord := buildAutoRecordHealth()
+	epaperHealth := buildEpaperHealth(now)
 
-	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan, storageLifecycle, autoRecord)
+	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan, storageLifecycle, autoRecord, epaperHealth)
 
 	globalHealthMutex.Lock()
 	globalHealth = report
