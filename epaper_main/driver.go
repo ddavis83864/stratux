@@ -1,8 +1,10 @@
 /*
 driver.go: a from-scratch Go implementation of the control-line and SPI
 command sequence needed to drive a Waveshare 3.7" e-paper panel
-(SSD1677 controller) - reset, busy-wait, monochrome 4-gray
-initialization, partial/full display update, and deep sleep. This is an
+(SSD1677 controller) - reset, busy-wait, 1-bit black/white
+initialization, partial/full display update, and deep sleep (this driver
+never uses the controller's grayscale LUT modes or its red-RAM plane -
+see render.go). This is an
 original implementation, not a translation or port of any vendor's
 source file - the underlying command bytes (which SPI command activates
 which controller function) are factual, protocol-level interoperability
