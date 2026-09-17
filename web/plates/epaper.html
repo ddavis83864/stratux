@@ -1,0 +1,119 @@
+<div ui-content-for="title">
+	<a href="#/"><img src="../img/logo-android3.png" width="24" height="24"/>&nbsp;E-Paper Display</a>
+</div>
+
+<div class="col-xs-12">
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Waveshare E-Paper Display (optional, not certified)</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				This is an optional, supplemental status surface only - never a moving
+				map, artificial horizon, traffic scope, ForeFlight/EFB substitute,
+				safety-critical annunciator, or weather source. It is not a certified
+				flight instrument. Whether this display is enabled, connected, or
+				working has no effect on 978 UAT / 1090 ES reception, GDL90 output,
+				AHRS, GPS, or any other Stratux function - see
+				<a href="#/readiness">Readiness</a> for those.
+			</p>
+			<p class="small text-muted">
+				Disabled by default. Supported hardware: Waveshare 3.7" e-Paper panel
+				(SSD1677 controller, 480&times;280) on the Waveshare E-Paper Driver HAT
+				Rev2.3, connected by its 9-wire harness - never mounted directly on the
+				Pi's 40-pin header, which the AHRS board already occupies. See
+				docs/waveshare-epaper-display.md in the Stratux repository for the full
+				installation procedure, GPIO ownership audit, and troubleshooting guide.
+			</p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Status</span></div>
+		<div class="panel-body">
+			<p class="small text-danger" ng-show="HealthError">{{HealthError}}</p>
+			<div ng-show="Health">
+				<span class="label" ng-class="stateClass(Health.State)">{{Health.State}}</span>
+				<span class="small text-muted">&nbsp;{{Health.Reason}}</span>
+				<div class="table-responsive">
+				<table class="table small" style="margin-top:10px;">
+					<tr><td>Service installed</td><td>{{Health.ServiceInstalled ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Service active</td><td>{{Health.ServiceActive ? 'yes' : 'no'}}</td></tr>
+					<tr><td>Panel detected</td><td>{{Health.PanelDetected ? 'yes' : 'no (expected if nothing is wired up yet)'}}</td></tr>
+					<tr><td>Configured panel</td><td>{{Health.ConfiguredPanel || 'n/a'}}</td></tr>
+					<tr><td>Last error</td><td>{{Health.LastErrorCategory || '(none)'}}</td></tr>
+					<tr><td>Last update age</td><td>{{Health.LastUpdateAgeSeconds !== null ? (Health.LastUpdateAgeSeconds | number:0) + ' s' : 'n/a'}} {{Health.Stale ? '(stale)' : ''}}</td></tr>
+					<tr><td>Full / partial refreshes</td><td>{{Health.FullRefreshCount}} / {{Health.PartialRefreshCount}}</td></tr>
+					<tr><td>BUSY timeouts</td><td>{{Health.BusyTimeoutCount}}</td></tr>
+					<tr><td>Consecutive failures</td><td>{{Health.ConsecutiveFailures}}</td></tr>
+				</table>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="Settings">
+		<div class="panel-heading"><span class="panel_label">Settings</span></div>
+		<div class="panel-body">
+			<p class="small text-danger" ng-show="SettingsError">{{SettingsError}}</p>
+			<div class="checkbox"><label><input type="checkbox" ng-model="Settings.EpaperEnabled"/> E-paper display enabled</label></div>
+			<p class="small text-muted">
+				Only enable this after the display has been wired per the pin mapping
+				below and the installation doc's physical-wiring checklist. Enabling
+				this setting with nothing connected is safe - the service reports
+				"panel not detected" and touches nothing else.
+			</p>
+			<div class="form-group">
+				<label>Status page</label>
+				<select class="form-control" ng-model="Settings.EpaperPage" ng-options="p.value as p.label for p in pages"></select>
+			</div>
+			<div class="form-group">
+				<label>Rotation (degrees, clockwise)</label>
+				<select class="form-control" ng-model="Settings.EpaperRotation" ng-options="r for r in rotations"></select>
+			</div>
+			<div class="form-group">
+				<label>Refresh interval (s) - minimum time between partial refreshes, even if status changes faster</label>
+				<input type="number" class="form-control" ng-model="Settings.EpaperRefreshIntervalSeconds" min="5"/>
+			</div>
+			<div class="form-group">
+				<label>Full refresh every N partial refreshes - bounds e-paper ghosting; lower flashes more often, higher ghosts more between full refreshes</label>
+				<input type="number" class="form-control" ng-model="Settings.EpaperFullRefreshEvery" min="1" max="200"/>
+			</div>
+			<button class="btn btn-primary" ng-click="saveSettings()">Save Settings</button>
+			<span class="small" ng-show="Message">{{Message}}</span>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Validated Wiring (do not power on while connecting)</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				Power the Pi down completely and disconnect it before connecting or
+				changing any wire. Never move a wire while powered. This mapping was
+				derived from an audit of every GPIO this project's own software and
+				device-tree configuration claims on a Raspberry Pi 4B with a Stratux
+				AHRS v2.0 board installed; it deliberately avoids physical pins 1 and
+				6, which that board covers. Connect the Driver HAT to the Pi only
+				through its own 9-wire harness - never mounted directly on the 40-pin
+				header.
+			</p>
+			<div class="table-responsive">
+			<table class="table table-condensed small">
+				<tr><th>Signal</th><th>Wire</th><th>Physical pin</th><th>BCM / function</th></tr>
+				<tr><td>VCC</td><td>Red</td><td>17</td><td>3.3V (never 5V)</td></tr>
+				<tr><td>GND</td><td>Black</td><td>20</td><td>Ground</td></tr>
+				<tr><td>DIN</td><td>Blue</td><td>19</td><td>GPIO10 / SPI0 MOSI</td></tr>
+				<tr><td>CLK</td><td>Yellow</td><td>23</td><td>GPIO11 / SPI0 SCLK</td></tr>
+				<tr><td>CS</td><td>Orange</td><td>24</td><td>GPIO8 / SPI0 CE0</td></tr>
+				<tr><td>DC</td><td>Green</td><td>22</td><td>GPIO25</td></tr>
+				<tr><td>BUSY</td><td>Purple</td><td>18</td><td>GPIO24</td></tr>
+				<tr><td>RST</td><td>White</td><td>13</td><td>GPIO27</td></tr>
+				<tr><td>PWR</td><td>Brown</td><td>15</td><td>GPIO22</td></tr>
+			</table>
+			</div>
+			<p class="small text-muted">
+				Driver HAT switch positions: Display Config = A (3R), Interface
+				Config = 0 (4-line SPI) - see the installation doc for the
+				photographically-confirmed switch locations.
+			</p>
+		</div>
+	</div>
+</div>
