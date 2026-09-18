@@ -255,46 +255,66 @@ func TestCertifyPersistentStorage_RealTempDirIsWritableAndReady(t *testing.T) {
 	}
 }
 
+const discoverableMountTestPath = "/var/lib/stratux-data"
+
 func TestDiscoverableMount_GoodExt4Mount(t *testing.T) {
-	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "fa3cfa53-8933-4263-a19b-25227dbf13e6", ReadOnly: false}
-	if !DiscoverableMount(info, true, "ext4") {
-		t.Error("a present, mounted, writable ext4 filesystem with a UUID should be discoverable")
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "fa3cfa53-8933-4263-a19b-25227dbf13e6", ReadOnly: false, Target: discoverableMountTestPath}
+	if !DiscoverableMount(discoverableMountTestPath, info, true, "ext4") {
+		t.Error("a present, mounted, writable, dedicated ext4 filesystem with a UUID should be discoverable")
 	}
 }
 
 func TestDiscoverableMount_RejectsWrongFilesystemType(t *testing.T) {
 	// An overlay or tmpfs mount at the same path must never be silently
 	// pinned as the persistent-data partition.
-	info := MountInfo{Mounted: true, FSType: "overlay", UUID: "", ReadOnly: false}
-	if DiscoverableMount(info, true, "ext4") {
+	info := MountInfo{Mounted: true, FSType: "overlay", UUID: "", ReadOnly: false, Target: discoverableMountTestPath}
+	if DiscoverableMount(discoverableMountTestPath, info, true, "ext4") {
 		t.Error("an overlay filesystem must not be discoverable as the ext4 persistent-data partition")
 	}
-	tmpfs := MountInfo{Mounted: true, FSType: "tmpfs", UUID: "", ReadOnly: false}
-	if DiscoverableMount(tmpfs, true, "ext4") {
+	tmpfs := MountInfo{Mounted: true, FSType: "tmpfs", UUID: "", ReadOnly: false, Target: discoverableMountTestPath}
+	if DiscoverableMount(discoverableMountTestPath, tmpfs, true, "ext4") {
 		t.Error("a tmpfs filesystem must not be discoverable as the ext4 persistent-data partition")
 	}
 }
 
 func TestDiscoverableMount_RejectsReadOnly(t *testing.T) {
-	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "u", ReadOnly: true}
-	if DiscoverableMount(info, true, "ext4") {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "u", ReadOnly: true, Target: discoverableMountTestPath}
+	if DiscoverableMount(discoverableMountTestPath, info, true, "ext4") {
 		t.Error("a read-only mount must not be discovered/pinned")
 	}
 }
 
 func TestDiscoverableMount_RejectsNotMountedOrAbsent(t *testing.T) {
-	if DiscoverableMount(MountInfo{Mounted: false}, true, "ext4") {
+	if DiscoverableMount(discoverableMountTestPath, MountInfo{Mounted: false}, true, "ext4") {
 		t.Error("an unmounted path must not be discoverable")
 	}
-	if DiscoverableMount(MountInfo{Mounted: true, FSType: "ext4", UUID: "u"}, false, "ext4") {
+	if DiscoverableMount(discoverableMountTestPath, MountInfo{Mounted: true, FSType: "ext4", UUID: "u", Target: discoverableMountTestPath}, false, "ext4") {
 		t.Error("an absent path must not be discoverable even if MountInfo looks fine")
 	}
 }
 
 func TestDiscoverableMount_RejectsEmptyUUID(t *testing.T) {
-	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "", ReadOnly: false}
-	if DiscoverableMount(info, true, "ext4") {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "", ReadOnly: false, Target: discoverableMountTestPath}
+	if DiscoverableMount(discoverableMountTestPath, info, true, "ext4") {
 		t.Error("a mount with no UUID at all must not be discoverable - there would be nothing to pin")
+	}
+}
+
+// TestDiscoverableMount_RejectsAbnormalBareBootFalsePositive is the direct
+// regression test for the real incident in
+// docs/ota-persistent-storage-defect.md: an abnormal, overlay-disabled
+// bare-ext4 boot makes findmnt report FSType=="ext4" for every path under
+// root, including PersistentDataPath, even though it was never actually
+// provisioned as its own dedicated partition - it is still just an
+// ordinary directory on the bare root (Target == "/", not the requested
+// path itself). This must be rejected regardless of the reported
+// FSType/UUID looking otherwise perfectly valid - exactly the false
+// positive that pinned a wrong, misleading PersistentDataUUID on real
+// hardware.
+func TestDiscoverableMount_RejectsAbnormalBareBootFalsePositive(t *testing.T) {
+	info := MountInfo{Mounted: true, FSType: "ext4", UUID: "de7e0b63-eb97-4c37-a08f-b02e677092a9", ReadOnly: false, Target: "/"}
+	if DiscoverableMount(discoverableMountTestPath, info, true, "ext4") {
+		t.Error("a path that only resolves to root's own bare-ext4 mount (Target != path) must never be discoverable as the dedicated persistent-data partition, no matter how valid its FSType/UUID look")
 	}
 }
 

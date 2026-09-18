@@ -50,11 +50,19 @@ modify_boot_cmdline()
 
 overlay_is_active()
 {
-    if [ -e /overlay/robase/overlay ] ; then
-        return 0
-    else
-        return 1
-    fi
+    # Was: [ -e /overlay/robase/overlay ]. That checks only whether a
+    # directory left behind by a *previous* overlay-active session still
+    # exists on the real disk - it does, forever, once created, even after
+    # a boot that runs genuinely bare ext4 (init-overlay's own disabled
+    # branch never removes it). That produced a real, confirmed false
+    # positive: `overlayctl status` reported "overlay is active" on a boot
+    # that findmnt / plainly showed was bare ext4 - see
+    # docs/ota-persistent-storage-defect.md for the hardware
+    # evidence. Query the live mount type instead, exactly like
+    # debian/stratux-pre-start.sh's own (already-correct) overlay_is_active
+    # does - the two implementations diverging is what let this go
+    # unnoticed.
+    [ "$(findmnt -n -o FSTYPE /)" = "overlay" ]
 }
 
 if [ $# -eq 0 ] ; then

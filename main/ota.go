@@ -47,6 +47,14 @@ import (
 // established pattern. Never reassigned in production.
 var otaDir = "/var/lib/stratux-data/updates"
 
+// otaPersistentDataRoot is PersistentDataPath, checked by
+// validateStagingPersistence - a var, not a direct reference to the
+// PersistentDataPath const, solely so tests can redirect it at a real
+// mountpoint (or a plain temp directory, to exercise the rejection path)
+// for the duration of one test, mirroring otaDir's own established
+// pattern immediately above. Never reassigned in production.
+var otaPersistentDataRoot = PersistentDataPath
+
 func otaStagedDir() string { return filepath.Join(otaDir, "staged") }
 func otaBackupDir() string { return filepath.Join(otaDir, "backup") }
 
@@ -72,6 +80,26 @@ func handleOTAUploadRequest(w http.ResponseWriter, r *http.Request) {
 
 	if err := os.MkdirAll(otaStagedDir(), 0o755); err != nil {
 		http.Error(w, fmt.Sprintf("update failed: could not create staging directory: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Reject the entire upload immediately - before reading a single byte
+	// of the (potentially large) request body - if otaDir is not proven
+	// persistent. This is the missing safeguard a real incident exposed:
+	// otaDir sits on PersistentDataPath, a location this project's own
+	// image build never actually provisions as a dedicated partition (see
+	// docs/ota-persistent-storage-defect.md for the full evidence trail).
+	// Under normal, protected-overlay operation, a file written there
+	// lands in the RAM-backed overlay upper layer and vanishes the moment
+	// the OTA sequence reboots into bare ext4 for the actual install -
+	// previously discovered only after that wasted reboot, as a silent,
+	// unexplained "exited without updating anything". This reuses the
+	// exact device-identity check (ota.IsPersistent/ota.StatMount) already
+	// proven on hardware for the overlay-disable marker in
+	// requestOverlayDisable below, applied here to the staging directory
+	// instead.
+	if err := validateStagingPersistence(); err != nil {
+		http.Error(w, fmt.Sprintf("update rejected: %s", err), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -201,6 +229,54 @@ func findEmbeddedCommit(data []byte) string {
 		}
 	}
 	return ""
+}
+
+// validateStagingPersistence proves otaDir is genuinely backed by
+// persistent storage before this process ever accepts an upload into it.
+// This does not attempt to fix the underlying gap (this project's image
+// build does not provision PersistentDataPath as a dedicated partition at
+// all - see docs/ota-persistent-storage-defect.md), only to fail fast and
+// honestly instead of silently discarding a staged package across the
+// overlay-disable reboot, as happened in the incident that led to this
+// check. Like requestOverlayDisable, this is real syscall/exec-touching
+// glue around tested pure logic - hardware validation, not a unit test
+// alone, is this function's own final proof; see that incident report for
+// exactly that validation once performed.
+//
+// Two layered checks, each using the tool actually suited to it:
+//  1. PersistentDataPath itself must be a genuine, dedicated,
+//     non-volatile mount of the exact expected filesystem type
+//     (ota.IsDedicatedPersistentMount, checking findmnt's own resolved
+//     mount target - not device-number equality against root, which
+//     would incorrectly reject the one currently-known-correct hardware
+//     layout: a dedicated partition with an entirely different device
+//     number than root's own).
+//  2. otaDir (a subdirectory of PersistentDataPath, never separately
+//     mounted itself) must share that exact same, already-proven device
+//     - ota.IsPersistent, the right tool for exactly this "has a
+//     subdirectory been shadowed by something else stacked on top"
+//     question, the same one it already answers for the overlay-disable
+//     marker's own directory below.
+func validateStagingPersistence() error {
+	root, err := ota.StatMount(otaPersistentDataRoot)
+	if err != nil {
+		return fmt.Errorf("could not verify persistent storage: could not stat %s: %w", otaPersistentDataRoot, err)
+	}
+	if ok, reason := ota.IsDedicatedPersistentMount(root, otaPersistentDataRoot); !ok {
+		return fmt.Errorf("persistent data path is not genuinely persistent storage: %s", reason)
+	}
+	if root.FSType != PersistentDataFSType {
+		return fmt.Errorf("persistent data path %s is mounted as %q, expected %q", otaPersistentDataRoot, root.FSType, PersistentDataFSType)
+	}
+
+	candidate, err := ota.StatMount(otaDir)
+	if err != nil {
+		return fmt.Errorf("could not verify persistent storage: could not stat %s: %w", otaDir, err)
+	}
+	if ok, reason := ota.IsPersistent(candidate, root); !ok {
+		return fmt.Errorf("staging location is not on the same persistent filesystem as %s: %s", otaPersistentDataRoot, reason)
+	}
+	return nil
 }
 
 // otaOverlayRobaseDisableMarker is the proven-persistent marker path -
