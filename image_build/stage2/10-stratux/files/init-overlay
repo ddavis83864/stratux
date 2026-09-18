@@ -56,10 +56,36 @@ if [ -f /var/grow_root_part ]; then
     resize2fs "$ROOT_PART_DEV"
 
     case "$RESULT_LINE" in
-        RESULT=provisioned*)
+        RESULT=provisioned*|RESULT=already-provisioned*)
             mkdir -p /var/lib/stratux-data
             if ! grep -q '[[:space:]]/var/lib/stratux-data[[:space:]]' /etc/fstab; then
-                echo "LABEL=stratux-data  /var/lib/stratux-data  ext4  defaults,noatime,nofail  0  2" >> /etc/fstab
+                # nofail: a missing/failed mount must never block boot or
+                # take down stratux.service - this partition is optional
+                # persistence, never a prerequisite for core ADS-B/GPS/
+                # GDL90 function (see docs/persistent-data-partition.md's
+                # own "B3: Mount and service ordering").
+                # x-systemd.before=stratux.service: pure *ordering*, no
+                # Requires= - this is the fix for a real race a review
+                # identified: without it, nothing guarantees the mount
+                # *attempt* (success or failure) has fully resolved
+                # before stratuxrun starts and a namespace writer could
+                # create a file at this path. If that raced and the
+                # partition mounted moments later, the newly-mounted
+                # filesystem would silently shadow whatever was already
+                # written into the overlay's own directory underneath it
+                # - invisible, orphaned data. This ordering closes that
+                # window completely: stratux.service (and its own
+                # ExecStartPre, stratux-pre-start.sh) cannot start until
+                # this mount's own start job has completed one way or
+                # the other, so no writer can ever act before the
+                # decision for this boot is already final.
+                # x-systemd.device-timeout=5s: bounds how long that
+                # ordering can ever delay boot if the partition is
+                # missing/slow to enumerate - an onboard SD partition
+                # should appear near-instantly; this is generous enough
+                # to absorb ordinary enumeration delay without
+                # meaningfully delaying core startup in the worst case.
+                echo "LABEL=stratux-data  /var/lib/stratux-data  ext4  defaults,noatime,nofail,x-systemd.device-timeout=5s,x-systemd.before=stratux.service  0  2" >> /etc/fstab
             fi
             mount /var/lib/stratux-data
             ;;
