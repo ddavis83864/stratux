@@ -1,0 +1,106 @@
+#!/bin/sh
+# provision-data-partition: grows the root partition to a bounded cap and
+# creates the dedicated persistent-data partition (LABEL=stratux-data) in
+# the remaining space - the first-boot-only logic init-overlay calls once,
+# factored out into its own script specifically so it can be exercised
+# directly, against a real loop-mounted disk image, in
+# test/persistent_data_partition_test.sh - without needing to actually
+# boot from the image under test. See docs/persistent-data-partition.md
+# for the full design and rationale, and docs/ota-persistent-storage-defect.md
+# for the incident this closes.
+#
+# Usage: provision-data-partition <root-device> <root-partition-device>
+#   <root-device>: e.g. /dev/mmcblk0 or /dev/sda - the whole disk.
+#   <root-partition-device>: e.g. /dev/mmcblk0p2 or /dev/sda2 - the
+#     current root partition, already mounted at / (or, under test, not
+#     mounted at all - this script itself never assumes / is on this
+#     device; only its caller, init-overlay, does the actual `mount -o
+#     remount,rw /` and `resize2fs` on the real, live root).
+#
+# Exit code 0 in every defined outcome (already-non-2-partition layout,
+# below-minimum-card-size fallback, or successful provisioning) - callers
+# distinguish outcomes from this script's own stdout/log lines, not its
+# exit code, matching init-overlay's own existing style of never treating
+# a defined, handled case as a shell-level failure.
+set -e
+
+ROOT_DEV="$1"
+ROOT_PART_DEV="$2"
+
+if [ -z "$ROOT_DEV" ] || [ -z "$ROOT_PART_DEV" ]; then
+	echo "usage: provision-data-partition <root-device> <root-partition-device>" >&2
+	exit 2
+fi
+
+# Minimum supported card size and the bounded root cap - see
+# docs/persistent-data-partition.md for the exact rationale. Exported as
+# plain shell variables (not read-only) so the test harness can override
+# them to exercise both branches against small, fast disposable images
+# rather than needing genuinely multi-gigabyte test fixtures.
+: "${MIN_CARD_BYTES:=$((16 * 1024 * 1024 * 1024))}"
+: "${ROOT_CAP_MIB:=8192}"
+
+# This whole script is meant to run exactly once per genuinely fresh
+# image (init-overlay only calls it while /var/grow_root_part exists, and
+# removes that marker itself once this returns). As an extra, defensive
+# safety net - never trust a single signal for something this
+# consequential - also require the card to still have exactly the 2
+# partitions (boot + root) the stock image ships: a card with a different
+# count already has its own layout (the operational device's own
+# pre-existing dedicated third partition being the known example) or has
+# already been through this logic once, and must never be touched by it
+# again. See docs/persistent-data-partition.md's migration policy.
+PART_COUNT=$(lsblk -lno NAME "$ROOT_DEV" | tail -n +2 | wc -l)
+if [ "$PART_COUNT" -ne 2 ]; then
+	echo "provision-data-partition: ${ROOT_DEV} has ${PART_COUNT} partitions, not the expected 2 - leaving the partition table untouched"
+	echo "RESULT=skipped-unexpected-layout"
+	exit 0
+fi
+
+CARD_BYTES=$(blockdev --getsize64 "$ROOT_DEV")
+if [ "$CARD_BYTES" -lt "$MIN_CARD_BYTES" ]; then
+	# Below the minimum supported size: fall back to the previous,
+	# simpler behavior (grow root to fill the card) rather than leave a
+	# card too small to usefully split at all with a cramped, half-sized
+	# root and no meaningful data partition - honestly reported as "no
+	# dedicated persistent-data partition" (every readiness/OTA/
+	# autorecord check hardened in the OTA-persistence fix correctly
+	# degrades, never silently falling back to volatile storage) rather
+	# than pretending to provide one with no usable capacity.
+	echo "provision-data-partition: card (${CARD_BYTES} bytes) is below the minimum supported size (16 GiB) - growing root to fill the card; no dedicated persistent-data partition will be created"
+	parted -s "$ROOT_DEV" resizepart 2 100%
+	partprobe "$ROOT_DEV"
+	echo "RESULT=grew-root-only-below-minimum-card-size"
+	exit 0
+fi
+
+ROOT_START_MIB=$(parted -sm "$ROOT_DEV" unit MiB print | awk -F: '$1==2{gsub("MiB","",$2); print int($2)}')
+case "$ROOT_START_MIB" in
+	''|*[!0-9]*)
+		echo "provision-data-partition: ERROR: could not determine partition 2's start offset from parted output - refusing to guess" >&2
+		echo "RESULT=failed-could-not-determine-root-start"
+		exit 1
+		;;
+esac
+ROOT_END_MIB=$((ROOT_START_MIB + ROOT_CAP_MIB))
+
+echo "provision-data-partition: growing root partition to its bounded cap (${ROOT_CAP_MIB} MiB, ending at ${ROOT_END_MIB}MiB)"
+parted -s "$ROOT_DEV" resizepart 2 "${ROOT_END_MIB}MiB"
+partprobe "$ROOT_DEV"
+
+echo "provision-data-partition: creating dedicated persistent-data partition (LABEL=stratux-data)"
+parted -s "$ROOT_DEV" mkpart primary ext4 "${ROOT_END_MIB}MiB" 100%
+partprobe "$ROOT_DEV"
+# The new partition is always the 3rd line lsblk reports for this device
+# (parent, then partitions 1/2/3 in order) - reading it back this way,
+# rather than guessing the "p"-infix-or-not naming convention (mmcblk0p3
+# vs sda3), works for either.
+DATA_PART_DEV="/dev/$(lsblk -lno NAME "$ROOT_DEV" | sed -n '4p')"
+if [ ! -b "$DATA_PART_DEV" ]; then
+	echo "provision-data-partition: ERROR: expected data partition device ${DATA_PART_DEV} not found after mkpart - leaving /var/lib/stratux-data unprovisioned" >&2
+	echo "RESULT=failed-data-partition-not-found"
+	exit 1
+fi
+
+mkfs.ext4 -F -L stratux-data "$DATA_PART_DEV"
+echo "RESULT=provisioned DATA_PART_DEV=${DATA_PART_DEV} ROOT_END_MIB=${ROOT_END_MIB}"

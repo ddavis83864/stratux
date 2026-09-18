@@ -288,7 +288,56 @@ type MountInfo struct {
 // bind-mounted subtree - closes this for good, independent of which
 // filesystem type happens to be reported.
 func DiscoverableMount(path string, info MountInfo, present bool, expectedFSType string) bool {
-	return present && info.Mounted && !info.ReadOnly && info.Target == path && info.FSType == expectedFSType && info.UUID != ""
+	dedicated, _ := IsDedicatedMount(info, path)
+	return present && info.Mounted && !info.ReadOnly && dedicated && info.FSType == expectedFSType && info.UUID != ""
+}
+
+// volatileFSTypes are filesystem types that never persist across a
+// reboot - the same list ota.IsPersistent independently rejects for the
+// overlay-disable marker's own, differently-shaped check. Kept here too,
+// not imported from ota, so this leaf package (readiness has no
+// dependency on ota, and must not gain one just for this) stays free of
+// that dependency direction.
+var volatileFSTypes = map[string]bool{
+	"tmpfs":     true,
+	"overlay":   true,
+	"overlayfs": true,
+	"ramfs":     true,
+	"devtmpfs":  true,
+	"aufs":      true,
+	"unionfs":   true,
+}
+
+// IsDedicatedMount is the one, canonical, authoritative answer to "is
+// path genuinely its own separately-mounted, non-volatile filesystem" -
+// used by DiscoverableMount above, by ota.IsDedicatedPersistentMount
+// (main/ota.go's OTA-staging guard), and by
+// main/autorecordrun.go's autoRecordMountReady. Before this function
+// existed, each of those three call sites had its own, independently-
+// evolved version of this same check - the exact "duplicating
+// inconsistent filesystem checks" this function exists to stop; see
+// docs/ota-persistent-storage-defect.md for the incident an earlier,
+// weaker version of one of those checks (FSType alone, no Target
+// comparison) caused, and docs/persistent-data-partition.md for the
+// provisioning design this validates against.
+//
+// A dedicated partition (a different underlying device than root
+// entirely - the one currently-known-correct hardware layout) and a
+// bind-mounted subtree of the real lower root (sharing root's own
+// device, a valid alternative provisioning design) both satisfy this
+// equally, as they must - device number is deliberately never compared.
+// The only two facts that matter: info.Target must equal path exactly
+// (proving path is not merely an ordinary directory reached through some
+// covering ancestor mount, overwhelmingly in practice the root overlay),
+// and info.FSType must not be one of the volatile types above.
+func IsDedicatedMount(info MountInfo, path string) (bool, string) {
+	if volatileFSTypes[info.FSType] {
+		return false, fmt.Sprintf("%s is a volatile filesystem (%s), not persistent storage", path, info.FSType)
+	}
+	if info.Target != path {
+		return false, fmt.Sprintf("%s is not a dedicated mountpoint (covered by the mount at %q instead) - it is an ordinary directory, not genuine persistent storage", path, info.Target)
+	}
+	return true, ""
 }
 
 var findmntPairPattern = regexp.MustCompile(`(\w+)="([^"]*)"`)

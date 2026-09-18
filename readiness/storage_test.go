@@ -318,6 +318,48 @@ func TestDiscoverableMount_RejectsAbnormalBareBootFalsePositive(t *testing.T) {
 	}
 }
 
+// --- IsDedicatedMount: the one canonical implementation DiscoverableMount,
+// ota.IsDedicatedPersistentMount, and main/autorecordrun.go's
+// autoRecordMountReady all now share. ---
+
+func TestIsDedicatedMount_AcceptsGenuineDedicatedMount(t *testing.T) {
+	// A dedicated partition (a different device than root entirely - the
+	// one currently-known-correct hardware layout) and a bind-mounted
+	// subtree of the real lower root (sharing root's own device, a valid
+	// alternative provisioning design) both satisfy this equally -
+	// device number plays no part in this function's decision at all.
+	info := MountInfo{FSType: "ext4", Target: discoverableMountTestPath}
+	ok, reason := IsDedicatedMount(info, discoverableMountTestPath)
+	if !ok {
+		t.Fatalf("a genuine dedicated mount must be accepted, got rejection: %s", reason)
+	}
+}
+
+func TestIsDedicatedMount_RejectsPathCoveredByAncestorMount(t *testing.T) {
+	// This is the exact incident this function exists to prevent: the
+	// requested path is merely an ordinary directory reached through the
+	// root overlay (or, during the incident's own abnormal boot, bare
+	// ext4 root) - findmnt's own Target then names that ancestor ("/"),
+	// not the requested path.
+	info := MountInfo{FSType: "overlay", Target: "/"}
+	ok, reason := IsDedicatedMount(info, discoverableMountTestPath)
+	if ok {
+		t.Fatal("a path only covered by an ancestor mount must be rejected, not accepted as dedicated")
+	}
+	if reason == "" {
+		t.Error("rejection must include a reason")
+	}
+}
+
+func TestIsDedicatedMount_RejectsVolatileFSTypeEvenAtOwnTarget(t *testing.T) {
+	for _, fstype := range []string{"tmpfs", "overlay", "ramfs", "devtmpfs", "aufs", "unionfs", "overlayfs"} {
+		info := MountInfo{FSType: fstype, Target: discoverableMountTestPath}
+		if ok, _ := IsDedicatedMount(info, discoverableMountTestPath); ok {
+			t.Errorf("fstype %q must be rejected as volatile even when it is its own dedicated mount target", fstype)
+		}
+	}
+}
+
 func TestCertifyPersistentStorage_MissingPathIsNotReady(t *testing.T) {
 	h := CertifyPersistentStorage("/nonexistent/readiness/mission/path", "", DefaultPersistentStorageThresholds())
 	if h.Present {

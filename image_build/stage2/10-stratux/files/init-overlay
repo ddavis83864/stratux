@@ -27,7 +27,18 @@ insmodule()
     fi
 }
 
-# Make sure partition is expanded on first boot..
+# Make sure the root partition is grown and the dedicated persistent-data
+# partition (LABEL=stratux-data, mounted at /var/lib/stratux-data) is
+# created, on first boot only. See docs/persistent-data-partition.md for
+# the full design and its own rationale - this replaces the previous
+# grow-root-to-100%-of-the-card behavior, which never left any space for
+# a real, separately-mounted data partition and is the root cause
+# documented in docs/ota-persistent-storage-defect.md. The actual
+# partition-table/filesystem work is factored out into
+# /sbin/provision-data-partition (own file) so it can be exercised
+# directly against a real loop-mounted disk image in
+# test/persistent_data_partition_test.sh, without needing to boot from
+# the image under test.
 if [ -f /var/grow_root_part ]; then
     mount -n -t proc proc /proc
     mount -n -t sysfs sys /sys
@@ -36,16 +47,25 @@ if [ -f /var/grow_root_part ]; then
     ROOT_PART_DEV=$(findmnt / -no source)
     ROOT_DEV_NAME=$(lsblk -no pkname  "$ROOT_PART_DEV")
     ROOT_DEV="/dev/${ROOT_DEV_NAME}"
-    
-    echo "Growing root partition..."
-    parted $ROOT_DEV resizepart 2 100%
-    partprobe $ROOT_DEV
 
-    echo "Growing root fs..."
+    /sbin/provision-data-partition "$ROOT_DEV" "$ROOT_PART_DEV" 2>&1 | tee /var/log/provision-data-partition.log
+    RESULT_LINE=$(grep '^RESULT=' /var/log/provision-data-partition.log | tail -1)
+    echo "$RESULT_LINE"
+
     mount -o remount,rw /
-    resize2fs $ROOT_PART_DEV
+    resize2fs "$ROOT_PART_DEV"
 
-    rm /var/grow_root_part
+    case "$RESULT_LINE" in
+        RESULT=provisioned*)
+            mkdir -p /var/lib/stratux-data
+            if ! grep -q '[[:space:]]/var/lib/stratux-data[[:space:]]' /etc/fstab; then
+                echo "LABEL=stratux-data  /var/lib/stratux-data  ext4  defaults,noatime,nofail  0  2" >> /etc/fstab
+            fi
+            mount /var/lib/stratux-data
+            ;;
+    esac
+
+    rm -f /var/grow_root_part
 
     #mount -o remount,ro /
     umount /sys

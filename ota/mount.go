@@ -131,12 +131,13 @@ func StatMount(path string) (MountIdentity, error) {
 // satisfy it is an ordinary directory whose apparent "mount" is only ever
 // the covering root/overlay itself, which is exactly the incident this
 // exists to prevent from recurring.
+//
+// A thin, OTA-specific-naming wrapper around the one canonical
+// implementation, readiness.IsDedicatedMount - kept as a separate name
+// here (rather than every OTA call site importing and reading
+// "readiness.IsDedicatedMount" out of context) purely for this package's
+// own readability; see that function's own doc comment for the full
+// rationale, including why device number is deliberately never compared.
 func IsDedicatedPersistentMount(candidate MountIdentity, requestedPath string) (bool, string) {
-	if volatileFSTypes[candidate.FSType] {
-		return false, fmt.Sprintf("%s is a volatile filesystem (%s), not persistent storage", requestedPath, candidate.FSType)
-	}
-	if candidate.Target != requestedPath {
-		return false, fmt.Sprintf("%s is not a dedicated mountpoint (covered by the mount at %q instead) - it is an ordinary directory, not genuine persistent storage", requestedPath, candidate.Target)
-	}
-	return true, ""
+	return readiness.IsDedicatedMount(readiness.MountInfo{FSType: candidate.FSType, Target: candidate.Target}, requestedPath)
 }
