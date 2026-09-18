@@ -103,7 +103,7 @@ func ensurePersistentDataUUID() {
 	}
 	_, statErr := os.Stat(PersistentDataPath)
 	present := statErr == nil
-	if !readiness.DiscoverableMount(mnt, present, PersistentDataFSType) {
+	if !readiness.DiscoverableMount(PersistentDataPath, mnt, present, PersistentDataFSType) {
 		return
 	}
 	globalSettings.PersistentDataUUID = mnt.UUID

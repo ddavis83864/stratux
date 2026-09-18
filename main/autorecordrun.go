@@ -108,7 +108,15 @@ func initAutoRecord() {
 // initAutoRecord's doc comment.
 var autoRecordMountReady = func() bool {
 	mnt, err := readiness.FindMount(PersistentDataPath)
-	return err == nil && mnt.Mounted && mnt.FSType == PersistentDataFSType
+	// Target == PersistentDataPath proves this is a genuine, dedicated
+	// mount at that exact path - not merely an ordinary directory
+	// resolving through some covering ancestor mount (the root overlay,
+	// or - the real, hardware-confirmed incident this closes - a bare,
+	// overlay-disabled ext4 root, which reports FSType=="ext4" for every
+	// path under it, mount or not). See
+	// docs/ota-persistent-storage-defect.md and
+	// readiness.DiscoverableMount's identical fix.
+	return err == nil && mnt.Mounted && mnt.Target == PersistentDataPath && mnt.FSType == PersistentDataFSType
 }
 
 // autoRecordAwaitMountAndReload retries autoRecordMountReady every

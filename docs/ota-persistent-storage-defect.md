@@ -152,13 +152,73 @@ the disable-reboot-install-reboot cycle on a freshly-flashed image).
 ## Corrective changes in this branch
 
 1. **`main/ota.go`: `validateStagingPersistence()`**, called at the very start of
-   `handleOTAUploadRequest`, before a single byte of the upload body is read. Reuses the existing,
-   already hardware-proven `ota.IsPersistent`/`ota.StatMount` device-identity check (previously
-   applied only to the overlay-disable marker) against `otaDir`. Rejects the upload with a clear,
-   honest `503` error instead of silently accepting a doomed staging write.
-2. **`image_build/stage2/10-stratux/files/overlayctl`: fixed `overlay_is_active()`** to query the
+   `handleOTAUploadRequest`, before a single byte of the upload body is read. Rejects the upload
+   with a clear, bounded, honest `503` error instead of silently accepting a doomed staging write.
+   Two layered checks, each using the tool actually suited to it:
+   1. `PersistentDataPath` itself must be a genuine, dedicated, non-volatile mount of the exact
+      expected filesystem type - `ota.IsDedicatedPersistentMount` (new), which checks whether
+      `findmnt`'s own resolved mount *target* for the path equals the path itself. An earlier
+      version of this guard instead compared device numbers against `/overlay/robase` (the same
+      check already used for the overlay-disable marker) - **that would have incorrectly rejected
+      the one currently-known-correct hardware layout**, a dedicated partition with an entirely
+      different device number than root's own. Caught and fixed during this workstream's own
+      review before merge, not after a second incident.
+   2. `otaDir` (a subdirectory of `PersistentDataPath`, never separately mounted itself) must
+      share that already-proven device - `ota.IsPersistent`, the right tool for exactly this
+      "has a subdirectory been shadowed by something else stacked on top" question, unchanged
+      from its existing use for the marker.
+2. **`readiness.DiscoverableMount`/`main/autorecordrun.go`'s `autoRecordMountReady`**: both
+   one-time/repeated "is the real persistent partition here yet" checks previously trusted
+   `FSType == "ext4"` alone. Both now also require `Target == path` (via the same new
+   `readiness.MountInfo.Target` field `IsDedicatedPersistentMount` uses) - closing the exact
+   mechanism that mis-pinned `PersistentDataUUID` during the incident's own abnormal boot (see
+   "PersistentDataUUID: full incident trace" below) at its actual source, not only at the OTA
+   staging point.
+3. **`image_build/stage2/10-stratux/files/overlayctl`: fixed `overlay_is_active()`** to query the
    live mount type (`findmnt -n -o FSTYPE /`) instead of a leftover directory's mere existence -
    matching `debian/stratux-pre-start.sh`'s own already-correct implementation.
+
+## PersistentDataUUID: full incident trace (Workstream A4)
+
+- **Where it is stored**: `globalSettings.PersistentDataUUID`, persisted via `saveSettings()` into
+  `/boot/firmware/stratux.conf` - a real, separate VFAT partition (`/dev/mmcblk0p1`), genuinely
+  durable across every reboot this investigation observed, unlike anything under
+  `/var/lib/stratux-data` itself.
+- **Is the pinned value the root filesystem's own UUID?** Yes, exactly: `de7e0b63-eb97-4c37-a08f-b02e677092a9`
+  is `/dev/mmcblk0p2`'s own `blkid`-reported UUID (confirmed directly) - the same single ext4
+  partition that backs both `/overlay/robase` and, during the abnormal boot, bare root itself.
+- **How it behaves after returning to protected-overlay operation**: `findmnt --target
+  /var/lib/stratux-data` now correctly reports an *empty* live UUID (proving overlayfs does not
+  pass the lower filesystem's UUID through to an ordinary path reached only via the overlay - a
+  hypothesis this investigation explored and disproved). The stored `de7e0b63-...` no longer
+  matches, so `readiness.EvaluateStorage`'s existing, correct mismatch handling now fires:
+  `Storage: NOT_READY`, dragging `Overall` down from the pre-incident `DEGRADED` baseline.
+- **Does it cause false readiness/storage/health results?** Yes, in both directions at different
+  times: falsely `READY` before the incident (no UUID pinned yet, so the mismatch check was simply
+  never engaged - the actual, original defect this whole document is about), and correctly
+  `NOT_READY` now (an honest report of a real problem, not a new bug - the alternative, silently
+  clearing or ignoring the mismatch, would recreate the false-`READY` condition by a different
+  path).
+- **Is it safe to clear automatically?** Not attempted here, and not something this Workstream A
+  fix does. Clearing it would let a *future*, still-nonexistent dedicated mount be discovered fresh
+  - reasonable in principle - but doing so automatically, today, on this device, without the
+  provisioning fix that would ever let a real discovery succeed correctly, would only reproduce the
+  identical false-`READY` masking this document exists to end, the moment any future abnormal
+  bare-ext4 boot recurs for any reason (this device's own history shows that can happen). The
+  now-hardened `DiscoverableMount`/`autoRecordMountReady` checks make a *repeat* mis-pin
+  structurally impossible (Target must equal the path, which an abnormal bare-ext4 boot can never
+  satisfy for an unprovisioned path) - but the *existing*, already-pinned wrong value on this one
+  device is a separate, already-done fact, not something this code change can retroactively
+  invalidate.
+- **Correct behavior**: leave it exactly as the abnormal boot left it - preserved evidence, and a
+  live, honest signal (`Storage: NOT_READY`) that nothing has silently glossed over the fact this
+  device still has no genuinely persistent data partition - until the Workstream B provisioning
+  fix gives it a real one to discover. This is exactly what was done, under explicit instruction,
+  during the incident's own separately-authorized recovery, and is unchanged by this PR.
+- **Regression test**: `readiness.TestDiscoverableMount_RejectsAbnormalBareBootFalsePositive`
+  (`readiness/storage_test.go`) directly reproduces the incident's own signals (FSType `ext4`, the
+  real, valid-looking UUID, everything else structurally perfect) with the one fact that actually
+  mattered - `Target == "/"`, not the requested path - and proves the hardened check rejects it.
 
 ## Proposed corrective design NOT included as code in this branch (needs its own dedicated effort)
 
@@ -189,19 +249,40 @@ the disable-reboot-install-reboot cycle on a freshly-flashed image).
 
 ## Tests
 
-- `ota` package: existing `ota.IsPersistent`/`ota.StatMount` tests (`ota/mount_test.go`) already
-  cover the pure logic this fix reuses - unchanged, still passing.
-- `validateStagingPersistence` itself is real syscall-touching glue (like its sibling
-  `requestOverlayDisable`, which has never had its own direct unit test in this codebase) - its
-  correctness rests on the already-tested pure `ota.IsPersistent` plus the hardware validation
-  performed live during this investigation (see above), matching this codebase's existing
-  convention for this exact class of function.
-- `image_build/.../overlayctl`: shell syntax verified (`sh -n`); the corrected `overlay_is_active`
-  was validated conceptually against the same live evidence that exposed the original bug (a
-  genuine bare-ext4 boot now correctly reports "not active" using the new check, whereas the old
-  check would still have reported "active").
-- Full `go build`/`go vet`/`gofmt`/`go test -race` run clean on `ota`, `main` after this change
-  (see PR description for the exact commands and results).
+- **`ota.IsDedicatedPersistentMount`** (`ota/mount_test.go`): dedicated ext4 mount accepted,
+  a path only covered by an ancestor mount rejected (the exact incident shape), volatile
+  filesystem type rejected even at its own dedicated target, and - the specific bug this
+  workstream's own review caught before merge - device number proven irrelevant to the result
+  (a same-device bind-mount and a different-device dedicated partition both accepted equally).
+- **`ota.StatMount`**: existing real-path and nonexistent-path tests unchanged; added a symlink
+  test proving a symlink cannot be used to substitute a volatile destination (`stat`/`findmnt`
+  both resolve the real target, not the symlink's own containing directory).
+- **`readiness.DiscoverableMount`**: existing tests extended with `Target`; new
+  `TestDiscoverableMount_RejectsAbnormalBareBootFalsePositive` reproduces the incident's own exact
+  signals and proves the hardened check rejects it.
+- **`main` package, `handleOTAUploadRequest`** (`main/otaupload_test.go`, new file): an ordinary
+  (non-mounted) directory rejected end-to-end over real HTTP, a missing persistent-data path
+  rejected, rejection leaves no staged file and no OTA state mutation (never creates the overlay-
+  disable marker or requests a reboot), the rejection error is bounded (no stack trace, no
+  unexpected leakage), two concurrent uploads each reject independently (the guard holds no shared
+  mutable state to race on), and the pre-existing malformed/empty-multipart-body handling is
+  confirmed unchanged.
+- **Explicit test-coverage boundary, disclosed rather than overstated**: a full end-to-end
+  acceptance test against a *real* mounted filesystem (proving the upload succeeds when
+  `otaPersistentDataRoot` is a genuine dedicated ext4 mount) requires `CAP_SYS_ADMIN` to construct
+  a real mount - confirmed absent in this test sandbox by direct probe (a plain self bind-mount
+  fails with "operation not permitted"). That acceptance path's own *decision logic* is fully
+  covered by `IsDedicatedPersistentMount`'s pure unit tests above; the real-mount, end-to-end
+  version of that same test is deferred to the loop-device-backed CI tests planned for the
+  persistent-storage partition work (Workstream C), which can construct one.
+- **`image_build/.../overlayctl`** (`test/overlayctl_test.sh`, new): runs the real script end to
+  end against a fake `findmnt` stub on `PATH` - root reported as `overlay` (active), root reported
+  as `ext4` (inactive - the exact case the old check got wrong), the same `ext4` case with a stale
+  leftover directory present (proving directory existence is no longer consulted at all), a
+  failing `findmnt` degrading safely to "inactive" rather than crashing or false-reporting
+  "active", and confirms `status` performs no mutation. Shell syntax also verified with `sh -n`.
+- Full `go build`/`go vet`/`gofmt`/`go test -race` run clean on `ota`, `readiness`, `main` after
+  this change (see PR description for the exact commands and results).
 
 ## Safest recovery path (for any device found in this same stuck state)
 

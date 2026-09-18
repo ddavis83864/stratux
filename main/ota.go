@@ -47,6 +47,14 @@ import (
 // established pattern. Never reassigned in production.
 var otaDir = "/var/lib/stratux-data/updates"
 
+// otaPersistentDataRoot is PersistentDataPath, checked by
+// validateStagingPersistence - a var, not a direct reference to the
+// PersistentDataPath const, solely so tests can redirect it at a real
+// mountpoint (or a plain temp directory, to exercise the rejection path)
+// for the duration of one test, mirroring otaDir's own established
+// pattern immediately above. Never reassigned in production.
+var otaPersistentDataRoot = PersistentDataPath
+
 func otaStagedDir() string { return filepath.Join(otaDir, "staged") }
 func otaBackupDir() string { return filepath.Join(otaDir, "backup") }
 
@@ -224,30 +232,49 @@ func findEmbeddedCommit(data []byte) string {
 }
 
 // validateStagingPersistence proves otaDir is genuinely backed by
-// persistent storage - sharing /overlay/robase's own device number,
-// exactly like the overlay-disable marker's own proof in
-// requestOverlayDisable below - before this process ever accepts an
-// upload into it. This does not attempt to fix the underlying gap (this
-// project's image build does not provision PersistentDataPath as a
-// dedicated partition at all - see
-// docs/ota-persistent-storage-defect.md), only to fail fast and
+// persistent storage before this process ever accepts an upload into it.
+// This does not attempt to fix the underlying gap (this project's image
+// build does not provision PersistentDataPath as a dedicated partition at
+// all - see docs/ota-persistent-storage-defect.md), only to fail fast and
 // honestly instead of silently discarding a staged package across the
 // overlay-disable reboot, as happened in the incident that led to this
 // check. Like requestOverlayDisable, this is real syscall/exec-touching
-// glue around the tested pure logic in ota.IsPersistent - hardware
-// validation, not a unit test, is this function's own proof; see that
-// incident report for exactly that validation once performed.
+// glue around tested pure logic - hardware validation, not a unit test
+// alone, is this function's own final proof; see that incident report for
+// exactly that validation once performed.
+//
+// Two layered checks, each using the tool actually suited to it:
+//  1. PersistentDataPath itself must be a genuine, dedicated,
+//     non-volatile mount of the exact expected filesystem type
+//     (ota.IsDedicatedPersistentMount, checking findmnt's own resolved
+//     mount target - not device-number equality against root, which
+//     would incorrectly reject the one currently-known-correct hardware
+//     layout: a dedicated partition with an entirely different device
+//     number than root's own).
+//  2. otaDir (a subdirectory of PersistentDataPath, never separately
+//     mounted itself) must share that exact same, already-proven device
+//     - ota.IsPersistent, the right tool for exactly this "has a
+//     subdirectory been shadowed by something else stacked on top"
+//     question, the same one it already answers for the overlay-disable
+//     marker's own directory below.
 func validateStagingPersistence() error {
-	reference, err := ota.StatMount("/overlay/robase")
+	root, err := ota.StatMount(otaPersistentDataRoot)
 	if err != nil {
-		return fmt.Errorf("could not verify persistent storage: could not stat /overlay/robase: %w", err)
+		return fmt.Errorf("could not verify persistent storage: could not stat %s: %w", otaPersistentDataRoot, err)
 	}
+	if ok, reason := ota.IsDedicatedPersistentMount(root, otaPersistentDataRoot); !ok {
+		return fmt.Errorf("persistent data path is not genuinely persistent storage: %s", reason)
+	}
+	if root.FSType != PersistentDataFSType {
+		return fmt.Errorf("persistent data path %s is mounted as %q, expected %q", otaPersistentDataRoot, root.FSType, PersistentDataFSType)
+	}
+
 	candidate, err := ota.StatMount(otaDir)
 	if err != nil {
 		return fmt.Errorf("could not verify persistent storage: could not stat %s: %w", otaDir, err)
 	}
-	if ok, reason := ota.IsPersistent(candidate, reference); !ok {
-		return fmt.Errorf("staging location is not genuinely persistent storage: %s", reason)
+	if ok, reason := ota.IsPersistent(candidate, root); !ok {
+		return fmt.Errorf("staging location is not on the same persistent filesystem as %s: %s", otaPersistentDataRoot, reason)
 	}
 	return nil
 }

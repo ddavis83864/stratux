@@ -33,13 +33,21 @@ import (
 	"github.com/stratux/stratux/readiness"
 )
 
-// MountIdentity captures a path's device number and filesystem type, used
-// to prove a marker write actually lands on genuinely persistent storage
-// rather than a volatile shadow mounted over the intended directory.
+// MountIdentity captures a path's device number, filesystem type, and
+// findmnt's own resolved mount target, used to prove a marker write (or a
+// staging location) actually lands on genuinely persistent storage rather
+// than a volatile shadow mounted over the intended directory.
 type MountIdentity struct {
 	Path   string
 	Device uint64
 	FSType string
+
+	// Target is findmnt's own reported mountpoint for Path - the mount
+	// that actually covers Path, which is Path itself only when Path is a
+	// genuine, dedicated mountpoint in its own right. See
+	// IsDedicatedPersistentMount, which is built entirely around this
+	// field.
+	Target string
 }
 
 // volatileFSTypes are filesystem types that never persist across a
@@ -90,5 +98,45 @@ func StatMount(path string) (MountIdentity, error) {
 	if err != nil {
 		return MountIdentity{}, fmt.Errorf("findmnt %s: %w", path, err)
 	}
-	return MountIdentity{Path: path, Device: uint64(st.Dev), FSType: mnt.FSType}, nil
+	return MountIdentity{Path: path, Device: uint64(st.Dev), FSType: mnt.FSType, Target: mnt.Target}, nil
+}
+
+// IsDedicatedPersistentMount reports whether candidate (as returned by
+// StatMount(requestedPath)) is a genuine, separately-mounted, non-volatile
+// filesystem in its own right at requestedPath - the proof this project's
+// OTA staging location needs, and a deliberately different question from
+// IsPersistent's own device-identity-against-a-known-good-reference check.
+//
+// IsPersistent is the right tool when a path is *expected* to be a plain
+// bind-mounted view of an already-proven-real filesystem (the
+// overlay-disable marker's own directory, which must share
+// /overlay/robase's exact device number - a different, unrelated
+// filesystem stacked on top would be the failure to catch). It is the
+// wrong tool for the staging-location question: the one, and only,
+// currently-known-correct persistent-data layout on real hardware (the
+// operational device's own dedicated /dev/mmcblk0p3) has a *different*
+// device number than root entirely, by design - requiring device equality
+// against root or its base would incorrectly reject exactly the
+// configuration this check must accept. A future bind-mount-based
+// provisioning design (sharing root's own device) must equally be
+// accepted - so device number, in either direction, is not this
+// function's test at all.
+//
+// The actual test: requestedPath must be findmnt's own reported mount
+// target (not merely a directory reached through some covering ancestor
+// mount - overwhelmingly, in practice, the root overlay), and its
+// filesystem type must not be one of the volatile types IsPersistent also
+// rejects. Both a dedicated partition and a bind-mounted subtree of the
+// real lower root satisfy this equally, as they should - what must never
+// satisfy it is an ordinary directory whose apparent "mount" is only ever
+// the covering root/overlay itself, which is exactly the incident this
+// exists to prevent from recurring.
+func IsDedicatedPersistentMount(candidate MountIdentity, requestedPath string) (bool, string) {
+	if volatileFSTypes[candidate.FSType] {
+		return false, fmt.Sprintf("%s is a volatile filesystem (%s), not persistent storage", requestedPath, candidate.FSType)
+	}
+	if candidate.Target != requestedPath {
+		return false, fmt.Sprintf("%s is not a dedicated mountpoint (covered by the mount at %q instead) - it is an ordinary directory, not genuine persistent storage", requestedPath, candidate.Target)
+	}
+	return true, ""
 }

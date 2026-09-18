@@ -243,13 +243,25 @@ type MountInfo struct {
 	FSType   string
 	UUID     string
 	ReadOnly bool
+
+	// Target is the mountpoint findmnt actually resolved --target's path
+	// to - the mount covering the path, not necessarily the path itself.
+	// Comparing Target against the original queried path is how a caller
+	// proves a path is a *dedicated* mountpoint in its own right, as
+	// opposed to an ordinary directory merely reached through some
+	// ancestor mount (most commonly the root overlay) - see
+	// ota.IsDedicatedPersistentMount, which is exactly this proof applied
+	// to the OTA staging location.
+	Target string
 }
 
 // DiscoverableMount reports whether info is structurally sound enough to
 // safely pin as the expected persistent-data filesystem the first time no
 // UUID has been configured yet: actually present, actually mounted,
-// read-write, and - critically - the expected filesystem type (ext4 for
-// the mission's dedicated data partition).
+// read-write, a genuinely dedicated mountpoint AT path itself (not merely
+// an ordinary directory reached through some covering ancestor mount),
+// and - critically - the expected filesystem type (ext4 for the mission's
+// dedicated data partition).
 //
 // This is the gate between "configurable" and "discoverable" in the
 // installation-safety design: an operator can always set an expected UUID
@@ -261,8 +273,22 @@ type MountInfo struct {
 // subsequent check is the ordinary strict UUID comparison in
 // EvaluateStorage - this function is only consulted for the one-time
 // discovery decision, not on every check.
-func DiscoverableMount(info MountInfo, present bool, expectedFSType string) bool {
-	return present && info.Mounted && !info.ReadOnly && info.FSType == expectedFSType && info.UUID != ""
+//
+// The Target == path requirement closes a real, hardware-confirmed
+// incident (see docs/ota-persistent-storage-defect.md): a genuinely
+// abnormal, overlay-disabled bare-ext4 boot makes findmnt report
+// FSType=="ext4" for *every* path under root, including one this project
+// never actually provisions as its own dedicated partition - path was, in
+// that boot, still just an ordinary directory on the bare root, never
+// separately mounted, and pinning its UUID as if it were the real,
+// durably-persistent data partition produced exactly the false-readiness
+// result that incident's own report documents. Requiring path to be
+// findmnt's own reported mount target - true only for a genuinely
+// dedicated mount, whether that is a distinct partition or a deliberately
+// bind-mounted subtree - closes this for good, independent of which
+// filesystem type happens to be reported.
+func DiscoverableMount(path string, info MountInfo, present bool, expectedFSType string) bool {
+	return present && info.Mounted && !info.ReadOnly && info.Target == path && info.FSType == expectedFSType && info.UUID != ""
 }
 
 var findmntPairPattern = regexp.MustCompile(`(\w+)="([^"]*)"`)
@@ -280,7 +306,7 @@ var findmntPairPattern = regexp.MustCompile(`(\w+)="([^"]*)"`)
 // exactly the mount types this package spends the most time on: overlay
 // and tmpfs (the Raspberry Pi's own root and its writable overlay layer).
 func FindMount(path string) (MountInfo, error) {
-	out, err := exec.Command("findmnt", "-n", "-P", "-o", "SOURCE,FSTYPE,UUID,OPTIONS", "--target", path).Output()
+	out, err := exec.Command("findmnt", "-n", "-P", "-o", "SOURCE,FSTYPE,UUID,OPTIONS,TARGET", "--target", path).Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			// findmnt exits 1 when nothing matches the target - not an error.
@@ -300,6 +326,7 @@ func FindMount(path string) (MountInfo, error) {
 		Source:  fields["SOURCE"],
 		FSType:  fields["FSTYPE"],
 		UUID:    fields["UUID"],
+		Target:  fields["TARGET"],
 	}
 	for _, opt := range strings.Split(fields["OPTIONS"], ",") {
 		if opt == "ro" {
