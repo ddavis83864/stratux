@@ -196,7 +196,10 @@ if [ "$CARD_BYTES" -lt "$MIN_CARD_BYTES" ]; then
 	echo "provision-data-partition: card (${CARD_BYTES} bytes) is below the minimum supported size (16 GiB) - growing root to fill the card; no dedicated persistent-data partition will be created"
 	echo "card capacity ${CARD_BYTES} bytes is below the 16 GiB minimum required for a dedicated persistent-data partition - OTA and durable recording/calibration/diagnostics persistence are not supported on this card; see docs/persistent-data-partition.md" > "$STRATUX_PERSISTENCE_UNSUPPORTED_MARKER"
 	parted -s "$ROOT_DEV" resizepart 2 100%
-	partprobe "$ROOT_DEV"
+	# `|| true`: partprobe can legitimately report a nonzero exit here -
+	# see the longer explanation above resizepart's own partprobe call
+	# below, which applies identically to this fallback branch.
+	partprobe "$ROOT_DEV" || true
 	settle_udev
 	sync
 	echo "RESULT=grew-root-only-below-minimum-card-size"
@@ -215,13 +218,32 @@ ROOT_END_MIB=$((ROOT_START_MIB + ROOT_CAP_MIB))
 
 echo "provision-data-partition: growing root partition to its bounded cap (${ROOT_CAP_MIB} MiB, ending at ${ROOT_END_MIB}MiB)"
 parted -s "$ROOT_DEV" resizepart 2 "${ROOT_END_MIB}MiB"
-partprobe "$ROOT_DEV"
+# `|| true`: on real hardware (confirmed by a hardware-validation run),
+# partition 2 here is the ACTIVE, currently-mounted root partition -
+# unlike this script's own loop-device test fixtures, where the "root"
+# partition under test is never actually mounted by anything. Asking
+# the kernel to re-read the WHOLE partition table (what partprobe does)
+# while one of that table's own partitions is in active use is a
+# well-known Linux hazard: the kernel can safely apply the *other*
+# partition-table changes (the entries this script itself cares about
+# - this resized partition 2 boundary, and later, the brand-new
+# partition 3) via an incremental update, but partprobe can still
+# report a nonzero exit status for being unable to also re-read the
+# *active* partition's own entry live - a partial, expected outcome,
+# not evidence anything this script needs actually failed. This
+# script's own subsequent verification (the `[ -b "$DATA_PART_DEV" ]`
+# check below, and provision-data-partition's own test suite's
+# blkid/lsblk-based assertions) is the real judge of success, never
+# partprobe's own exit code - settle_udev below already handles the
+# *timing* half of this (waiting for udev to catch up with whatever the
+# kernel did apply), this `|| true` handles the *exit-code* half.
+partprobe "$ROOT_DEV" || true
 settle_udev
 sync
 
 echo "provision-data-partition: creating dedicated persistent-data partition (LABEL=stratux-data)"
 parted -s "$ROOT_DEV" mkpart primary ext4 "${ROOT_END_MIB}MiB" 100%
-partprobe "$ROOT_DEV"
+partprobe "$ROOT_DEV" || true # see the long comment on the resizepart partprobe call above - applies identically here
 settle_udev
 sync
 # The new partition is always the 3rd line lsblk reports for this device

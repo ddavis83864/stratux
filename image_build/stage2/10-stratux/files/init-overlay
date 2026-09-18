@@ -44,6 +44,30 @@ if [ -f /var/grow_root_part ]; then
     mount -n -t sysfs sys /sys
     sleep 1 # otherwise proc/sys not yet ready?
 
+    # Remount root read-write BEFORE anything below tries to write to it.
+    # A hardware-validation finding: the previous design opened this
+    # script's own log file (via `tee`, below) - and, later, the fstab
+    # entry - while root was still mounted read-only, exactly as
+    # cmdline.txt's own `ro` flag leaves it at this point in boot
+    # (confirmed directly: `mount -o remount,rw /` used to run only
+    # *after* both of those writes had already been attempted). `tee`
+    # does not abort its own pipe when it cannot open an output file -
+    # it logs the failure to stderr and keeps piping to whatever else
+    # succeeded - so provision-data-partition still ran, but nothing it
+    # printed was ever captured: the log file was never created at all
+    # (confirmed directly against the affected device: absent even on
+    # its own bare root partition, not merely hidden by the overlay's
+    # own later `rm -r /var/log/*`). RESULT_LINE then read back as
+    # empty, matched neither case pattern below, and - the actual
+    # defect - the one-time retry marker was removed and a reboot
+    # issued regardless, silently discarding whatever
+    # provision-data-partition had actually done or reported, with zero
+    # durable evidence left for a later boot (or a human) to diagnose.
+    # See docs/persistent-data-partition.md's "First-boot provisioning:
+    # a durable, bounded, idempotent state machine" section for the
+    # full incident and the state-machine design that now closes it.
+    mount -o remount,rw /
+
     ROOT_PART_DEV=$(findmnt / -no source)
     ROOT_DEV_NAME=$(lsblk -no pkname  "$ROOT_PART_DEV")
     ROOT_DEV="/dev/${ROOT_DEV_NAME}"
@@ -52,46 +76,65 @@ if [ -f /var/grow_root_part ]; then
     RESULT_LINE=$(grep '^RESULT=' /var/log/provision-data-partition.log | tail -1)
     echo "$RESULT_LINE"
 
-    mount -o remount,rw /
     resize2fs "$ROOT_PART_DEV"
 
-    case "$RESULT_LINE" in
-        RESULT=provisioned*|RESULT=already-provisioned*)
-            mkdir -p /var/lib/stratux-data
-            if ! grep -q '[[:space:]]/var/lib/stratux-data[[:space:]]' /etc/fstab; then
-                # nofail: a missing/failed mount must never block boot or
-                # take down stratux.service - this partition is optional
-                # persistence, never a prerequisite for core ADS-B/GPS/
-                # GDL90 function (see docs/persistent-data-partition.md's
-                # own "B3: Mount and service ordering").
-                # x-systemd.before=stratux.service: pure *ordering*, no
-                # Requires= - this is the fix for a real race a review
-                # identified: without it, nothing guarantees the mount
-                # *attempt* (success or failure) has fully resolved
-                # before stratuxrun starts and a namespace writer could
-                # create a file at this path. If that raced and the
-                # partition mounted moments later, the newly-mounted
-                # filesystem would silently shadow whatever was already
-                # written into the overlay's own directory underneath it
-                # - invisible, orphaned data. This ordering closes that
-                # window completely: stratux.service (and its own
-                # ExecStartPre, stratux-pre-start.sh) cannot start until
-                # this mount's own start job has completed one way or
-                # the other, so no writer can ever act before the
-                # decision for this boot is already final.
-                # x-systemd.device-timeout=5s: bounds how long that
-                # ordering can ever delay boot if the partition is
-                # missing/slow to enumerate - an onboard SD partition
-                # should appear near-instantly; this is generous enough
-                # to absorb ordinary enumeration delay without
-                # meaningfully delaying core startup in the worst case.
-                echo "LABEL=stratux-data  /var/lib/stratux-data  ext4  defaults,noatime,nofail,x-systemd.device-timeout=5s,x-systemd.before=stratux.service  0  2" >> /etc/fstab
-            fi
-            mount /var/lib/stratux-data
+    # finalize-data-partition-provisioning (own file) is the durable,
+    # bounded, idempotent state machine deciding what this outcome
+    # means, whether the fstab entry can be written, and - critically -
+    # whether the one-time retry marker may be removed yet at all. See
+    # that file's own doc comment for the full FINALIZE= contract.
+    FINALIZE_LINE=$(/sbin/finalize-data-partition-provisioning "$RESULT_LINE" | tail -1)
+    case "$FINALIZE_LINE" in
+        FINALIZE=success)
+            # nofail: a missing/failed mount must never block boot or
+            # take down stratux.service - this partition is optional
+            # persistence, never a prerequisite for core ADS-B/GPS/
+            # GDL90 function (see docs/persistent-data-partition.md's
+            # own "B3: Mount and service ordering").
+            # x-systemd.before=stratux.service: pure *ordering*, no
+            # Requires= - closes a real shadow-mount race: without it,
+            # nothing guarantees the mount *attempt* (success or
+            # failure) has fully resolved before stratuxrun starts and
+            # a namespace writer could create a file at this path. If
+            # that raced and the partition mounted moments later, the
+            # newly-mounted filesystem would silently shadow whatever
+            # was already written into the overlay's own directory
+            # underneath it - invisible, orphaned data. This ordering
+            # closes that window completely: stratux.service (and its
+            # own ExecStartPre, stratux-pre-start.sh) cannot start
+            # until this mount's own start job has completed one way
+            # or the other, so no writer can ever act before the
+            # decision for this boot is already final.
+            # x-systemd.device-timeout=5s: bounds how long that
+            # ordering can ever delay boot if the partition is
+            # missing/slow to enumerate - an onboard SD partition
+            # should appear near-instantly; this is generous enough to
+            # absorb ordinary enumeration delay without meaningfully
+            # delaying core startup in the worst case. A same-boot
+            # mount failure here is not itself an error - see
+            # finalize-data-partition-provisioning's own comment on why
+            # the durably-written fstab entry alone already satisfies
+            # this design's "next-boot requirement explicitly recorded"
+            # removal gate.
+            mount /var/lib/stratux-data 2>/dev/null || true
+            ;;
+        FINALIZE=retry)
+            # Marker deliberately left in place by
+            # finalize-data-partition-provisioning - reboot below
+            # retries on the very next boot, up to the bounded attempt
+            # limit, never indefinitely.
+            ;;
+        FINALIZE=exhausted)
+            # Marker already removed by
+            # finalize-data-partition-provisioning, along with a
+            # durable, human-readable reason written to
+            # /etc/stratux-persistence-unsupported - main/health.go
+            # surfaces it directly in Storage's own health Reason, so
+            # this boots normally into an honest NOT_READY state rather
+            # than silently pretending persistence is unavailable for
+            # no stated reason.
             ;;
     esac
-
-    rm -f /var/grow_root_part
 
     #mount -o remount,ro /
     umount /sys
