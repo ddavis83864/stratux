@@ -781,6 +781,17 @@ func handleExportRecordingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse to write rather than silently landing the export in the
+	// RAM-backed overlay directory at PersistentDataPath if the real
+	// partition failed to mount - see readiness.EnsurePersistentDir and
+	// docs/persistent-data-partition.md's namespace audit. An export a
+	// pilot believes was saved, but which actually vanished with the
+	// overlay at next reboot, is exactly the silent-loss failure mode
+	// this guards against.
+	if err := ensurePersistentDataMounted(); err != nil {
+		http.Error(w, fmt.Sprintf("could not persist export: %s", err), http.StatusInternalServerError)
+		return
+	}
 	if err := os.MkdirAll(exportsDir, 0o755); err != nil {
 		http.Error(w, fmt.Sprintf("could not create exports directory: %s", err), http.StatusInternalServerError)
 		return

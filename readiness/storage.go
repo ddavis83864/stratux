@@ -9,6 +9,71 @@ import (
 	"time"
 )
 
+// UnsupportedPersistenceMarkerPath is where provision-data-partition (see
+// image_build/stage2/10-stratux/files/) writes a plain-text explanation
+// on first boot if the card is below the minimum size a dedicated
+// persistent-data partition requires - see
+// docs/persistent-data-partition.md. Deliberately not under
+// PersistentDataPath itself: that path is exactly what is unavailable in
+// this case, so the explanation lives directly on the base image
+// filesystem instead, visible identically whether read through the
+// protected overlay or directly on bare ext4.
+const UnsupportedPersistenceMarkerPath = "/etc/stratux-persistence-unsupported"
+
+// UnsupportedPersistenceReason reads UnsupportedPersistenceMarkerPath and
+// returns its content, or "" if the file does not exist (the ordinary
+// case - a card at or above the minimum size never has this marker) or
+// cannot be read for any other reason (degrades to "no explanation
+// available" rather than erroring - this is purely explanatory, never
+// load-bearing for any decision).
+func UnsupportedPersistenceReason() string {
+	data, err := os.ReadFile(UnsupportedPersistenceMarkerPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// EnsurePersistentDir verifies that persistentRoot - the project's one
+// dedicated persistent-data mount point (main.PersistentDataPath in
+// production) - is genuinely mounted right now as a dedicated, writable,
+// non-volatile filesystem, returning a descriptive error if not.
+//
+// Every persistence namespace documented in
+// docs/persistent-data-partition.md's own namespace audit calls this
+// immediately before creating its own subdirectory/file under
+// persistentRoot, specifically so that a missing, failed, or not-yet-
+// resolved mount there (nofail - see
+// image_build/stage2/10-stratux/files/init-overlay) can never result in
+// silently writing into the RAM-backed overlay directory that exists at
+// that same path regardless of whether the real partition is mounted.
+// See docs/ota-persistent-storage-defect.md for the incident this exact
+// class of gap already caused once, for OTA staging specifically (closed
+// there by validateStagingPersistence/IsDedicatedPersistentMount) - this
+// is the same proof, generalized so every other namespace can share one
+// implementation instead of re-deriving it.
+//
+// Reuses IsDedicatedMount, the same canonical check DiscoverableMount and
+// ota.IsDedicatedPersistentMount already share - device number is never
+// compared (a dedicated partition and a bind-mounted subtree of the real
+// root both count equally), only that persistentRoot is genuinely its own
+// mount target (not merely an ordinary directory reached through some
+// covering ancestor, overwhelmingly in practice the root overlay) and its
+// filesystem type is not one of the volatile ones (tmpfs/overlay/etc).
+func EnsurePersistentDir(persistentRoot string) error {
+	mnt, err := FindMount(persistentRoot)
+	if err != nil {
+		return fmt.Errorf("could not verify %s is mounted: %w", persistentRoot, err)
+	}
+	if ok, reason := IsDedicatedMount(mnt, persistentRoot); !ok {
+		return fmt.Errorf("refusing to write: %s", reason)
+	}
+	if mnt.ReadOnly {
+		return fmt.Errorf("refusing to write: %s is mounted read-only", persistentRoot)
+	}
+	return nil
+}
+
 // StorageThresholds are the utilization points at which persistent storage
 // health degrades. Percentages are of used space (0-100).
 //

@@ -263,6 +263,13 @@ func metadataPath(dir string) string {
 // orphaned ".tmp" file next to either no metadata.json or the previous
 // valid one.
 func atomicWriteMetadata(dir string, meta SessionMetadata) error {
+	// See ensurePersistentDir's own doc comment (store.go, same
+	// package) - refuses to write metadata into the RAM-backed overlay
+	// directory if the real dedicated data partition is not genuinely
+	// mounted.
+	if err := ensurePersistentDir(); err != nil {
+		return fmt.Errorf("could not persist recording metadata: %w", err)
+	}
 	data, err := json.MarshalIndent(&meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("could not marshal recording metadata: %w", err)

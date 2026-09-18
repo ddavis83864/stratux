@@ -2,6 +2,7 @@ package readiness
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -252,6 +253,47 @@ func TestCertifyPersistentStorage_RealTempDirIsWritableAndReady(t *testing.T) {
 	}
 	if !h.LastWriteTestOK {
 		t.Errorf("a writable temp directory should pass its write test: %s", h.LastWriteTestError)
+	}
+}
+
+func TestEnsurePersistentDir_RealTempDirIsNotADedicatedMount(t *testing.T) {
+	// A plain t.TempDir() is never its own genuine, non-volatile
+	// dedicated mount - the same real (not mocked) behavior
+	// TestFindMount_RealTempDir above exercises. EnsurePersistentDir
+	// must refuse it, exactly as it must refuse the real RAM-backed
+	// overlay directory that exists at PersistentDataPath even when the
+	// real partition is not mounted - this is the one thing this
+	// function exists to prove, so it is worth pinning down with a real
+	// (non-synthetic) directory rather than only via IsDedicatedMount's
+	// own already-covered synthetic MountInfo cases below.
+	//
+	// Which of IsDedicatedMount's two rejection reasons fires depends on
+	// what filesystem actually backs /tmp on the machine running this
+	// test - ext4/xfs/etc backing a plain subdirectory trips the "not a
+	// dedicated mountpoint" branch, while /tmp itself being tmpfs or (as
+	// in this project's own docker-based CI toolchain) an overlay
+	// filesystem trips the "volatile filesystem" branch instead. Both
+	// are correct rejections of the same underlying fact (not a genuine
+	// dedicated persistent mount), so this only asserts the common
+	// "refusing to write" prefix every EnsurePersistentDir rejection
+	// shares, not which specific branch fired.
+	dir := t.TempDir()
+	err := EnsurePersistentDir(dir)
+	if err == nil {
+		t.Fatal("EnsurePersistentDir should refuse a plain temp directory that is not its own dedicated mount")
+	}
+	if !strings.Contains(err.Error(), "refusing to write") {
+		t.Errorf("expected a 'refusing to write' error, got: %v", err)
+	}
+}
+
+func TestEnsurePersistentDir_NonexistentPathFails(t *testing.T) {
+	// findmnt --target on a path that does not exist at all cannot
+	// resolve anything; EnsurePersistentDir must fail closed (refuse to
+	// write), never treat "could not even check" as "must be fine."
+	err := EnsurePersistentDir("/this/path/does/not/exist/at/all/stratux-test")
+	if err == nil {
+		t.Fatal("EnsurePersistentDir should fail closed for a path findmnt cannot resolve")
 	}
 }
 

@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -80,6 +81,19 @@ func (filePersistence) ClearPendingTransaction() error {
 // own established temp-file+fsync+atomic-rename idiom - see
 // main/alertsettings.go's saveAlertSettings for the canonical original.
 func atomicWriteJSON(path string, v interface{}) error {
+	// Refuse to persist rather than silently write into the RAM-backed
+	// overlay directory at PersistentDataPath when the real partition
+	// failed to mount - see readiness.EnsurePersistentDir and
+	// docs/persistent-data-partition.md's namespace audit. wifiadmin's
+	// own rollback logic depends on SaveLastKnownGood/
+	// SavePendingTransaction actually landing on durable storage before
+	// it proceeds with a risky network change - silently succeeding
+	// against the overlay instead would make that safety net vanish on
+	// the very next reboot without anyone being told.
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist wifi admin state: %w", err)
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
