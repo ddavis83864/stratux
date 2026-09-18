@@ -2,19 +2,27 @@
 
 ## Status
 
-**Design implemented, reviewed, and corrected. Unit/loop-device/static gates green. Not yet
-hardware-validated on any physical device.** This closes the provisioning gap
-`docs/ota-persistent-storage-defect.md` documents: `/var/lib/stratux-data` is now a genuinely
-dedicated, separately-mounted ext4 partition on any newly-built, freshly-flashed image - never
-provisioned automatically on an already-deployed device. See "Hardware-validation checklist" below
-for exactly what remains, and `docs/ota-persistent-storage-defect.md` for the incident this exists
-to close.
+**Design implemented, reviewed, corrected, and hardware-tested once. A hardware-validation run
+found and closed a real first-boot provisioning state-management defect (see "First-boot
+provisioning: a durable, bounded, idempotent state machine" below). Unit/loop-device/static gates
+green. Not yet re-validated on physical hardware against the corrected design.** This closes the
+provisioning gap `docs/ota-persistent-storage-defect.md` documents: `/var/lib/stratux-data` is now
+a genuinely dedicated, separately-mounted ext4 partition on any newly-built, freshly-flashed image -
+never provisioned automatically on an already-deployed device. See "Hardware-validation checklist"
+below for exactly what remains, and `docs/ota-persistent-storage-defect.md` for the incident this
+exists to close.
 
-A review pass identified five gaps in the design as first implemented, all closed in this revision:
-deterministic mount ordering (B3), a writer-behavior guard shared by every persistence namespace
-(B5), dynamic mount-state test coverage (Tests), strengthened provisioning safety checks (B2), and
-first-boot durability/idempotency proof (B2). Each is called out inline below, and summarized in
-"Review-response changes" at the end of this document.
+A review pass identified five gaps in the design as first implemented, all closed in a first
+revision: deterministic mount ordering (B3), a writer-behavior guard shared by every persistence
+namespace (B5), dynamic mount-state test coverage (Tests), strengthened provisioning safety checks
+(B2), and first-boot durability/idempotency proof (B2). A subsequent hardware-validation run on a
+sacrificial card then found a real, independent defect in that same first-boot durability work -
+see the dedicated section below for the full incident and its correction. Each is called out inline
+in its own section, and summarized in "Review-response changes" at the end of this document.
+
+**The device used for that hardware-validation run remains booted, unmodified, and not yet
+reimaged or removed** - a controlled removal/reimage procedure is a separately authorized next
+step, not yet performed.
 
 ## B1: Current image and boot lifecycle (as traced from source)
 
@@ -201,6 +209,125 @@ ext4 - already what every other partition on this image uses (root, and boot's o
 already what `PersistentDataFSType` (`main/health.go`) already hardcodes and every readiness/OTA
 check already expects, and already what the operational device's own existing third partition
 uses. No evidence surfaced during this investigation favoring any alternative.
+
+## First-boot provisioning: a durable, bounded, idempotent state machine
+
+### The hardware-validation incident
+
+A real, physical first-boot run on a sacrificial card - a genuinely fresh, ≥16 GiB, correctly
+imaged, correctly detected card - completed its boot/reboot cycle, but **the persistent-data
+partition was never created**: root stayed at its unshrunk, unshipped 1.9 GiB size, the partition
+table stayed at 2 partitions, and `/var/lib/stratux-data` did not exist. `readiness`'s own new
+writer guards (see "B5" below) correctly refused every write into the resulting ordinary directory
+- proving *that* mechanism worked exactly as designed - but the underlying cause was upstream, in
+first-boot provisioning itself.
+
+Read-only forensics (SSH into the booted device, no reboot, no write, no re-run of the provisioner
+- see the investigation's own evidence trail for the full detail) traced the exact command order in
+the pre-fix `init-overlay` and found a real, reproducible structural defect, independent of - and
+in addition to - whatever provision-data-partition itself may or may not have accomplished on that
+specific card:
+
+1. `cmdline.txt`'s own `ro` flag leaves root mounted **read-only** at the moment `init-overlay`
+   begins - confirmed directly from the kernel's own boot log (`VFS: Mounted root (ext4 filesystem)
+   readonly`).
+2. The pre-fix script called `/sbin/provision-data-partition ... | tee
+   /var/log/provision-data-partition.log` **before** ever remounting root read-write. `tee` opening
+   that file for writing must fail (`Read-only file system`) - and GNU `tee` does not abort its own
+   pipe when one of its named output files fails to open; it logs the failure to stderr and keeps
+   copying stdin through to whatever else succeeded (its own stdout). So provision-data-partition
+   still ran, but **nothing it printed was ever captured to disk** - confirmed directly against the
+   affected device: the log file is absent even from the device's own bare root partition (checked
+   via the real, underlying `ext4` filesystem directly, not merely the overlay's own view - ruling
+   out the overlay's later, unrelated `rm -r /var/log/*` housekeeping as an alternative explanation).
+3. `RESULT_LINE=$(grep '^RESULT=' /var/log/provision-data-partition.log | tail -1)` then read back
+   as empty (grep on a file that was never created), matching neither `provisioned*` nor
+   `already-provisioned*` in the case statement that follows - so the fstab/mount step was silently
+   skipped, with **no distinct failure path, no error surfaced, nothing recorded**.
+4. `rm -f /var/grow_root_part` - the one-time retry marker - ran **unconditionally**, regardless of
+   `RESULT_LINE`'s content, confirmed absent from the device's own bare root partition afterward
+   (not an overlay-view artifact).
+5. `reboot -f` then ran, also **unconditionally** - consistent with the device's own observed
+   "completed its uninterrupted first-boot/reboot sequence."
+
+Separately, and only a *plausible*, not proven, contributing cause (the affected card was not
+re-tested against it, per the explicit instruction not to re-run the provisioner or reboot the
+device again): `provision-data-partition`'s own `partprobe` calls had no tolerance for a nonzero
+exit status, under `set -e`. On real hardware, partition 2 being resized is the **actively-mounted
+root partition itself** - unlike this project's own loop-device test fixtures, where the "root"
+partition under test is never actually mounted by anything. Asking the kernel to re-read an entire
+partition table (what `partprobe` does) while one of that table's own partitions is in active use
+is a well-documented Linux hazard: the kernel can safely apply the *other* table changes
+incrementally, but `partprobe` can still report a nonzero exit for being unable to also re-read the
+*active* partition's own entry live - a partial, expected outcome under `set -e` this script had no
+tolerance for. Fixed regardless of whether it was the actual trigger here, since it is a real
+correctness gap either way: every `partprobe` call in `provision-data-partition` is now `|| true`,
+with `settle_udev` (unchanged) still doing the actual job of waiting for the kernel/udev to catch
+up - the script's own downstream verification (`[ -b "$DATA_PART_DEV" ]`, blkid/lsblk-based checks)
+was always the real judge of success, never `partprobe`'s own exit code.
+
+**None of this is a claim that `provision-data-partition` itself is broken** - its own extensively
+tested, idempotent, resumable partition/filesystem logic (proven via 7 loop-device test cases, see
+"Tests" below) is unchanged in its own design. The defect closed here is entirely in how
+`init-overlay` handled provisioning's *outcome*: a same-boot log-write failure (timing), and -
+regardless of cause - an unconditional, unrecoverable consumption of the only retry signal on any
+kind of failure.
+
+### The corrected design
+
+`init-overlay`'s marker branch and a new, dedicated, directly-testable script,
+`/sbin/finalize-data-partition-provisioning` (factored out for exactly the same reason
+`provision-data-partition` itself was: so it can be exercised directly, in
+`test/finalize_data_partition_provisioning_test.sh`, without needing to boot from an image under
+test), now implement a durable, bounded, idempotent state machine:
+
+- **`mount -o remount,rw /` now runs first**, before anything in the marker branch attempts to
+  write anything - closing the read-only-root timing defect completely, by construction.
+- **A durable state file** (`/var/stratux-provision-state` by default, overridable via
+  `STRATUX_PROVISION_STATE_FILE` for testing) records `STAGE`, `ATTEMPTS`, `LAST_ERROR`, and
+  `UPDATED_AT` after every attempt, written atomically (temp file, `sync`, rename, `sync` again).
+  Only `ATTEMPTS` (always a plain digit string) is ever read back programmatically on a later
+  attempt; the other fields are for diagnosis - and are never re-parsed as shell code, avoiding a
+  real quoting bug an early version of this fix had (`LAST_ERROR` can contain arbitrary text -
+  spaces, `=` - copied from a `RESULT=` line, which is not safe to naively source back in).
+- **`LAST_ERROR` is bounded and sanitized** (flattened to one line, capped at 300 characters) before
+  it is ever persisted, so an unbounded or adversarial error can never blow up the state file or the
+  unsupported-persistence marker.
+- **The one-time retry marker is removed only after a terminal outcome is reached**: full success
+  (partition table correct, root resize complete, partition 3 exists, ext4 formatted and labeled,
+  fstab entry durably written - all of which a `provisioned`/`already-provisioned` `RESULT=` from
+  `provision-data-partition` already guarantees, given that script's own extensively-tested
+  correctness), the documented below-16-GiB fallback (also terminal - a card's own measured capacity
+  cannot change between attempts), or bounded-attempt exhaustion / a definitively rejected layout
+  (see below). Same-boot mount validation succeeding is **not** required before removing the marker
+  on the success path: the durably-written, `sync`'d fstab entry itself **is** the "next-boot
+  requirement explicitly recorded" this design's own removal gate allows - ordinary systemd boot
+  will retry that `nofail`-guarded mount on every future boot regardless of whether this boot's own
+  same-boot `mount` attempt happens to succeed.
+- **Bounded automatic attempts** (`MAX_PROVISION_ATTEMPTS`, default 3): an inconclusive outcome
+  (most notably an empty `RESULT_LINE` - the exact failure mode the hardware incident produced)
+  is retried, marker preserved, up to the bound - reboot-loop protection by construction, not merely
+  documented intent.
+- **Never retried against an unexpected/custom layout**: `RESULT=skipped-unexpected-layout` is
+  treated as immediately, permanently terminal, regardless of the attempt budget - nothing about a
+  card's own partition table changes between reboots, so every future attempt would deterministically
+  reject it identically; retrying would only waste bounded attempts (and reboots) on an outcome that
+  cannot change.
+- **On terminal failure (exhausted or rejected), boots normally into an honest `NOT_READY` state**:
+  the marker is removed (further retries would be pointless or unsafe), and a clear, durable reason
+  - including the attempt count and the sanitized last error - is written to the same
+  `/etc/stratux-persistence-unsupported` marker the below-16-GiB fallback already uses, surfaced
+  identically via `readiness.UnsupportedPersistenceReason()` and `main/health.go`'s `Storage.Reason`
+  - never silently discarded the way the pre-fix design's own failure evidence was.
+- **The operational, already-provisioned three-partition layout is unaffected**: unchanged from the
+  original design, `provision-data-partition`'s own partition-count and identity checks (see "B2"
+  above) mean this entire state machine is never even reached on such a device in the first place.
+
+See `test/finalize_data_partition_provisioning_test.sh` for the fault-injection suite proving every
+one of the above properties directly against the real, unmodified script - not a reimplementation -
+including the exact "empty `RESULT_LINE`, retried up to the bound, marker preserved throughout,
+exhausted cleanly on the final attempt" sequence the hardware incident itself exhibited a version of
+without any of these protections.
 
 ## B3: Mount and service ordering
 
@@ -435,7 +562,28 @@ Workstream D's persistence matrix performs.
   writer's own point of view), and **mount disappearing during operation** (a session that started
   successfully while the mount was present is refused at its next file rotation once the mount
   vanishes, never continuing to write into whatever now backs that path).
-- `sh -n`/`dash -n` clean on `init-overlay` and `provision-data-partition`.
+- `sh -n`/`dash -n` clean on `init-overlay`, `provision-data-partition`, and
+  `finalize-data-partition-provisioning`.
+- **`test/finalize_data_partition_provisioning_test.sh`** (new, added for the hardware-validation
+  finding): the fault-injection suite for the durable state machine, running the real, unmodified
+  `/sbin/finalize-data-partition-provisioning` script against plain files in a disposable temp
+  directory (no loop devices needed - this script only ever touches ordinary files). 33 checks, all
+  green: a clean `provisioned` outcome (fstab entry written exactly once, correct
+  `nofail`/`x-systemd.before=stratux.service` options, marker and state file both removed, no
+  unsupported-persistence marker); `already-provisioned` (idempotent - no duplicate fstab entry);
+  the below-16-GiB fallback (success, no fstab entry expected); an unexpected/custom layout
+  (exhausted on the very first attempt, never retried, clear durable reason recorded); the exact
+  hardware-observed failure mode - an empty `RESULT_LINE` - bounded-retried across 3 simulated
+  reboots (marker preserved on attempts 1 and 2, state file's own `ATTEMPTS` correctly resumed from
+  what the *previous* invocation persisted, exhausted cleanly with a durable reason only on the
+  final attempt); a long, multi-line, adversarial error proven bounded and flattened to one line in
+  the durable marker; and a degenerate `MAX_PROVISION_ATTEMPTS=1` bound. **Found and fixed a real
+  bug in this fix's own first draft while writing this suite**: `write_provision_state` wrote its
+  `LAST_ERROR` field unquoted, and the code that read it back used shell `.` (source) - since
+  `LAST_ERROR` can contain arbitrary text (spaces, `=`) copied from a `RESULT=` line, sourcing it
+  back could silently corrupt the parse and never actually set `ATTEMPTS`. Fixed by never sourcing
+  the state file as shell code at all: only `ATTEMPTS` (always a plain digit string) is ever read
+  back programmatically, via a plain `grep`/`cut`, not `.`.
 - Full `go build`/`go vet`/`gofmt` clean, and `go test -count=1` green, on `ota`, `readiness`,
   `main`, `calprofile`, `recording`, `power` (see the PR description for exact commands/results).
   `go test -race` on the same packages surfaced one pre-existing, unrelated flaky data race in
@@ -453,6 +601,12 @@ verified: partition table, filesystems, labels, boot scripts (`cmdline.txt`'s `i
 `/etc/fstab`, `provision-data-partition`/`init-overlay`/`overlayctl` byte-for-byte against this
 branch's own source, absence of private SSH host keys, settings sanitization, the embedded commit,
 size, and SHA-256. See the PR description for the exact identity and evidence of that build.
+
+**A hardware-validation run using that build then found the first-boot provisioning defect this
+document's own "First-boot provisioning" section above describes and closes.** A new image,
+reflecting the corrected, durable state machine, has been built and independently verified from
+this branch's own corrected head - see the PR description for that build's own exact identity and
+evidence. Hardware re-validation against it has not yet been performed.
 
 ## Hardware-validation checklist
 
