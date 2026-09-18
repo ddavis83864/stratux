@@ -75,6 +75,26 @@ func handleOTAUploadRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject the entire upload immediately - before reading a single byte
+	// of the (potentially large) request body - if otaDir is not proven
+	// persistent. This is the missing safeguard a real incident exposed:
+	// otaDir sits on PersistentDataPath, a location this project's own
+	// image build never actually provisions as a dedicated partition (see
+	// docs/ota-persistent-storage-defect.md for the full evidence trail).
+	// Under normal, protected-overlay operation, a file written there
+	// lands in the RAM-backed overlay upper layer and vanishes the moment
+	// the OTA sequence reboots into bare ext4 for the actual install -
+	// previously discovered only after that wasted reboot, as a silent,
+	// unexplained "exited without updating anything". This reuses the
+	// exact device-identity check (ota.IsPersistent/ota.StatMount) already
+	// proven on hardware for the overlay-disable marker in
+	// requestOverlayDisable below, applied here to the staging directory
+	// instead.
+	if err := validateStagingPersistence(); err != nil {
+		http.Error(w, fmt.Sprintf("update rejected: %s", err), http.StatusServiceUnavailable)
+		return
+	}
+
 	var stagedPath string
 	for {
 		part, err := reader.NextPart()
@@ -201,6 +221,35 @@ func findEmbeddedCommit(data []byte) string {
 		}
 	}
 	return ""
+}
+
+// validateStagingPersistence proves otaDir is genuinely backed by
+// persistent storage - sharing /overlay/robase's own device number,
+// exactly like the overlay-disable marker's own proof in
+// requestOverlayDisable below - before this process ever accepts an
+// upload into it. This does not attempt to fix the underlying gap (this
+// project's image build does not provision PersistentDataPath as a
+// dedicated partition at all - see
+// docs/ota-persistent-storage-defect.md), only to fail fast and
+// honestly instead of silently discarding a staged package across the
+// overlay-disable reboot, as happened in the incident that led to this
+// check. Like requestOverlayDisable, this is real syscall/exec-touching
+// glue around the tested pure logic in ota.IsPersistent - hardware
+// validation, not a unit test, is this function's own proof; see that
+// incident report for exactly that validation once performed.
+func validateStagingPersistence() error {
+	reference, err := ota.StatMount("/overlay/robase")
+	if err != nil {
+		return fmt.Errorf("could not verify persistent storage: could not stat /overlay/robase: %w", err)
+	}
+	candidate, err := ota.StatMount(otaDir)
+	if err != nil {
+		return fmt.Errorf("could not verify persistent storage: could not stat %s: %w", otaDir, err)
+	}
+	if ok, reason := ota.IsPersistent(candidate, reference); !ok {
+		return fmt.Errorf("staging location is not genuinely persistent storage: %s", reason)
+	}
+	return nil
 }
 
 // otaOverlayRobaseDisableMarker is the proven-persistent marker path -
