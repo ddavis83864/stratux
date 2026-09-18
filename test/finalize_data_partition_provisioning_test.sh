@@ -168,4 +168,76 @@ OUT=$(run_finalize "$CASE" "" 1)
 check "MAX_PROVISION_ATTEMPTS=1: exhausts on the very first attempt" "$([ "$OUT" = "FINALIZE=exhausted" ] && echo 1 || echo 0)"
 check "MAX_PROVISION_ATTEMPTS=1: marker removed" "$([ ! -f "${WORKDIR}/${CASE}/marker" ] && echo 1 || echo 0)"
 
+# --- Case 8: missing marker at invocation time - finalize must never
+#     error just because the marker was already absent (e.g. a second,
+#     redundant invocation after a prior run already completed). rm -f
+#     is idempotent by construction; this proves it in practice. ---
+CASE=case8
+mkdir -p "${WORKDIR}/${CASE}"
+touch "${WORKDIR}/${CASE}/fstab"
+# Deliberately no marker file created.
+OUT=$(run_finalize "$CASE" "RESULT=provisioned DATA_PART_DEV=/dev/mmcblk0p3")
+check "missing marker: still reports FINALIZE=success without error" "$([ "$OUT" = "FINALIZE=success" ] && echo 1 || echo 0)"
+
+# --- Case 9: malformed ATTEMPTS in a pre-existing state file (corrupt,
+#     negative, non-numeric, or a stray trailing value) - must degrade
+#     to "no prior attempts recorded" (0), never abort or miscount. ---
+for GARBAGE in "not-a-number" "-5" "3abc" ""; do
+	CASE="case9_$(echo "$GARBAGE" | tr -cd 'a-zA-Z0-9')"
+	[ -z "$CASE" ] && CASE="case9_empty"
+	mkdir -p "${WORKDIR}/${CASE}"
+	touch "${WORKDIR}/${CASE}/marker"
+	printf 'STAGE=failed-retryable\nATTEMPTS=%s\nLAST_ERROR=prior garbage\nUPDATED_AT=2026-01-01T00:00:00Z\n' "$GARBAGE" > "${WORKDIR}/${CASE}/state"
+	OUT=$(run_finalize "$CASE" "" 3)
+	check "malformed ATTEMPTS='${GARBAGE}': degrades to 0, reports FINALIZE=retry (attempt 1 of 3, not aborted)" "$([ "$OUT" = "FINALIZE=retry" ] && echo 1 || echo 0)"
+	check "malformed ATTEMPTS='${GARBAGE}': recovers to ATTEMPTS=1 in the new state file" "$(grep -q '^ATTEMPTS=1$' "${WORKDIR}/${CASE}/state" 2>/dev/null && echo 1 || echo 0)"
+done
+
+# --- Case 10: adversarial pre-existing state-file content - embedded
+#     spaces, an "=" sign, single/double quotes, and a backtick in
+#     LAST_ERROR (simulating a prior RESULT= line or shell error message
+#     copied verbatim) - must never be sourced/executed, and ATTEMPTS
+#     must still be read correctly regardless of what surrounds it. ---
+CASE=case10
+mkdir -p "${WORKDIR}/${CASE}"
+touch "${WORKDIR}/${CASE}/marker"
+printf 'STAGE=failed-retryable\nATTEMPTS=1\nLAST_ERROR=RESULT=skipped `rm -rf /` "quoted" and '"'"'single'"'"' and $(whoami)\nUPDATED_AT=2026-01-01T00:00:00Z\n' > "${WORKDIR}/${CASE}/state"
+OUT=$(run_finalize "$CASE" "" 3)
+check "adversarial LAST_ERROR content: not executed as shell code, ATTEMPTS still read correctly as 2 (resumed from the pre-seeded 1, not corrupted)" "$([ "$OUT" = "FINALIZE=retry" ] && grep -q '^ATTEMPTS=2$' "${WORKDIR}/${CASE}/state" 2>/dev/null && echo 1 || echo 0)"
+# This is a retry outcome (ATTEMPTS=2 of 3), so exactly the marker and
+# the (updated) state file are expected to remain - nothing else (e.g.
+# a file a would-be command substitution like $(whoami) might create).
+check "adversarial LAST_ERROR content: no stray file created (e.g. from a would-be command substitution)" "$([ "$(find "${WORKDIR}/${CASE}" -type f | wc -l)" -eq 2 ] && echo 1 || echo 0)"
+
+# --- Case 11: fstab write failure - STRATUX_FSTAB_PATH's parent
+#     directory is read-only AND the fstab file does not already exist
+#     (so the `>>` append's own O_CREAT genuinely needs directory write
+#     permission - an already-existing, merely-unwritable *file* would
+#     not exercise this: appending to an existing file's own contents
+#     only needs write permission on the file itself, not its directory,
+#     a real distinction this case was first written getting wrong).
+#     This must not be silently swallowed as success; set -e (this
+#     script's own) means the script aborts rather than falsely
+#     reporting FINALIZE=success with no durable fstab entry actually
+#     written. ---
+CASE=case11
+mkdir -p "${WORKDIR}/${CASE}/robase"
+touch "${WORKDIR}/${CASE}/marker"
+chmod 555 "${WORKDIR}/${CASE}/robase"
+set +e
+OUT=$(env \
+	STRATUX_PROVISION_STATE_FILE="${WORKDIR}/${CASE}/state" \
+	STRATUX_PROVISION_MARKER="${WORKDIR}/${CASE}/marker" \
+	STRATUX_FSTAB_PATH="${WORKDIR}/${CASE}/robase/fstab" \
+	STRATUX_PERSISTENT_DATA_MOUNTPOINT="${WORKDIR}/${CASE}/mnt/stratux-data" \
+	STRATUX_PERSISTENCE_UNSUPPORTED_MARKER="${WORKDIR}/${CASE}/unsupported-marker" \
+	MAX_PROVISION_ATTEMPTS=3 \
+	"$FINALIZE_SCRIPT" "RESULT=provisioned DATA_PART_DEV=/dev/mmcblk0p3" 2>/dev/null)
+RC=$?
+set -e
+chmod 755 "${WORKDIR}/${CASE}/robase"
+check "fstab write failure: script does not report FINALIZE=success" "$([ "$OUT" != "FINALIZE=success" ] && echo 1 || echo 0)"
+check "fstab write failure: marker NOT removed (nothing durable was actually completed)" "$([ -f "${WORKDIR}/${CASE}/marker" ] && echo 1 || echo 0)"
+check "fstab write failure: script exits non-zero rather than silently continuing" "$([ "$RC" -ne 0 ] && echo 1 || echo 0)"
+
 exit $fail
