@@ -77,6 +77,42 @@ settle_udev() {
 	fi
 }
 
+# lsblk_field_with_retry: reads a single lsblk field (FSTYPE or LABEL)
+# for a device, retrying with a short sleep in between if it comes back
+# empty. A real hardware-validation finding: at this very early point in
+# boot - before udevd itself is even running - lsblk's own filesystem
+# detection can race against blkid not yet being able to probe the
+# device, even though the filesystem genuinely exists and is correctly
+# detected moments later once boot proceeds further (confirmed directly:
+# a device this exact check rejected as "not vfat" was independently
+# confirmed genuinely vfat via blkid on the same, fully-booted device
+# afterward). settle_udev alone does not reliably fix this specific
+# race: it waits for udev's own event queue to drain, which is a no-op
+# if udevd is not yet running at all to have queued anything - a plain,
+# bounded sleep-and-retry is the one thing that helps regardless of
+# which of those two causes is actually in play. Never trust a single
+# empty read as proof a filesystem is absent - the whole-disk/partition-
+# count checks already prove this is genuinely the expected device
+# topology; this only bounds how long to wait for blkid's own view of it
+# to catch up. Retry count/delay are overridable so the test suite can
+# exercise both the retry path and the genuinely-empty case (Case 6's
+# own interrupted-before-mkfs partition, which must NOT be mistaken for
+# a slow-to-settle one) without paying the full production wait.
+: "${FSTYPE_DETECT_RETRIES:=5}"
+: "${FSTYPE_DETECT_RETRY_DELAY_SECONDS:=1}"
+lsblk_field_with_retry() {
+	# $1: device path. $2: lsblk field name (FSTYPE or LABEL).
+	local dev="$1" field="$2" value="" tries=0
+	while [ "$tries" -lt "$FSTYPE_DETECT_RETRIES" ]; do
+		value=$(lsblk -no "$field" "$dev" 2>/dev/null || true)
+		[ -n "$value" ] && break
+		settle_udev
+		sleep "$FSTYPE_DETECT_RETRY_DELAY_SECONDS"
+		tries=$((tries + 1))
+	done
+	printf '%s' "$value"
+}
+
 reject_unexpected_layout() {
 	# $1: the specific reason, for the log only - every caller reports
 	# the same RESULT= so init-overlay's own dispatch (and this script's
@@ -136,8 +172,8 @@ if [ "$PART_COUNT" -eq 3 ]; then
 	# by assuming which case this is:
 	EXISTING_PART3_NAME="$(lsblk -lno NAME "$ROOT_DEV" | sed -n '4p')"
 	EXISTING_PART3_DEV="/dev/${EXISTING_PART3_NAME}"
-	EXISTING_PART3_FSTYPE="$(lsblk -no FSTYPE "$EXISTING_PART3_DEV" 2>/dev/null || true)"
-	EXISTING_PART3_LABEL="$(lsblk -no LABEL "$EXISTING_PART3_DEV" 2>/dev/null || true)"
+	EXISTING_PART3_FSTYPE="$(lsblk_field_with_retry "$EXISTING_PART3_DEV" FSTYPE)"
+	EXISTING_PART3_LABEL="$(lsblk_field_with_retry "$EXISTING_PART3_DEV" LABEL)"
 	if [ -z "$EXISTING_PART3_FSTYPE" ]; then
 		# No filesystem at all: this can only be our own interrupted
 		# mkpart, never a foreign layout in active use (nothing else
@@ -173,7 +209,7 @@ if [ "$EXPECTED_ROOT_NAME" != "$ACTUAL_PART2_NAME" ]; then
 fi
 
 PART1_NAME="$(lsblk -lno NAME "$ROOT_DEV" | sed -n '2p')"
-PART1_FSTYPE="$(lsblk -no FSTYPE "/dev/${PART1_NAME}" 2>/dev/null || true)"
+PART1_FSTYPE="$(lsblk_field_with_retry "/dev/${PART1_NAME}" FSTYPE)"
 case "$PART1_FSTYPE" in
 	vfat|fat32) ;;
 	*) reject_unexpected_layout "partition 1 of ${ROOT_DEV} has filesystem type '${PART1_FSTYPE:-unknown}', not the expected vfat boot partition" ;;

@@ -329,6 +329,63 @@ including the exact "empty `RESULT_LINE`, retried up to the bound, marker preser
 exhausted cleanly on the final attempt" sequence the hardware incident itself exhibited a version of
 without any of these protections.
 
+### Second hardware attempt: the state machine worked, and revealed a second, different defect
+
+Re-imaging the same sacrificial card with the corrected head and powering on again produced a
+genuinely different outcome from the first attempt: the device booted, once, into an honest
+`NOT_READY` state with a specific, durable reason - `Storage.Reason` via `/getHealth` read back
+exactly:
+
+> automatic persistent-data provisioning failed after 1 attempt(s): RESULT=skipped-unexpected-layout;
+> OTA and durable recording/calibration/diagnostics persistence are not supported until this card is
+> re-provisioned or replaced; see docs/persistent-data-partition.md
+
+This is the state machine working exactly as designed - the first attempt's own defect (silent,
+zero-evidence failure) is closed. But provisioning still did not succeed, for a second, different,
+specific reason, recovered read-only from the device's own bare root partition (the provisioning
+log, like the marker/state files, lives under `/var/log/` on the bare root and is wiped by the
+overlay's own unrelated `rm -r /var/log/*` housekeeping by the time a normal boot completes - the
+same recovery technique the first incident's own forensics already established):
+
+```
+provision-data-partition: partition 1 of /dev/mmcblk0 has filesystem type 'unknown', not the
+expected vfat boot partition - leaving the partition table untouched
+RESULT=skipped-unexpected-layout
+```
+
+Partition 1 **is** genuinely `vfat` - confirmed independently via `blkid` on the same, fully-booted
+device moments later. At the point `provision-data-partition` runs - very early in boot, before
+`udevd` itself is even running - `lsblk -no FSTYPE` for the boot partition returned empty. This is a
+distinct race from the read-only-root defect the first incident closed: filesystem-type detection
+for a device can lag its own genuine availability at this pre-systemd point in boot, and
+`settle_udev` (already used elsewhere in this script) does not reliably help here, since it waits
+for udev's own event queue to drain - a no-op if udevd is not yet running to have queued anything at
+all. Only two of this script's own `lsblk`-based reads depend on filesystem-type detection racing
+against this same window: the boot-partition check just described, and the partition-3
+`FSTYPE`/`LABEL` reads used to distinguish an interrupted attempt from an already-provisioned or
+genuinely foreign layout - both are the sites this fix targets.
+
+**Correction**: `lsblk_field_with_retry` (new) retries a `lsblk` field read (`FSTYPE` or `LABEL`)
+with a bounded, overridable number of attempts and a short sleep between them, calling `settle_udev`
+each time too (harmless, and helps on the off chance udevd is already running) - a plain sleep is
+the one thing that helps regardless of which of the two possible causes (udev-queue timing, or the
+underlying block device/controller simply not finished initializing yet) is actually in play. Never
+trusts a single empty read as proof a filesystem is absent - the whole-disk-device and
+partition-count checks earlier in this same script already prove the device topology itself is
+exactly as expected; this only bounds how long to wait for `blkid`'s own view of a specific
+partition to catch up with what is already, physically, true of it.
+
+`test/persistent_data_partition_test.sh` gained a dedicated case proving the retry mechanism itself,
+not merely asserting it exists: a fake `lsblk` placed first in `PATH` returns empty for the boot
+partition's `FSTYPE` on its first 2 calls, then delegates to the real `lsblk` for that same call and
+unconditionally for every other call shape - exactly simulating a transient race, never a
+permanently absent filesystem. All 22 pre-existing checks plus this new one remain green; the retry
+count/delay are overridable (as `MIN_CARD_BYTES`/`ROOT_CAP_MIB` already were) so the test suite pays
+none of the production wait while still exercising the real retry loop.
+
+Re-validation against a card imaged with this second correction has not yet been performed as of
+this writing.
+
 ## B3: Mount and service ordering
 
 The new partition is mounted via a plain `/etc/fstab` entry:

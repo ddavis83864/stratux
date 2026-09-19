@@ -104,7 +104,7 @@ settle_udev() {
 # --- Case 1: a card at/above the minimum size gets bounded root growth
 #     plus a real, correctly-labeled ext4 data partition. ---
 LOOPDEV="$(make_test_image 20480)" # 20 GiB image
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out1.log" 2>&1
 RC=$?
 cat "${WORKDIR}/out1.log"
@@ -127,9 +127,9 @@ LOOPDEV=""
 # --- Case 2: idempotence - running again against a card that already has
 #     3 partitions must never touch the table again. ---
 LOOPDEV="$(make_test_image 20480)"
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > /dev/null 2>&1
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out2.log" 2>&1
 RC=$?
 check "second run succeeds (exit 0)" "$([ "$RC" -eq 0 ] && echo 1 || echo 0)"
@@ -156,7 +156,7 @@ settle_udev
 # script's own interrupted-before-mkfs state (that case is covered
 # separately in Case 6).
 sudo mkfs.ext4 -F -L foreign-data "${LOOPDEV}p3" >/dev/null # ext4 labels cap at 16 bytes
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out3.log" 2>&1
 check "a pre-existing, genuinely foreign 3-partition layout is reported skipped, not modified" "$(grep -q '^RESULT=skipped-unexpected-layout' "${WORKDIR}/out3.log" && echo 1 || echo 0)"
 check "pre-existing layout still has exactly 3 partitions" "$([ "$(partition_count "$LOOPDEV")" -eq 3 ] && echo 1 || echo 0)"
@@ -173,7 +173,7 @@ LOOPDEV=""
 #     any other in-use block device - must never be attempted against an
 #     actively mounted partition, so this test must not mount it either. ---
 LOOPDEV="$(make_test_image 4096)" # 4 GiB image, well under a 16 GiB minimum
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	STRATUX_PERSISTENCE_UNSUPPORTED_MARKER="${WORKDIR}/stratux-persistence-unsupported" \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out4.log" 2>&1
 check "below-minimum card reports the documented fallback result" "$(grep -q '^RESULT=grew-root-only-below-minimum-card-size' "${WORKDIR}/out4.log" && echo 1 || echo 0)"
@@ -190,7 +190,7 @@ LOOPDEV="$(make_test_image 20480)"
 sudo parted -s "$LOOPDEV" resizepart 2 8449MiB # exactly what a real first attempt would have done
 sudo partprobe "$LOOPDEV"
 settle_udev
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out5.log" 2>&1
 RC=$?
 check "resuming after an interrupted root-resize-only completes successfully" "$([ "$RC" -eq 0 ] && grep -q '^RESULT=provisioned' "${WORKDIR}/out5.log" && echo 1 || echo 0)"
@@ -207,7 +207,7 @@ sudo parted -s "$LOOPDEV" resizepart 2 8449MiB
 sudo parted -s "$LOOPDEV" mkpart primary ext4 8449MiB 100%
 sudo partprobe "$LOOPDEV"
 settle_udev
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out6.log" 2>&1
 RC=$?
 check "resuming after an interrupted mkpart-before-mkfs completes and formats it" "$([ "$RC" -eq 0 ] && grep -q '^RESULT=provisioned' "${WORKDIR}/out6.log" && echo 1 || echo 0)"
@@ -221,18 +221,65 @@ LOOPDEV=""
 #     between mkfs and init-overlay removing it) - must recognize this
 #     and do nothing, never reformat and destroy existing data. ---
 LOOPDEV="$(make_test_image 20480)"
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > /dev/null 2>&1
 sudo mkdir -p "${WORKDIR}/mnt7"
 sudo mount "${LOOPDEV}p3" "${WORKDIR}/mnt7"
 echo "sentinel-must-survive" | sudo tee "${WORKDIR}/mnt7/sentinel.txt" > /dev/null
 sudo umount "${WORKDIR}/mnt7"
-sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+sudo env MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 FSTYPE_DETECT_RETRIES=2 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" > "${WORKDIR}/out7.log" 2>&1
 check "repeat invocation on an already-provisioned card reports already-provisioned" "$(grep -q '^RESULT=already-provisioned' "${WORKDIR}/out7.log" && echo 1 || echo 0)"
 sudo mount "${LOOPDEV}p3" "${WORKDIR}/mnt7"
 check "repeat invocation never reformats - the sentinel file survives" "$([ -f "${WORKDIR}/mnt7/sentinel.txt" ] && echo 1 || echo 0)"
 sudo umount "${WORKDIR}/mnt7"
+sudo losetup -d "$LOOPDEV"
+LOOPDEV=""
+
+# --- Case 8: a real hardware-validation finding - lsblk's own FSTYPE
+#     detection for the boot partition can transiently return empty very
+#     early in boot (before udevd itself is even running), even though
+#     the filesystem genuinely exists and is detected correctly moments
+#     later. A real device was incorrectly rejected as "not vfat" by
+#     this exact race. Proves lsblk_field_with_retry actually retries
+#     and succeeds, rather than merely asserting the fix exists: a fake
+#     `lsblk` shim placed first in PATH returns empty for partition 1's
+#     FSTYPE on its first 2 calls, then delegates to the real lsblk for
+#     every other call (all other fields/devices, and this same call
+#     once past its fake-failure count) - exactly simulating the
+#     transient race, never a permanently absent filesystem. ---
+CASE8_BINDIR="${WORKDIR}/case8-fakebin"
+mkdir -p "$CASE8_BINDIR"
+REAL_LSBLK="$(command -v lsblk)"
+CASE8_COUNTER="${WORKDIR}/case8-lsblk-calls"
+echo 0 > "$CASE8_COUNTER"
+cat > "${CASE8_BINDIR}/lsblk" << EOF
+#!/bin/sh
+# Fakes exactly one call shape - "-no FSTYPE <path ending in p1>" - empty
+# for its first 2 invocations, then delegates to the real lsblk for
+# that same call and unconditionally for every other call shape.
+if [ "\$1" = "-no" ] && [ "\$2" = "FSTYPE" ] && [ "\${3%p1}" != "\$3" ]; then
+	n=\$(cat "$CASE8_COUNTER")
+	n=\$((n + 1))
+	echo "\$n" > "$CASE8_COUNTER"
+	if [ "\$n" -le 2 ]; then
+		exit 0
+	fi
+fi
+exec "$REAL_LSBLK" "\$@"
+EOF
+chmod +x "${CASE8_BINDIR}/lsblk"
+
+LOOPDEV="$(make_test_image 20480)"
+OUT8=$(sudo env PATH="${CASE8_BINDIR}:${PATH}" \
+	MIN_CARD_BYTES=$((16*1024*1024*1024)) ROOT_CAP_MIB=8192 \
+	FSTYPE_DETECT_RETRIES=5 FSTYPE_DETECT_RETRY_DELAY_SECONDS=0 \
+	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" 2>&1)
+RC8=$?
+echo "$OUT8" > "${WORKDIR}/out8.log"
+check "transient boot-partition FSTYPE race: retried and succeeded (exit 0)" "$([ "$RC8" -eq 0 ] && echo 1 || echo 0)"
+check "transient boot-partition FSTYPE race: reports RESULT=provisioned, not skipped-unexpected-layout" "$(grep -q '^RESULT=provisioned' "${WORKDIR}/out8.log" && echo 1 || echo 0)"
+check "transient boot-partition FSTYPE race: the fake lsblk was actually exercised at least twice" "$([ "$(cat "$CASE8_COUNTER")" -ge 2 ] && echo 1 || echo 0)"
 sudo losetup -d "$LOOPDEV"
 LOOPDEV=""
 
