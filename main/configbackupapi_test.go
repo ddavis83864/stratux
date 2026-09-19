@@ -893,6 +893,28 @@ func TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault(t *testi
 	}
 }
 
+// TestLegacyDefaultEpaperSettingsMatchesPackageDefault cross-checks
+// configbackup's own independently-restated legacy default against what
+// this package's own defaultSettings() actually produces for the six
+// Epaper* fields - the one place both are already in scope together
+// (unlike AutoRecordSettings/TrafficCPASettings, the Epaper* fields live
+// directly on globalSettings in this same package, not a separate
+// importable package, so there is no cross-package import to exercise
+// here - this still guards against legacyDefaultEpaperSettings silently
+// drifting from defaultSettings() if either is ever changed alone).
+func TestLegacyDefaultEpaperSettingsMatchesPackageDefault(t *testing.T) {
+	saved := globalSettings
+	defer func() { globalSettings = saved }()
+	globalSettings = settings{}
+	defaultSettings()
+
+	got := configbackup.LegacyDefaultEpaperSettings()
+	want := epaperSettingsSectionFromGlobalSettings()
+	if got != want {
+		t.Fatalf("configbackup.LegacyDefaultEpaperSettings() = %+v has drifted from defaultSettings()'s own Epaper* fields = %+v - update legacy.go's legacyDefaultEpaperSettings to match", got, want)
+	}
+}
+
 // loadLegacyPreAutoRecordFixtureBody reads the same authentic,
 // historically-generated fixture the configbackup package's own tests
 // use - see configbackup/testdata/README.md.

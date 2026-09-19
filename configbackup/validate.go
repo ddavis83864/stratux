@@ -90,6 +90,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 			AlertSettings:              doc.AlertSettings,
 			AutoRecordSettings:         doc.AutoRecordSettings,
 			TrafficCPASettings:         doc.TrafficCPASettings,
+			EpaperSettings:             doc.EpaperSettings,
 		})
 		if err != nil {
 			res.addErrorf("configbackup: could not verify checksums: %s", err)
@@ -122,6 +123,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 	validateAlertSettings(doc.AlertSettings, &res)
 	validateAutoRecordSettings(doc.AutoRecordSettings, &res)
 	validateTrafficCPASettings(doc.TrafficCPASettings, &res)
+	validateEpaperSettings(doc.EpaperSettings, &res)
 	validateProfiles(doc.CalibrationProfiles, doc.ActiveCalibrationProfileID, &res)
 
 	// A document cannot honestly disclaim "no privacy-sensitive data" while
@@ -281,6 +283,53 @@ func validateTrafficCPASettings(t TrafficCPASettingsSection, res *ValidationResu
 	}
 	if t.MinClosureRateKnots < t.MinRelativeSpeedKnots {
 		res.addErrorf("%s: trafficCpaSettings.minClosureRateKnots must be at least minRelativeSpeedKnots", ErrInvalidField)
+	}
+}
+
+// validEpaperPanels/validEpaperPages/validEpaperRotations mirror
+// epaper.Normalize's own enums exactly - this package cannot import
+// epaper (leaf-dependency direction: epaper is a pure decision-core
+// package with no knowledge of configbackup), so the rules are
+// independently re-checked here, exactly as validateTrafficCPASettings
+// re-checks main.TrafficCPASettings.Validate's rules.
+var (
+	validEpaperPanels    = map[string]bool{"waveshare-3.7in": true}
+	validEpaperPages     = map[string]bool{"overview": true, "receivers": true, "health": true}
+	validEpaperRotations = map[int]bool{0: true, 90: true, 180: true, 270: true}
+)
+
+const (
+	epaperMinRefreshIntervalSeconds = 5
+	epaperMaxFullRefreshEvery       = 200
+)
+
+// validateEpaperSettings mirrors epaper.Normalize's own validation rules.
+// Like Normalize itself, a disabled section is always valid regardless of
+// its other fields' contents - an optional, disabled feature must never
+// fail validation and block an otherwise-unrelated restore just because
+// its own fields hold stale or unrecognized values from a future or
+// legacy version. A document verified as a pre-epaperSettings historical
+// shape is normalized to the safe disabled default before this function
+// ever runs (see legacy.go), so it always reaches this function with a
+// well-formed, if not necessarily semantically valid, section.
+func validateEpaperSettings(e EpaperSettingsSection, res *ValidationResult) {
+	if !e.Enabled {
+		return
+	}
+	if !validEpaperPanels[e.Panel] {
+		res.addErrorf("%s: epaperSettings.panel %q is not a supported panel", ErrInvalidField, e.Panel)
+	}
+	if !validEpaperPages[e.Page] {
+		res.addErrorf("%s: epaperSettings.page %q is not a supported page", ErrInvalidField, e.Page)
+	}
+	if !validEpaperRotations[e.Rotation] {
+		res.addErrorf("%s: epaperSettings.rotation must be 0, 90, 180, or 270, got %d", ErrInvalidField, e.Rotation)
+	}
+	if e.RefreshIntervalSeconds < epaperMinRefreshIntervalSeconds {
+		res.addErrorf("%s: epaperSettings.refreshIntervalSeconds must be >= %d, got %d", ErrInvalidField, epaperMinRefreshIntervalSeconds, e.RefreshIntervalSeconds)
+	}
+	if e.FullRefreshEvery > epaperMaxFullRefreshEvery {
+		res.addErrorf("%s: epaperSettings.fullRefreshEvery must be <= %d, got %d", ErrInvalidField, epaperMaxFullRefreshEvery, e.FullRefreshEvery)
 	}
 }
 

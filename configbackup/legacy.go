@@ -185,6 +185,60 @@ var legacyDefaultTrafficCPASettings = TrafficCPASettingsSection{
 	MinClosureRateKnots:   30,
 }
 
+// legacyPreEpaperSectionKeys is the exact, frozen section-checksum key
+// set the schema-2, post-trafficCpaSettings, pre-epaperSettings format
+// always produced - the shape this package's own Document had
+// immediately before the optional Waveshare e-paper display feature
+// added EpaperSettings. Used to recognize a candidate historical
+// document by exact key-set equality, exactly like
+// legacyPreAutoRecordSectionKeys/legacyPreTrafficCPASectionKeys above.
+var legacyPreEpaperSectionKeys = map[string]bool{
+	"configuration":       true,
+	"calibrationProfiles": true,
+	"alertSettings":       true,
+	"autoRecordSettings":  true,
+	"trafficCpaSettings":  true,
+}
+
+// legacyDocumentV2PreEpaper mirrors this package's own Document exactly
+// as it existed immediately before EpaperSettings was added - frozen
+// permanently, never updated to track later changes to Document itself,
+// exactly like legacyDocumentV2PreAutoRecord/legacyDocumentV2PreTrafficCPA
+// above.
+type legacyDocumentV2PreEpaper struct {
+	SchemaVersion int `json:"schemaVersion"`
+
+	CreatedAtUTC *time.Time `json:"createdAtUTC,omitempty"`
+
+	SourceVersion            string `json:"sourceVersion"`
+	SourceCommit             string `json:"sourceCommit"`
+	MinimumCompatibleVersion int    `json:"minimumCompatibleVersion"`
+
+	Configuration              ConfigurationSection      `json:"configuration"`
+	CalibrationProfiles        []calprofile.Profile      `json:"calibrationProfiles"`
+	ActiveCalibrationProfileID string                    `json:"activeCalibrationProfileId,omitempty"`
+	AlertSettings              AlertSettingsSection      `json:"alertSettings"`
+	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
+	TrafficCPASettings         TrafficCPASettingsSection `json:"trafficCpaSettings"`
+
+	SectionChecksums map[string]string `json:"sectionChecksums"`
+	ContentChecksum  string            `json:"contentChecksum"`
+}
+
+// legacyDefaultEpaperSettings is the value normalizeLegacyDocument fills
+// in for a verified-historical document's missing epaperSettings
+// section. Unlike legacyDefaultAutoRecordSettings/
+// legacyDefaultTrafficCPASettings, the bare Go zero value is safe to use
+// directly here: validateEpaperSettings (mirroring epaper.Normalize's own
+// rule) treats a disabled section - Enabled: false, exactly the zero
+// value - as always valid regardless of its other fields, so there is no
+// hysteresis-style trap to avoid. This also exactly matches what a real
+// device that has never touched e-paper settings actually has: only
+// EpaperEnabled is explicitly defaulted (to false) by main's own
+// defaultSettings(); the other five fields are left at Go's zero value
+// until epaper.Normalize fills them in at the point of actual use.
+var legacyDefaultEpaperSettings = EpaperSettingsSection{}
+
 // verifyLegacyPreAutoRecordChecksum reports whether doc's checksums are
 // exactly consistent with having been produced by the pre-
 // autoRecordSettings schema-2 code - see this file's doc comment. Never
@@ -332,25 +386,116 @@ func verifyLegacyPreTrafficCPAChecksum(doc Document) bool {
 	return contentSum == doc.ContentChecksum
 }
 
+// verifyLegacyPreEpaperChecksum reports whether doc's checksums are
+// exactly consistent with having been produced by the pre-
+// epaperSettings schema-2 code - see this file's doc comment. Never a
+// partial or best-effort match, exactly like
+// verifyLegacyPreAutoRecordChecksum/verifyLegacyPreTrafficCPAChecksum
+// above.
+func verifyLegacyPreEpaperChecksum(doc Document) bool {
+	if len(doc.SectionChecksums) != len(legacyPreEpaperSectionKeys) {
+		return false
+	}
+	for k := range doc.SectionChecksums {
+		if !legacyPreEpaperSectionKeys[k] {
+			return false
+		}
+	}
+	// A document that explicitly carries a non-zero epaperSettings
+	// section while also lacking its checksum is not honestly
+	// historical - it is corrupt or tampered, and must be rejected, not
+	// silently accepted with the extra data discarded.
+	if doc.EpaperSettings != (EpaperSettingsSection{}) {
+		return false
+	}
+
+	profiles := make([]calprofile.Profile, len(doc.CalibrationProfiles))
+	copy(profiles, doc.CalibrationProfiles)
+	sort.Slice(profiles, func(i, j int) bool { return profiles[i].ID < profiles[j].ID })
+
+	legacy := legacyDocumentV2PreEpaper{
+		SchemaVersion:              doc.SchemaVersion,
+		CreatedAtUTC:               doc.CreatedAtUTC,
+		SourceVersion:              doc.SourceVersion,
+		SourceCommit:               doc.SourceCommit,
+		MinimumCompatibleVersion:   doc.MinimumCompatibleVersion,
+		Configuration:              doc.Configuration,
+		CalibrationProfiles:        profiles,
+		ActiveCalibrationProfileID: doc.ActiveCalibrationProfileID,
+		AlertSettings:              doc.AlertSettings,
+		AutoRecordSettings:         doc.AutoRecordSettings,
+		TrafficCPASettings:         doc.TrafficCPASettings,
+	}
+
+	cfgSum, err := sectionChecksum(legacy.Configuration)
+	if err != nil {
+		return false
+	}
+	profSum, err := sectionChecksum(legacyProfilesSectionPayload{Profiles: profiles, ActiveID: legacy.ActiveCalibrationProfileID})
+	if err != nil {
+		return false
+	}
+	alertSum, err := sectionChecksum(legacy.AlertSettings)
+	if err != nil {
+		return false
+	}
+	autoRecordSum, err := sectionChecksum(legacy.AutoRecordSettings)
+	if err != nil {
+		return false
+	}
+	trafficCPASum, err := sectionChecksum(legacy.TrafficCPASettings)
+	if err != nil {
+		return false
+	}
+	want := map[string]string{
+		"configuration":       cfgSum,
+		"calibrationProfiles": profSum,
+		"alertSettings":       alertSum,
+		"autoRecordSettings":  autoRecordSum,
+		"trafficCpaSettings":  trafficCPASum,
+	}
+	for k, w := range want {
+		if doc.SectionChecksums[k] != w {
+			return false
+		}
+	}
+
+	legacy.SectionChecksums = want
+	legacy.ContentChecksum = ""
+	contentSum, err := sectionChecksum(legacy)
+	if err != nil {
+		return false
+	}
+	return contentSum == doc.ContentChecksum
+}
+
 // normalizeLegacyDocument returns doc unchanged if it is not one of the
 // verified historical shapes, or doc with the missing section(s) filled
 // in from their safe defaults if it is - a pre-autoRecordSettings
-// document is missing BOTH AutoRecordSettings and TrafficCPASettings and
-// gets both defaulted; a pre-trafficCpaSettings document already has a
-// real AutoRecordSettings and only needs TrafficCPASettings defaulted.
-// These two recognized shapes have disjoint section-checksum key sets by
-// construction, so at most one of these checks can ever match a given
-// document. Callers must call this (or NormalizeDocument) only after
-// Validate has already reported doc OK - never before, and never as a
-// substitute for verification.
+// document is missing AutoRecordSettings, TrafficCPASettings, AND
+// EpaperSettings and gets all three defaulted; a pre-trafficCpaSettings
+// document already has a real AutoRecordSettings and needs
+// TrafficCPASettings and EpaperSettings defaulted; a pre-epaperSettings
+// document already has real AutoRecordSettings/TrafficCPASettings and
+// only needs EpaperSettings defaulted. These three recognized shapes have
+// disjoint section-checksum key sets by construction, so at most one of
+// these checks can ever match a given document. Callers must call this
+// (or NormalizeDocument) only after Validate has already reported doc OK
+// - never before, and never as a substitute for verification.
 func normalizeLegacyDocument(doc Document) (normalized Document, wasLegacy bool) {
 	if verifyLegacyPreAutoRecordChecksum(doc) {
 		doc.AutoRecordSettings = legacyDefaultAutoRecordSettings
 		doc.TrafficCPASettings = legacyDefaultTrafficCPASettings
+		doc.EpaperSettings = legacyDefaultEpaperSettings
 		return doc, true
 	}
 	if verifyLegacyPreTrafficCPAChecksum(doc) {
 		doc.TrafficCPASettings = legacyDefaultTrafficCPASettings
+		doc.EpaperSettings = legacyDefaultEpaperSettings
+		return doc, true
+	}
+	if verifyLegacyPreEpaperChecksum(doc) {
+		doc.EpaperSettings = legacyDefaultEpaperSettings
 		return doc, true
 	}
 	return doc, false
@@ -377,6 +522,18 @@ func LegacyDefaultAutoRecordSettings() AutoRecordSettingsSection {
 // value directly); exported solely for that one test.
 func LegacyDefaultTrafficCPASettings() TrafficCPASettingsSection {
 	return legacyDefaultTrafficCPASettings
+}
+
+// LegacyDefaultEpaperSettings exposes legacyDefaultEpaperSettings for
+// cross-checking against main's own defaultSettings() e-paper defaults
+// (this package cannot import main itself - see the package doc
+// comment's leaf-dependency note) - see
+// main/configbackupapi_test.go's
+// TestLegacyDefaultEpaperSettingsMatchesPackageDefault. Not used by this
+// package's own normal restore path (which uses the unexported value
+// directly); exported solely for that one test.
+func LegacyDefaultEpaperSettings() EpaperSettingsSection {
+	return legacyDefaultEpaperSettings
 }
 
 // NormalizeDocument returns doc with any historical-shape-only

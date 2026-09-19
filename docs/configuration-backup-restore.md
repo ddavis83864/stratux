@@ -27,6 +27,7 @@ glue, in-memory restore-operation state machine, and every read/write of
 | `activeCalibrationProfileId` | Which profile is active. | Applied via `calprofile.Store.SetActiveID`, which itself refuses a dangling reference; the active profile's calibration is also mirrored into `globalSettings` (the same `applyProfileToGlobalSettingsLocked` helper `/activateCalibrationProfile` already uses). |
 | `alertSettings` | Every persisted operational-alerting preference (thresholds, audio toggles, volume, cooldowns) **except** mute state. | Overwrites those fields; `SchemaVersion` and `Muted`/`MutedIndefinitely`/`MuteUntilUnixSeconds` are always preserved from the *current* settings, never the backup. |
 | `autoRecordSettings` | Every persisted Automatic Flight Recording setting (enabled, start/stop groundspeed and dwell thresholds, GPS-loss grace, restart cooldown, minimum recording duration) - see `docs/automatic-flight-recording.md`. | Overwrites those fields (`SchemaVersion` preserved from current); never changes any existing recording's own recorded origin (manual/automatic), only the going-forward configuration. |
+| `epaperSettings` | All six optional Waveshare e-paper display settings (enabled, panel, rotation, refresh interval, full-refresh interval, page) - see `docs/waveshare-epaper-display.md`. | Overwrites those fields; a disabled section (`enabled: false`) is always valid regardless of its other fields, mirroring `epaper.Normalize`'s own rule. |
 
 ## Excluded sections (never read or written by this subsystem)
 
@@ -166,15 +167,18 @@ that never knew about a field this build's `Document` shape now has - must still
 restore, with the missing field defaulted safely, rather than being rejected outright
 just because it cannot possibly carry a checksum for something it never serialized.
 
-Today this covers exactly one historical shape: schema 2 as it existed from PR #9
-(this package's original merge) through commit `5b8509fc` (PR #13's merge,
-immediately before Automatic Flight Recording added the `autoRecordSettings`
-section) - the only Configuration Backup shape that has ever actually existed on this
-project's `master` branch (`alertSettings` was present from this package's very first
-commit, so there is no earlier "before `alertSettings`" schema-2 shape; schema 1 was
-superseded by a deliberate, documented, non-additive break before this feature ever
-shipped a real document, and `MinimumCompatibleSchemaVersion` already rejects it
-before legacy-compatibility logic ever runs).
+Today this covers three historical shapes, each added the same way, at the point a
+new section was: schema 2 as it existed from PR #9 (this package's original merge)
+through commit `5b8509fc` (immediately before Automatic Flight Recording added
+`autoRecordSettings`); schema 2 immediately after that, through the closure-rate/CPA
+traffic-alerting enhancement adding `trafficCpaSettings`; and schema 2 immediately
+after that, through the optional Waveshare e-paper display feature adding
+`epaperSettings` - the only Configuration Backup shapes that have ever actually
+existed on this project's `master` branch (`alertSettings` was present from this
+package's very first commit, so there is no earlier "before `alertSettings`" schema-2
+shape; schema 1 was superseded by a deliberate, documented, non-additive break before
+this feature ever shipped a real document, and `MinimumCompatibleSchemaVersion`
+already rejects it before legacy-compatibility logic ever runs).
 
 **How verification works** (`configbackup/legacy.go`): `Validate` first checks
 whether the uploaded document's checksums are *exactly* consistent with having been

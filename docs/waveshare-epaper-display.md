@@ -264,9 +264,16 @@ These six fields are wired into the existing `/setSettings`
 validation-and-mutation machinery (`main/settingsvalidate.go`'s
 `settingsFieldTypes`, `main/managementinterface.go`'s
 `handleSettingsSetRequest`) exactly like every other setting - no new API
-was introduced. The GPIO pin mapping is **not** dashboard-configurable
-(only in code, via `epaper.Config.GPIO`) - it is always subject to the same
-`Validate()` conflict check either way.
+was introduced. Beyond the raw-type check every field gets, the four
+fields with a real bounded value space (`EpaperPanel`, `EpaperPage`,
+`EpaperRotation`, `EpaperRefreshIntervalSeconds`, `EpaperFullRefreshEvery`)
+are also range/enum-validated at the API boundary - mirroring
+`epaper.Normalize`'s own rules exactly - so an out-of-range or
+unrecognized value is rejected outright rather than silently persisted
+and then silently never applied on `epaperd`'s own next poll. The GPIO pin
+mapping is **not** dashboard-configurable (only in code, via
+`epaper.Config.GPIO`) - it is always subject to the same `Validate()`
+conflict check either way.
 
 A disabled configuration (`EpaperEnabled: false`) is always valid
 regardless of every other field's contents (`epaper.Normalize`) -
@@ -274,18 +281,22 @@ deliberately, so a stale or unrecognized value in a future version's
 config can never block an unrelated settings change, including a
 Configuration Backup/Restore apply.
 
-**Configuration Backup/Restore integration was deliberately deferred** for
-this initial implementation. This codebase's Config Backup schema
-(`configbackup` package) requires a full parallel legacy-shadow struct,
-checksum map, and verification function per section (see
-`TrafficCPASettingsSection` for the most recent precedent) - a
-substantial, mechanical undertaking the mission's own phrasing for this
-sub-requirement ("if appropriate", "if integrated") left conditional. The
-six settings above are still covered by the plain settings file
-(`stratux.conf`) `saveSettings()`/`readSettings()` already persists for
-every setting, so they survive an ordinary reboot; they are simply not
-yet part of a portable Configuration Backup bundle. This is a known,
-disclosed limitation - see "Known limitations" below.
+**Configuration Backup/Restore covers all six settings**, as its own
+`EpaperSettingsSection` (`configbackup` package), mirroring
+`TrafficCPASettingsSection`'s own established pattern exactly: a dedicated
+`Document.EpaperSettings` field with its own section checksum (no
+`SchemaVersion` bump needed - purely additive), its own
+`validateEpaperSettings` (the same bounds as `epaper.Normalize`, with the
+same "a disabled section is always valid" exception), and its own
+historical-shape entry in `legacy.go` so a backup exported before this
+section existed still validates and restores cleanly (the missing section
+is backfilled with the safe, disabled default - not the bare zero value,
+though for this section they happen to be identical, since a disabled
+e-paper section requires no non-zero hysteresis-avoiding defaults the way
+Automatic Flight Recording's thresholds do). Preview
+(`/validateConfigurationBackup`) shows any changed e-paper field exactly
+like every other section, via the same generic, reflection-based diff -
+no e-paper-specific preview code was needed.
 
 ### Observability (`/getHealth`'s new `Epaper` field)
 
@@ -340,9 +351,11 @@ before proceeding.
    thermal throttling, no failed systemd units, AHRS/baro/fan/GPS/
    978/1090/GDL90 all functioning exactly as before this hardware was
    added.
-6. **Enable the systemd unit** (it is installed but not started
-   automatically - see "Startup and shutdown behavior" below):
-   `sudo systemctl enable --now stratux_epaper`.
+6. **Confirm the systemd unit is already running** (it is enabled and
+   started automatically by the package, exactly like `stratux_fancontrol`
+   - see "Startup and shutdown behavior" below): `systemctl status
+   stratux_epaper` should show `active (running)`. No manual `systemctl
+   enable` step is needed or expected.
 7. **Enable the feature** in Settings or on the E-Paper Display dashboard
    page, and confirm one controlled full refresh: correct orientation,
    legible contrast, no clipping, no unexpected ghosting.
@@ -366,13 +379,16 @@ understood.
   to remove power." screen (`epaper.ShutdownLines`) *before* the
   controller is put to sleep and `PWR` de-asserted - never after, so the
   shutdown message is the last thing left on the panel.
-- The `stratux_epaper` systemd unit is **installed but not enabled or
-  started automatically** by the package's post-install script, unlike
-  `stratux_fancontrol` (mandatory cooling hardware present on every
-  supported board). This is genuinely optional, owner-installed hardware:
-  a system that never had the display added carries zero extra background
-  process or periodic localhost polling. The owner enables it explicitly
-  (step 6 above) as part of physically installing the display.
+- The `stratux_epaper` systemd unit is **enabled and started
+  automatically** by the package's post-install script, exactly like
+  `stratux_fancontrol`. A manual, post-boot `systemctl enable` was found
+  during hardware validation to persist only in the protected overlay's
+  RAM-backed upper layer and be silently lost on the next reboot, so the
+  unit itself is now always durably active - the owner-controlled,
+  durably-persisted `EpaperEnabled` setting (step 7 above) is the only
+  thing that decides whether it ever touches GPIO/SPI. A device that never
+  had the display added still runs this service, but it idles: a bounded,
+  cheap localhost HTTP poll every few seconds, no hardware access at all.
 
 ## Failure isolation and missing-display behavior
 
@@ -392,7 +408,7 @@ attention-worthy, never as if it were a core radio/AHRS/GPS failure.
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| Dashboard shows `NOT_INSTALLED` | Feature disabled, or the `stratux_epaper` unit was never enabled | Confirm `EpaperEnabled: true` and `systemctl status stratux_epaper` |
+| Dashboard shows `NOT_INSTALLED` | Feature disabled (`EpaperEnabled: false`) | Confirm `EpaperEnabled: true` in Settings; the `stratux_epaper` unit itself is enabled/running on every device regardless |
 | Dashboard shows `NOT_READY` | Unit installed but not active | `systemctl status stratux_epaper`; check `journalctl -u stratux_epaper` for a startup error |
 | Dashboard shows `DEGRADED`, panel not detected | Nothing wired up, a loose connection, or wrong switch positions | Re-check the wiring table and switch positions above; confirm power is applied only after a full re-check |
 | Dashboard shows `DEGRADED`, an error category | A transient SPI/GPIO issue, or a genuine wiring fault | Note the exact `LastErrorCategory`; power down and re-check the connection named by the affected signal in the wiring table |
@@ -420,10 +436,6 @@ calibration, or configuration.
 
 ## Known limitations
 
-- Configuration Backup/Restore does not yet cover this feature's six
-  settings (see "Configuration and observability" above) - they persist
-  across an ordinary reboot via the existing settings file, but are not
-  yet part of a portable backup bundle.
 - The `BUSY` line polarity this driver follows is based on the panel's
   documented reference-code behavior, not yet independently confirmed
   against this exact physical unit - final confirmation is part of the
