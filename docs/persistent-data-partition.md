@@ -2,10 +2,12 @@
 
 ## Status
 
-**Design implemented, reviewed, corrected, and hardware-tested once. A hardware-validation run
-found and closed a real first-boot provisioning state-management defect (see "First-boot
-provisioning: a durable, bounded, idempotent state machine" below). Unit/loop-device/static gates
-green. Not yet re-validated on physical hardware against the corrected design.** This closes the
+**Design implemented, reviewed, corrected, and hardware-tested three times. Each attempt found and
+closed a real, independent defect** (a first-boot provisioning state-management defect, then a
+boot-partition filesystem-type detection race, then a second, architecturally different form of the
+same detection race - see "First-boot provisioning: a durable, bounded, idempotent state machine"
+below for all three). **Unit/loop-device/static gates green. Not yet re-validated on physical
+hardware against the third correction.** This closes the
 provisioning gap `docs/ota-persistent-storage-defect.md` documents: `/var/lib/stratux-data` is now
 a genuinely dedicated, separately-mounted ext4 partition on any newly-built, freshly-flashed image -
 never provisioned automatically on an already-deployed device. See "Hardware-validation checklist"
@@ -383,8 +385,55 @@ permanently absent filesystem. All 22 pre-existing checks plus this new one rema
 count/delay are overridable (as `MIN_CARD_BYTES`/`ROOT_CAP_MIB` already were) so the test suite pays
 none of the production wait while still exercising the real retry loop.
 
-Re-validation against a card imaged with this second correction has not yet been performed as of
-this writing.
+### Third hardware attempt: the retry mitigation was insufficient, corrected to a direct superblock probe
+
+Re-validation against a card imaged with the `lsblk_field_with_retry` correction above was
+performed as a third hardware attempt. Result, recovered the same way (read directly from
+`/overlay/robase`, the bare root partition, bypassing the tmpfs overlay upper layer that a normal
+boot's own `rm -r /var/log/*` housekeeping had already cleared by the time of inspection):
+
+```
+provision-data-partition: partition 1 of /dev/mmcblk0 has filesystem type 'unknown', not the
+expected vfat boot partition - leaving the partition table untouched
+RESULT=skipped-unexpected-layout
+```
+
+Same symptom, same safe outcome (the layout was left completely untouched, and the durable
+`/etc/stratux-persistence-unsupported` marker correctly recorded why) - but the previous correction
+did not actually close the race. `lsblk_field_with_retry`'s retry loop ran (confirmed from the
+source path this device took - `PART1_FSTYPE` ends up empty only via that loop's own fallback
+substitution in the log message), and still returned empty after its full retry budget. The reason
+is architectural, not a matter of insufficient patience: `lsblk`'s `FSTYPE` column is sourced from
+udev's own device database, which does not exist yet at this point in boot - `init-overlay` runs as
+PID 1 (`init=/sbin/init-overlay` on the kernel command line) roughly 1-2 seconds after kernel
+handoff, well before `udevd` itself has started to populate that database. No number of retries or
+length of delay closes this: there is no database to catch up, at any retry count, because no daemon
+is running yet to build one. `settle_udev`'s own doc comment already noted this same limitation for
+a different reason (`udevadm settle` is a no-op with no udevd running to have queued events); the
+first version of this fix mitigated the wrong half of the problem.
+
+**Correction**: `blkid_probe_field` (replacing `lsblk_field_with_retry`) reads the requested field
+(`TYPE` or `LABEL`) via `blkid -p -s <field> -o value <device>` - low-level probing mode, which reads
+the on-disk filesystem signature directly and does not consult the udev database or cache at all, so
+it depends on neither `udevd` running nor any amount of waiting for it. The retry loop that remains
+is for a different, legitimate, bounded condition: the partition's own device node
+(`[ -b "$dev" ]`) needing a moment to appear, which is populated by the kernel's own `devtmpfs`
+independently of udev and is typically near-instant regardless. This intentionally does not solve
+the problem by raising `FSTYPE_DETECT_RETRIES`, adding a longer sleep, or waiting on `udevd` in any
+form - all three would have retained the same architectural defect, since the retried operation
+itself (a udev-database read) has nothing to converge on that early in boot no matter how long it is
+retried.
+
+`test/persistent_data_partition_test.sh`'s dedicated fault-injection case was reworked to match: a
+fake `blkid` placed first in `PATH` returns empty for the boot partition's `TYPE` on its first 2
+calls, then delegates to the real `blkid` for that same call and unconditionally for every other
+call shape - proving the corrected retry path actually retries and succeeds, not merely asserting
+the fix exists. All 25 checks (22 pre-existing plus this reworked case) remain green across 3
+repeated runs; `test/finalize_data_partition_provisioning_test.sh`'s 49 checks are unaffected (this
+correction is confined to `provision-data-partition`'s own detection helper).
+
+Re-validation against a card imaged with this third correction has not yet been performed as of this
+writing.
 
 ## B3: Mount and service ordering
 
@@ -552,7 +601,7 @@ Workstream D's persistence matrix performs.
 
 - **`test/persistent_data_partition_test.sh`**: runs the real, unmodified
   `/sbin/provision-data-partition` script against real, disposable loop-mounted disk images
-  (`losetup`/`parted`/`mkfs.ext4`) - not a reimplementation of its logic. 7 cases, 22 checks, all
+  (`losetup`/`parted`/`mkfs.ext4`) - not a reimplementation of its logic. 8 cases, 25 checks, all
   green across repeated consecutive runs:
   1. a ≥16 GiB card gets a correctly-sized (±8 MiB of the 8192 MiB cap), correctly-labeled,
      correctly-typed data partition;
@@ -572,6 +621,11 @@ Workstream D's persistence matrix performs.
      `RESULT=already-provisioned` and - proven directly, not just asserted - **never reformats**: a
      sentinel file written to the data partition between the two invocations is confirmed to
      survive.
+  8. **(new)** the boot-partition detection race found on the third hardware attempt (see "Third
+     hardware attempt" above): a fake `blkid` shim returns empty for the boot partition's `TYPE` on
+     its first 2 calls, then delegates to the real `blkid` - proving `blkid_probe_field` actually
+     retries (on the device node appearing) and succeeds, rather than merely asserting the fix
+     exists.
 
   **Found and fixed two real bugs during this round's own empirical validation** (both caught only
   because these tests use real devices, not mocks):
@@ -624,7 +678,7 @@ Workstream D's persistence matrix performs.
 - **`test/finalize_data_partition_provisioning_test.sh`** (new, added for the hardware-validation
   finding): the fault-injection suite for the durable state machine, running the real, unmodified
   `/sbin/finalize-data-partition-provisioning` script against plain files in a disposable temp
-  directory (no loop devices needed - this script only ever touches ordinary files). 33 checks, all
+  directory (no loop devices needed - this script only ever touches ordinary files). 49 checks, all
   green: a clean `provisioned` outcome (fstab entry written exactly once, correct
   `nofail`/`x-systemd.before=stratux.service` options, marker and state file both removed, no
   unsupported-persistence marker); `already-provisioned` (idempotent - no duplicate fstab entry);
@@ -661,9 +715,14 @@ size, and SHA-256. See the PR description for the exact identity and evidence of
 
 **A hardware-validation run using that build then found the first-boot provisioning defect this
 document's own "First-boot provisioning" section above describes and closes.** A new image,
-reflecting the corrected, durable state machine, has been built and independently verified from
-this branch's own corrected head - see the PR description for that build's own exact identity and
-evidence. Hardware re-validation against it has not yet been performed.
+reflecting the corrected, durable state machine, was built, independently verified, and hardware-
+tested a second time - which found the boot-partition detection race ("Second hardware attempt"
+above). A third image, using `lsblk_field_with_retry`, was built, verified, and hardware-tested a
+third time - which found that mitigation insufficient ("Third hardware attempt" above), corrected
+to `blkid_probe_field`. A fourth image, reflecting this latest correction, has been built and
+independently verified from this branch's own corrected head - see the PR description for that
+build's own exact identity and evidence. Hardware re-validation against it has not yet been
+performed.
 
 ## Hardware-validation checklist
 

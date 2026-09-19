@@ -77,36 +77,45 @@ settle_udev() {
 	fi
 }
 
-# lsblk_field_with_retry: reads a single lsblk field (FSTYPE or LABEL)
-# for a device, retrying with a short sleep in between if it comes back
-# empty. A real hardware-validation finding: at this very early point in
-# boot - before udevd itself is even running - lsblk's own filesystem
-# detection can race against blkid not yet being able to probe the
-# device, even though the filesystem genuinely exists and is correctly
-# detected moments later once boot proceeds further (confirmed directly:
-# a device this exact check rejected as "not vfat" was independently
-# confirmed genuinely vfat via blkid on the same, fully-booted device
-# afterward). settle_udev alone does not reliably fix this specific
-# race: it waits for udev's own event queue to drain, which is a no-op
-# if udevd is not yet running at all to have queued anything - a plain,
-# bounded sleep-and-retry is the one thing that helps regardless of
-# which of those two causes is actually in play. Never trust a single
-# empty read as proof a filesystem is absent - the whole-disk/partition-
-# count checks already prove this is genuinely the expected device
-# topology; this only bounds how long to wait for blkid's own view of it
-# to catch up. Retry count/delay are overridable so the test suite can
-# exercise both the retry path and the genuinely-empty case (Case 6's
-# own interrupted-before-mkfs partition, which must NOT be mistaken for
-# a slow-to-settle one) without paying the full production wait.
+# blkid_probe_field: reads a single field (TYPE or LABEL) directly from a
+# device's own on-disk superblock via `blkid -p` (low-level probing
+# mode), retrying with a short bounded sleep if the device node isn't
+# there yet. A real hardware-validation finding, and a correction to
+# this function's own first version: that version used `lsblk`, whose
+# FSTYPE/LABEL columns are sourced from udev's device database - which
+# is empty at this point in boot, since init-overlay runs as PID 1 only
+# ~1-2 seconds after kernel handoff, well before udevd itself is even
+# running to populate that database. Retrying `lsblk` more, or waiting
+# longer for udevd, cannot fix this: there is no udev database to catch
+# up, at any retry count or delay, because no daemon is running to build
+# one. This was confirmed directly on hardware: a device this exact
+# check rejected as "not vfat" (lsblk returning empty after its full
+# retry budget) was independently confirmed genuinely vfat via `blkid`
+# moments later once boot proceeded further. `blkid -p` reads the
+# on-disk filesystem signature directly, bypassing the udev database/
+# cache entirely, so it depends on neither udevd nor any amount of
+# waiting for it. The only real, bounded condition left to retry on is
+# the kernel itself exposing the partition's device node (checked
+# explicitly via `[ -b ... ]` below) - independent of udev, populated by
+# the kernel's own devtmpfs, and typically near-instant, but retried
+# defensively rather than assumed. Never trust a single empty read as
+# proof a filesystem is absent - the whole-disk/partition-count checks
+# already prove this is genuinely the expected device topology; this
+# only bounds how long to wait for the device node itself to appear.
+# Retry count/delay are overridable so the test suite can exercise both
+# the retry path and the genuinely-empty case (Case 6's own interrupted-
+# before-mkfs partition, which must NOT be mistaken for a slow-to-appear
+# one) without paying the full production wait.
 : "${FSTYPE_DETECT_RETRIES:=5}"
 : "${FSTYPE_DETECT_RETRY_DELAY_SECONDS:=1}"
-lsblk_field_with_retry() {
-	# $1: device path. $2: lsblk field name (FSTYPE or LABEL).
+blkid_probe_field() {
+	# $1: device path. $2: blkid field name (TYPE or LABEL).
 	local dev="$1" field="$2" value="" tries=0
 	while [ "$tries" -lt "$FSTYPE_DETECT_RETRIES" ]; do
-		value=$(lsblk -no "$field" "$dev" 2>/dev/null || true)
-		[ -n "$value" ] && break
-		settle_udev
+		if [ -b "$dev" ]; then
+			value=$(blkid -p -s "$field" -o value "$dev" 2>/dev/null || true)
+			[ -n "$value" ] && break
+		fi
 		sleep "$FSTYPE_DETECT_RETRY_DELAY_SECONDS"
 		tries=$((tries + 1))
 	done
@@ -172,8 +181,8 @@ if [ "$PART_COUNT" -eq 3 ]; then
 	# by assuming which case this is:
 	EXISTING_PART3_NAME="$(lsblk -lno NAME "$ROOT_DEV" | sed -n '4p')"
 	EXISTING_PART3_DEV="/dev/${EXISTING_PART3_NAME}"
-	EXISTING_PART3_FSTYPE="$(lsblk_field_with_retry "$EXISTING_PART3_DEV" FSTYPE)"
-	EXISTING_PART3_LABEL="$(lsblk_field_with_retry "$EXISTING_PART3_DEV" LABEL)"
+	EXISTING_PART3_FSTYPE="$(blkid_probe_field "$EXISTING_PART3_DEV" TYPE)"
+	EXISTING_PART3_LABEL="$(blkid_probe_field "$EXISTING_PART3_DEV" LABEL)"
 	if [ -z "$EXISTING_PART3_FSTYPE" ]; then
 		# No filesystem at all: this can only be our own interrupted
 		# mkpart, never a foreign layout in active use (nothing else
@@ -209,7 +218,7 @@ if [ "$EXPECTED_ROOT_NAME" != "$ACTUAL_PART2_NAME" ]; then
 fi
 
 PART1_NAME="$(lsblk -lno NAME "$ROOT_DEV" | sed -n '2p')"
-PART1_FSTYPE="$(lsblk_field_with_retry "/dev/${PART1_NAME}" FSTYPE)"
+PART1_FSTYPE="$(blkid_probe_field "/dev/${PART1_NAME}" TYPE)"
 case "$PART1_FSTYPE" in
 	vfat|fat32) ;;
 	*) reject_unexpected_layout "partition 1 of ${ROOT_DEV} has filesystem type '${PART1_FSTYPE:-unknown}', not the expected vfat boot partition" ;;

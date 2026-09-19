@@ -236,29 +236,35 @@ sudo umount "${WORKDIR}/mnt7"
 sudo losetup -d "$LOOPDEV"
 LOOPDEV=""
 
-# --- Case 8: a real hardware-validation finding - lsblk's own FSTYPE
+# --- Case 8: a real hardware-validation finding - filesystem-type
 #     detection for the boot partition can transiently return empty very
 #     early in boot (before udevd itself is even running), even though
 #     the filesystem genuinely exists and is detected correctly moments
 #     later. A real device was incorrectly rejected as "not vfat" by
-#     this exact race. Proves lsblk_field_with_retry actually retries
-#     and succeeds, rather than merely asserting the fix exists: a fake
-#     `lsblk` shim placed first in PATH returns empty for partition 1's
-#     FSTYPE on its first 2 calls, then delegates to the real lsblk for
-#     every other call (all other fields/devices, and this same call
-#     once past its fake-failure count) - exactly simulating the
+#     this exact race under the first version of this fix (which used
+#     `lsblk`, itself sourced from the udev database - unpopulated that
+#     early regardless of retry count, since no daemon is running to
+#     build it). The corrected fix uses `blkid -p` (direct superblock
+#     probing, no udev dependency at all) with a bounded retry only on
+#     the device node itself appearing. Proves blkid_probe_field actually
+#     retries and succeeds, rather than merely asserting the fix exists:
+#     a fake `blkid` shim placed first in PATH returns empty for
+#     partition 1's TYPE on its first 2 calls, then delegates to the real
+#     blkid for every other call (all other fields/devices, and this same
+#     call once past its fake-failure count) - exactly simulating the
 #     transient race, never a permanently absent filesystem. ---
 CASE8_BINDIR="${WORKDIR}/case8-fakebin"
 mkdir -p "$CASE8_BINDIR"
-REAL_LSBLK="$(command -v lsblk)"
-CASE8_COUNTER="${WORKDIR}/case8-lsblk-calls"
+REAL_BLKID="$(command -v blkid)"
+CASE8_COUNTER="${WORKDIR}/case8-blkid-calls"
 echo 0 > "$CASE8_COUNTER"
-cat > "${CASE8_BINDIR}/lsblk" << EOF
+cat > "${CASE8_BINDIR}/blkid" << EOF
 #!/bin/sh
-# Fakes exactly one call shape - "-no FSTYPE <path ending in p1>" - empty
-# for its first 2 invocations, then delegates to the real lsblk for
-# that same call and unconditionally for every other call shape.
-if [ "\$1" = "-no" ] && [ "\$2" = "FSTYPE" ] && [ "\${3%p1}" != "\$3" ]; then
+# Fakes exactly one call shape - "-p -s TYPE -o value <path ending in
+# p1>" - empty for its first 2 invocations, then delegates to the real
+# blkid for that same call and unconditionally for every other call
+# shape.
+if [ "\$1" = "-p" ] && [ "\$2" = "-s" ] && [ "\$3" = "TYPE" ] && [ "\$4" = "-o" ] && [ "\$5" = "value" ] && [ "\${6%p1}" != "\$6" ]; then
 	n=\$(cat "$CASE8_COUNTER")
 	n=\$((n + 1))
 	echo "\$n" > "$CASE8_COUNTER"
@@ -266,9 +272,9 @@ if [ "\$1" = "-no" ] && [ "\$2" = "FSTYPE" ] && [ "\${3%p1}" != "\$3" ]; then
 		exit 0
 	fi
 fi
-exec "$REAL_LSBLK" "\$@"
+exec "$REAL_BLKID" "\$@"
 EOF
-chmod +x "${CASE8_BINDIR}/lsblk"
+chmod +x "${CASE8_BINDIR}/blkid"
 
 LOOPDEV="$(make_test_image 20480)"
 OUT8=$(sudo env PATH="${CASE8_BINDIR}:${PATH}" \
@@ -277,9 +283,9 @@ OUT8=$(sudo env PATH="${CASE8_BINDIR}:${PATH}" \
 	"$PROVISION_SCRIPT" "$LOOPDEV" "${LOOPDEV}p2" 2>&1)
 RC8=$?
 echo "$OUT8" > "${WORKDIR}/out8.log"
-check "transient boot-partition FSTYPE race: retried and succeeded (exit 0)" "$([ "$RC8" -eq 0 ] && echo 1 || echo 0)"
-check "transient boot-partition FSTYPE race: reports RESULT=provisioned, not skipped-unexpected-layout" "$(grep -q '^RESULT=provisioned' "${WORKDIR}/out8.log" && echo 1 || echo 0)"
-check "transient boot-partition FSTYPE race: the fake lsblk was actually exercised at least twice" "$([ "$(cat "$CASE8_COUNTER")" -ge 2 ] && echo 1 || echo 0)"
+check "transient boot-partition TYPE race: retried and succeeded (exit 0)" "$([ "$RC8" -eq 0 ] && echo 1 || echo 0)"
+check "transient boot-partition TYPE race: reports RESULT=provisioned, not skipped-unexpected-layout" "$(grep -q '^RESULT=provisioned' "${WORKDIR}/out8.log" && echo 1 || echo 0)"
+check "transient boot-partition TYPE race: the fake blkid was actually exercised at least twice" "$([ "$(cat "$CASE8_COUNTER")" -ge 2 ] && echo 1 || echo 0)"
 sudo losetup -d "$LOOPDEV"
 LOOPDEV=""
 
