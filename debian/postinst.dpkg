@@ -29,6 +29,20 @@ if  [ "$arch" == "aarch64" ]; then
     if [ -f "/boot/firmware/config.txt" ]; then
             systemctl enable stratux_fancontrol
             systemctl start stratux_fancontrol
+
+            # stratux_epaper is always enabled/started here, exactly like
+            # stratux_fancontrol above - never via a manual, post-boot
+            # `systemctl enable`, which would land only in the protected
+            # overlay's RAM-backed (tmpfs) upper layer and be lost on the
+            # very next reboot (see docs/ota-persistent-storage-defect.md).
+            # This is safe on every device, including ones with no e-paper
+            # display attached: epaperd idles with zero GPIO/SPI access
+            # whenever EpaperEnabled is false in settings (the durable,
+            # owner-controlled switch - see epaper_main/main.go's early
+            # !cfg.Enabled check) - only settings.EpaperEnabled decides
+            # whether it ever touches hardware, never whether the unit runs.
+            systemctl enable stratux_epaper
+            systemctl start stratux_epaper
     fi
 fi
 exit 0

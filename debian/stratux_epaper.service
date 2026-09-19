@@ -23,14 +23,25 @@ StandardOutput=null
 [Install]
 WantedBy=multi-user.target
 
-# This unit is installed but NOT enabled or started automatically by the
-# package's postinst script, unlike stratux_fancontrol (mandatory cooling
-# hardware present on every supported board). The e-paper display is
-# genuinely optional owner-installed hardware: even though epaper_main is
-# safe to run with EpaperEnabled=false in settings (it idles, touching no
-# GPIO/SPI at all), leaving this unit disabled-by-default at the systemd
-# level too means a system that never had this display added carries zero
-# extra background process or periodic localhost HTTP polling from it.
-# See docs/waveshare-epaper-display.md's installation procedure for the
-# `systemctl enable --now stratux_epaper` step the owner runs deliberately
-# as part of physically installing this hardware.
+# This unit IS enabled and started automatically by the package's
+# postinst script, exactly like stratux_fancontrol - a manual, post-boot
+# `systemctl enable` was found (during hardware validation) to persist
+# only in the protected overlay's RAM-backed (tmpfs) upper layer, and to
+# be silently lost on the very next reboot (see
+# docs/ota-persistent-storage-defect.md), leaving a device that appeared
+# configured actually running without the display after any restart.
+#
+# Running this unit unconditionally is safe on every device, including
+# ones with no e-paper display ever attached: epaper_main's own early
+# !cfg.Enabled check means it idles - touching no GPIO/SPI at all, making
+# only a bounded, cheap localhost HTTP poll every few seconds - whenever
+# the durable, owner-controlled `EpaperEnabled` setting is false. Only
+# that setting (persisted the same way as every other setting, on
+# /boot/firmware, unaffected by the overlay) decides whether this ever
+# touches hardware; the systemd unit's own enabled/running state no
+# longer needs to track that decision at all.
+#
+# See docs/waveshare-epaper-display.md's installation procedure: after
+# physically wiring the display, the owner enables the feature itself
+# through Settings > Epaper Display (or POST /setSettings), never by
+# managing this unit directly.
