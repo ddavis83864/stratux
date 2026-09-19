@@ -2,12 +2,16 @@
 
 ## Status
 
-**Design implemented, reviewed, corrected, and hardware-tested three times. Each attempt found and
-closed a real, independent defect** (a first-boot provisioning state-management defect, then a
-boot-partition filesystem-type detection race, then a second, architecturally different form of the
-same detection race - see "First-boot provisioning: a durable, bounded, idempotent state machine"
-below for all three). **Unit/loop-device/static gates green. Not yet re-validated on physical
-hardware against the third correction.** This closes the
+**Design implemented, reviewed, corrected, and hardware-validated successfully.** Four hardware
+attempts were made; the first three each found and closed a real, independent defect (a first-boot
+provisioning state-management defect, then a boot-partition filesystem-type detection race via
+`lsblk`, then the same detection race closed properly via a direct `blkid -p` superblock probe - see
+"First-boot provisioning: a durable, bounded, idempotent state machine" below for all three). **The
+fourth attempt succeeded end to end**: provisioning, partition layout, mount, `PersistentDataUUID`,
+and systemd ordering all verified correct on real hardware (see "Hardware-validation checklist"
+below). A full persistence validation matrix (Phase 9) then exercised recording, export, diagnostic,
+settings, and calibration-profile persistence through their real supported APIs, including survival
+across a warm reboot - all passed. This closes the
 provisioning gap `docs/ota-persistent-storage-defect.md` documents: `/var/lib/stratux-data` is now
 a genuinely dedicated, separately-mounted ext4 partition on any newly-built, freshly-flashed image -
 never provisioned automatically on an already-deployed device. See "Hardware-validation checklist"
@@ -22,9 +26,11 @@ sacrificial card then found a real, independent defect in that same first-boot d
 see the dedicated section below for the full incident and its correction. Each is called out inline
 in its own section, and summarized in "Review-response changes" at the end of this document.
 
-**The device used for that hardware-validation run remains booted, unmodified, and not yet
-reimaged or removed** - a controlled removal/reimage procedure is a separately authorized next
-step, not yet performed.
+**The sacrificial device has since been reimaged three more times as each defect above was closed,
+most recently with the corrected `blkid -p` build, and successfully hardware-validated (see
+"Hardware-validation checklist" below).** It remains booted with Phase 9's validation evidence
+(one recording, export, diagnostic bundle, and a non-active test calibration profile) intentionally
+preserved on it.
 
 ## B1: Current image and boot lifecycle (as traced from source)
 
@@ -719,15 +725,54 @@ reflecting the corrected, durable state machine, was built, independently verifi
 tested a second time - which found the boot-partition detection race ("Second hardware attempt"
 above). A third image, using `lsblk_field_with_retry`, was built, verified, and hardware-tested a
 third time - which found that mitigation insufficient ("Third hardware attempt" above), corrected
-to `blkid_probe_field`. A fourth image, reflecting this latest correction, has been built and
-independently verified from this branch's own corrected head - see the PR description for that
-build's own exact identity and evidence. Hardware re-validation against it has not yet been
-performed.
+to `blkid_probe_field`. A fourth image, reflecting this latest correction, was built, independently
+verified, and hardware-tested a fourth time - **provisioning succeeded end to end**, and the
+subsequent persistence validation matrix (Phase 9) passed in full, including survival across a
+warm reboot. See the PR description and comment history for the exact identity and evidence of
+that build and both validation runs.
 
 ## Hardware-validation checklist
 
-Not yet performed - this is Workstream D, gated behind your explicit, per-device authorization.
-See the separate validation-procedure proposal for the exact steps.
+Performed, on a sacrificial card, across four attempts (owner-authorized per-device each time; see
+PR #32's comment history for full raw evidence of each attempt).
+
+**Phase 8 (fourth attempt, image built from the `blkid -p` correction) - provisioning: PASS**
+- `RESULT=provisioned DATA_PART_DEV=/dev/mmcblk0p3 ROOT_END_MIB=8708` - the `blkid -p` probe
+  succeeded on the very first try, unlike both prior attempts which failed at exactly this check
+- 3-partition layout confirmed: bootfs (vfat), rootfs (ext4, exactly 8192 MiB), `stratux-data`
+  (ext4, label correct)
+- `/var/lib/stratux-data` mounted from `/dev/mmcblk0p3`, `rw,noatime`
+- `/etc/fstab` entry and generated systemd ordering exactly as designed
+  (`Before=stratux.service umount.target`, unit in `local-fs.target.wants/` confirming `nofail`)
+- `PersistentDataUUID` matches the partition's own filesystem UUID exactly
+- Overlay active, lower filesystem mounted read-only
+- Zero failed units, no throttling, no reboot loop, all core subsystems (GPS/AHRS/baro/fan/
+  1090ES/978/GDL90/dashboard) healthy
+- One confirmed, pre-existing, unrelated finding: `StorageLifecycle` health incorrectly reports
+  `DEGRADED` for namespace directories that don't exist yet on a fresh card - filed as
+  [issue #33](https://github.com/ddavis83864/stratux/issues/33), not fixed here
+
+**Phase 9 (persistence validation matrix) - PASS**
+- Every artifact created via real, traced, supported product APIs (never a guessed endpoint):
+  a recording (`/startRecording`/`/stopRecording`, `"complete":true`), a CSV export
+  (`/exportRecording`), a diagnostic bundle (`/generateDiagnostics`, sanitization verified), a
+  settings change (`DarkMode` via `/setSettings`, read back, later restored to baseline), and a
+  new, non-active calibration profile (`/createCalibrationProfile`) - the real active profile was
+  never touched, confirmed byte-identical throughout
+- A uniquely-named canary file written directly onto `/var/lib/stratux-data` and every created
+  artifact proven to reside on `/dev/mmcblk0p3` via matching device IDs (`stat -c %d`)
+- Configuration Backup verified (structurally and by content inspection) to include only intended
+  settings/calibration profiles and correctly exclude recordings, exports, diagnostics, the
+  canary, and all secrets
+- One supported warm reboot (`/reboot`) performed: new boot ID, same commit, same partition UUID,
+  same `PersistentDataUUID`, mount-before-`stratux.service` ordering proven via
+  `ActiveEnterTimestamp`, every artifact's hash byte-identical before/after, overlay protection
+  intact, zero failed units/throttling/restarts/crash-loop
+- Independent corroboration of the `StorageLifecycle` finding above: `ScanErrorCount` fell from 3
+  to 0 once all four namespaces held real content from these supported workflows
+
+Not yet performed: Phase 10 (OTA validation) and Phase 11 (regression/stability campaign) - both
+remain gated behind your explicit authorization.
 
 ## Rollback
 
