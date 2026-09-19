@@ -108,7 +108,15 @@ func initAutoRecord() {
 // initAutoRecord's doc comment.
 var autoRecordMountReady = func() bool {
 	mnt, err := readiness.FindMount(PersistentDataPath)
-	return err == nil && mnt.Mounted && mnt.FSType == PersistentDataFSType
+	// readiness.IsDedicatedMount is the one canonical answer to "is this
+	// genuinely a dedicated, separately-mounted filesystem" - the same
+	// function readiness.DiscoverableMount and ota.IsDedicatedPersistentMount
+	// use, closing the real, hardware-confirmed incident where an
+	// FSType-alone check (no Target comparison) accepted a bare,
+	// overlay-disabled ext4 root as if it were the real dedicated
+	// partition. See docs/ota-persistent-storage-defect.md.
+	dedicated, _ := readiness.IsDedicatedMount(mnt, PersistentDataPath)
+	return err == nil && mnt.Mounted && dedicated && mnt.FSType == PersistentDataFSType
 }
 
 // autoRecordAwaitMountAndReload retries autoRecordMountReady every

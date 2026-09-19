@@ -1898,6 +1898,15 @@ func main() {
 	// Read settings.
 	readSettings()
 
+	// Switch every persistence namespace's write guard from its
+	// (test-safe, no-op) default to the real "is PersistentDataPath
+	// genuinely mounted" check, before any subsystem below this point
+	// gets a chance to write anything - see
+	// wireProductionPersistenceGuards's own doc comment
+	// (main/health.go) and docs/persistent-data-partition.md's
+	// namespace audit.
+	wireProductionPersistenceGuards()
+
 	// Initialize named aircraft calibration profiles and migrate any
 	// pre-existing legacy calibration into a default profile - must run
 	// before initI2CSensors() below starts any goroutine that reads

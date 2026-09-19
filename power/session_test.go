@@ -1,6 +1,7 @@
 package power
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,5 +96,36 @@ func TestEvaluatePreviousSession_NotClosedCleanly(t *testing.T) {
 	}
 	if !strings.Contains(note, "not a confirmed diagnosis") {
 		t.Errorf("Note must explicitly hedge that this is not a confirmed diagnosis, got: %s", a.Note)
+	}
+}
+
+// TestPersistenceGuard_RefusesWriteWhenNotSafe proves the injectable
+// SetPersistenceGuard seam is consulted before WriteSessionMarkerAtomic
+// ever writes anything - see ensurePersistentDir's own doc comment in
+// session.go for why this exists (main wires it to the real
+// readiness.EnsurePersistentDir(PersistentDataPath) check in production;
+// this package's own tests never touch a real mount).
+func TestPersistenceGuard_RefusesWriteWhenNotSafe(t *testing.T) {
+	guardErr := errors.New("persistent-data partition is not mounted")
+	SetPersistenceGuard(func() error { return guardErr })
+	defer SetPersistenceGuard(func() error { return nil })
+
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := WriteSessionMarkerAtomic(path, SessionMarker{SessionID: "x"}); err == nil || !errors.Is(err, guardErr) {
+		t.Fatalf("WriteSessionMarkerAtomic should refuse to persist when the guard reports unsafe, got: %v", err)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("no marker file should have been created when the guard refused")
+	}
+}
+
+// TestPersistenceGuard_DefaultAllowsWrite proves the default (no-op)
+// guard never blocks a write - every pre-existing test in this file
+// relies on this remaining true without calling SetPersistenceGuard
+// itself.
+func TestPersistenceGuard_DefaultAllowsWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := WriteSessionMarkerAtomic(path, SessionMarker{SessionID: "x"}); err != nil {
+		t.Fatalf("WriteSessionMarkerAtomic should succeed under the default no-op guard: %v", err)
 	}
 }

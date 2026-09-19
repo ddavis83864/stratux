@@ -65,6 +65,14 @@ func saveAutoRecordSettings(s autorecord.Settings) error {
 	autoRecordSettingsMu.Lock()
 	defer autoRecordSettingsMu.Unlock()
 
+	// Refuse to persist rather than silently write into the RAM-backed
+	// overlay directory at PersistentDataPath when the real partition
+	// failed to mount - see readiness.EnsurePersistentDir and
+	// docs/persistent-data-partition.md's namespace audit.
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist autorecord settings: %w", err)
+	}
+
 	dir := filepath.Dir(autoRecordSettingsPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("could not create settings directory: %w", err)

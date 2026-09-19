@@ -239,6 +239,19 @@ func saveAlertSettings(s AlertSettings) error {
 	alertSettingsMu.Lock()
 	defer alertSettingsMu.Unlock()
 
+	// Refuse to persist rather than silently write into the RAM-backed
+	// overlay directory that exists at PersistentDataPath even when the
+	// real partition failed to mount (nofail) - see
+	// readiness.EnsurePersistentDir and
+	// docs/persistent-data-partition.md's namespace audit. The caller
+	// (the settings HTTP handler) reports this error to the operator;
+	// the in-memory setting the handler already applied before calling
+	// this is unaffected, matching "operates explicitly without
+	// writing" for the current process's lifetime.
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist alert settings: %w", err)
+	}
+
 	dir := filepath.Dir(alertSettingsPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("could not create settings directory: %w", err)

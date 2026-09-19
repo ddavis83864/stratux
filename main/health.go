@@ -18,7 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stratux/stratux/calprofile"
+	"github.com/stratux/stratux/power"
 	"github.com/stratux/stratux/readiness"
+	"github.com/stratux/stratux/recording"
 	"github.com/stratux/stratux/sdrassign"
 )
 
@@ -28,6 +31,44 @@ const (
 	PersistentDataPath   = "/var/lib/stratux-data"
 	PersistentDataFSType = "ext4"
 )
+
+// ensurePersistentDataMounted is the check every persistence namespace in
+// this package (settings save functions, the recording-export writer,
+// etc.) runs immediately before writing anything under PersistentDataPath
+// - see readiness.EnsurePersistentDir's own doc comment and
+// docs/persistent-data-partition.md's namespace audit for why: a missing
+// or failed mount there (nofail) must never result in a silent write into
+// the RAM-backed overlay directory that exists at that same path
+// regardless.
+//
+// A var, not a direct call, and defaulting to a no-op (always safe to
+// write) for the same reason calprofile/recording/power's own
+// SetPersistenceGuard seams do: PersistentDataPath is a compile-time
+// constant, so no test can redirect it to a real dedicated mount, and a
+// real check run against it would (correctly, but unhelpfully for a unit
+// test) always refuse - proven directly during development: wiring the
+// real check unconditionally broke TestAlertSettings_SaveAndLoadRoundTrip,
+// TestAutoRecordSettings_SaveThenLoadRoundTrips, and most of
+// wifiadminapi_test.go's real-persistence-path tests, none of which run
+// against a genuine mount. wireProductionPersistenceGuards below switches
+// this (and the equivalent seam in calprofile/recording/power) to the real
+// check exactly once, called only from main() - never from a test.
+var ensurePersistentDataMounted = func() error { return nil }
+
+// wireProductionPersistenceGuards switches every persistence namespace's
+// injectable write guard - this package's own ensurePersistentDataMounted
+// plus calprofile/recording/power's SetPersistenceGuard seams - to the
+// real readiness.EnsurePersistentDir(PersistentDataPath) check. Called
+// exactly once, from main(), after readSettings() and before any
+// subsystem below it could possibly perform its first write.
+func wireProductionPersistenceGuards() {
+	real := func() error { return readiness.EnsurePersistentDir(PersistentDataPath) }
+	ensurePersistentDataMounted = real
+	calprofile.SetPersistenceGuard(real)
+	recording.SetPersistenceGuard(real)
+	power.SetPersistenceGuard(real)
+	readiness.SetDiagnosticsPersistenceGuard(real)
+}
 
 // timeTrust is the trusted-time state machine gps.go's RMC handler feeds.
 // It is package-level (like stratuxClock, globalStatus, etc.) because it
@@ -103,7 +144,7 @@ func ensurePersistentDataUUID() {
 	}
 	_, statErr := os.Stat(PersistentDataPath)
 	present := statErr == nil
-	if !readiness.DiscoverableMount(mnt, present, PersistentDataFSType) {
+	if !readiness.DiscoverableMount(PersistentDataPath, mnt, present, PersistentDataFSType) {
 		return
 	}
 	globalSettings.PersistentDataUUID = mnt.UUID
@@ -202,6 +243,17 @@ func updateHealth() {
 
 	ensurePersistentDataUUID()
 	storage := readiness.CertifyPersistentStorage(PersistentDataPath, globalSettings.PersistentDataUUID, readiness.DefaultPersistentStorageThresholds())
+	// A card below the minimum size a dedicated persistent-data partition
+	// requires never has one to certify at all - CertifyPersistentStorage
+	// already reports this honestly (NOT_READY, "not mounted"), but a
+	// review requirement asks for the *specific* reason (this card is
+	// simply too small) to be unmistakable rather than left to be
+	// inferred from a generic message - see
+	// docs/persistent-data-partition.md and
+	// provision-data-partition's own marker file this surfaces.
+	if reason := readiness.UnsupportedPersistenceReason(); reason != "" && storage.State != readiness.StateReady {
+		storage.Reason = reason
+	}
 	overlay := readiness.CertifyPersistentStorage("/", "", readiness.DefaultPersistentStorageThresholds())
 
 	ahrs := buildAHRSHealth(mono, now)
