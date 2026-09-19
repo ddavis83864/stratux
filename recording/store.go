@@ -17,6 +17,36 @@ const (
 	filePrefix    = "recording-"
 )
 
+// ensurePersistentDir is called by NewStore and every subsequent file
+// rotation, to refuse creating/rotating recording files into the
+// RAM-backed overlay directory that exists at dir even when the real
+// dedicated data partition backing it failed to mount, or has since
+// disappeared - see docs/persistent-data-partition.md's namespace audit.
+// Checking again at each rotation (not only once at NewStore), rather
+// than solely relying on the already-open file descriptor Append writes
+// through, is what closes the "mount disappears mid-recording" case: a
+// long recording session rotates repeatedly (see maxFileBytes), and each
+// rotation is a natural, already-existing checkpoint to notice the mount
+// is gone before ever creating a new file in the wrong place - Append
+// itself, on the hot per-sample path, is deliberately not re-checked
+// here for the same reason WriteTest is not run on every health poll:
+// the cost/benefit does not justify it, and a real mount vanishing out
+// from under an already-open fd on the same filesystem it started on is
+// not a realistic outcome this project needs to detect sample-by-sample.
+//
+// Defaults to a no-op (always safe to write) so this package's own
+// tests, which write to a plain t.TempDir() never intended to be its
+// own dedicated mount, are unaffected; this package stays free of any
+// dependency on main or readiness. SetPersistenceGuard lets main's own
+// startup wiring (main/recordingapi.go) override this to the real check
+// exactly once.
+var ensurePersistentDir = func() error { return nil }
+
+// SetPersistenceGuard overrides the check NewStore/rotation/metadata
+// writes run before ever touching disk. See ensurePersistentDir's own
+// doc comment.
+func SetPersistenceGuard(f func() error) { ensurePersistentDir = f }
+
 // Store is an append-only, size-rotated, retention-bounded JSON-Lines
 // store for Sample records. It is intentionally simple: one Sample per
 // line, human-inspectable, trivially streamable, and independent of the
@@ -38,6 +68,9 @@ type Store struct {
 // is started immediately; Append rotates to a new file once the current
 // one reaches maxFileBytes, and prunes the oldest files beyond maxFiles.
 func NewStore(dir string, maxFileBytes int64, maxFiles int) (*Store, error) {
+	if err := ensurePersistentDir(); err != nil {
+		return nil, fmt.Errorf("could not start recording: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("could not create recording directory: %w", err)
 	}
@@ -79,6 +112,9 @@ func (s *Store) rotate(now time.Time) error {
 }
 
 func (s *Store) rotateLocked(now time.Time) error {
+	if err := ensurePersistentDir(); err != nil {
+		return fmt.Errorf("could not rotate recording file: %w", err)
+	}
 	if s.current != nil {
 		if err := s.current.Close(); err != nil {
 			return fmt.Errorf("could not close previous recording file: %w", err)

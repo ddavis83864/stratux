@@ -46,6 +46,30 @@ var idPattern = regexp.MustCompile(`^profile-[0-9a-f]{16}$`)
 
 const profileFileSuffix = ".json"
 
+// ensurePersistentDir is called by atomicWriteJSON immediately before
+// every write, to refuse persisting a profile into the RAM-backed
+// overlay directory that exists at this store's own directory path even
+// when the real dedicated data partition backing it failed to mount -
+// see docs/persistent-data-partition.md's namespace audit and
+// docs/ota-persistent-storage-defect.md for the incident this class of
+// gap already caused once, for OTA staging specifically.
+//
+// Defaults to a no-op (always safe to write) so this package's own
+// tests - which exercise Store against a plain t.TempDir(), never
+// intended to be its own dedicated mount - are unaffected; this
+// package's own explicit design goal is staying importable, and
+// testable, without ever depending on main or readiness (see
+// ErrInvalidID's doc comment). SetPersistenceGuard lets main's own
+// startup wiring (main/calprofilesapi.go) override this to the real
+// check exactly once, closing over readiness.EnsurePersistentDir and
+// main.PersistentDataPath without this package importing either.
+var ensurePersistentDir = func() error { return nil }
+
+// SetPersistenceGuard overrides the check atomicWriteJSON runs before
+// every write. See ensurePersistentDir's own doc comment for why this
+// exists as an injectable seam rather than a direct dependency.
+func SetPersistenceGuard(f func() error) { ensurePersistentDir = f }
+
 // NewID generates a fresh, unpredictable profile ID.
 func NewID() string {
 	var b [8]byte
@@ -112,6 +136,9 @@ func (s *Store) profilePath(id string) string {
 // rarer-written and more precious than a diagnostic bundle or a 1Hz status
 // snapshot, so the extra durability is worth the small cost here).
 func atomicWriteJSON(path string, v interface{}) error {
+	if err := ensurePersistentDir(); err != nil {
+		return fmt.Errorf("could not persist calibration profile data: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("could not create directory: %w", err)

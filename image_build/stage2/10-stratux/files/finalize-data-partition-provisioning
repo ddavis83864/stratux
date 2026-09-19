@@ -1,0 +1,213 @@
+#!/bin/sh
+# finalize-data-partition-provisioning: the durable, bounded, idempotent
+# state machine driving first-boot persistent-data provisioning across
+# reboots - factored out of init-overlay specifically so it can be
+# exercised directly, against a real (or simulated) filesystem, in
+# test/persistent_data_partition_test.sh, the same reason
+# provision-data-partition was already factored out into its own file.
+# See docs/persistent-data-partition.md's "First-boot provisioning: a
+# durable, bounded, idempotent state machine" section for the full
+# incident this closes and the design rationale.
+#
+# Usage: finalize-data-partition-provisioning <RESULT_LINE>
+#   <RESULT_LINE>: provision-data-partition's own last "RESULT=..." line,
+#     or an empty string if none was produced (e.g. the invocation
+#     itself crashed before ever printing one).
+#
+# Reads and durably updates a small state file tracking how many
+# provisioning attempts have been made and what happened last time,
+# decides whether to write the /var/lib/stratux-data fstab entry, and
+# decides whether the one-time retry marker may be removed yet.
+#
+# Prints exactly one "FINALIZE=..." line as its last line of output,
+# telling the caller (init-overlay) what to do next:
+#   FINALIZE=success   - fully provisioned (or the documented below-
+#                         minimum-card-size fallback); the marker has
+#                         been removed. If a data partition was created,
+#                         the fstab entry is already durably written -
+#                         the caller should attempt `mount
+#                         /var/lib/stratux-data` itself (a live mount
+#                         operation belongs to the caller's own mount
+#                         namespace, not this script) and then reboot
+#                         into normal boot either way.
+#   FINALIZE=retry      - this attempt did not succeed, but the bounded
+#                         attempt budget is not yet exhausted. The
+#                         marker is deliberately left in place. The
+#                         caller should reboot to retry on the next boot,
+#                         without attempting any mount this boot.
+#   FINALIZE=exhausted  - this attempt did not succeed, and either the
+#                         bounded attempt budget is now exhausted or the
+#                         layout was definitively rejected (never
+#                         retried, regardless of budget - see below).
+#                         The marker has been removed (further retries
+#                         would be pointless or unsafe) and a clear,
+#                         durable reason has been recorded where
+#                         readiness/health reporting can find it. The
+#                         caller should reboot into normal boot without
+#                         attempting any mount.
+#
+# Exit code is always 0 in every defined outcome, matching
+# provision-data-partition's own established convention - callers
+# distinguish outcomes from the FINALIZE= line, never from this script's
+# own exit code.
+set -e
+
+RESULT_LINE="$1"
+
+: "${STRATUX_PROVISION_STATE_FILE:=/var/stratux-provision-state}"
+: "${STRATUX_PROVISION_MARKER:=/var/grow_root_part}"
+: "${STRATUX_FSTAB_PATH:=/etc/fstab}"
+: "${STRATUX_PERSISTENT_DATA_MOUNTPOINT:=/var/lib/stratux-data}"
+: "${STRATUX_PERSISTENCE_UNSUPPORTED_MARKER:=/etc/stratux-persistence-unsupported}"
+: "${MAX_PROVISION_ATTEMPTS:=3}"
+
+# sanitize_error: bounds and flattens arbitrary command output before it
+# is ever persisted to the state file or the unsupported-persistence
+# marker - never let an unbounded, multi-line, or otherwise unwieldy
+# error blow up either file or leak more than a short, single-line
+# summary. 300 characters is generous enough for every RESULT= line and
+# the handful of ERROR: messages provision-data-partition itself
+# produces, while still bounding worst-case size.
+sanitize_error() {
+	printf '%s' "$1" | tr '\n' ' ' | cut -c1-300
+}
+
+# write_provision_state: atomically (temp file, sync, rename, sync again)
+# records this attempt's outcome, so a later boot - including the very
+# reboot moments from now - can read back exactly what happened, how
+# many attempts have already been made, and why, rather than silently
+# discarding that evidence the way the pre-fix design did (see the
+# incident this whole file exists to close, in
+# docs/persistent-data-partition.md).
+write_provision_state() {
+	# $1=STAGE $2=ATTEMPTS $3=LAST_ERROR (already sanitized/capped by
+	# the caller - this function does not re-validate it)
+	{
+		echo "STAGE=$1"
+		echo "ATTEMPTS=$2"
+		echo "LAST_ERROR=$3"
+		echo "UPDATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	} > "${STRATUX_PROVISION_STATE_FILE}.tmp"
+	sync
+	mv -f "${STRATUX_PROVISION_STATE_FILE}.tmp" "$STRATUX_PROVISION_STATE_FILE"
+	sync
+}
+
+# Read the current attempt count back. Deliberately NOT sourced (`.`) as
+# shell code: LAST_ERROR can contain arbitrary text copied from a
+# RESULT= line or command output - spaces, `=`, quotes - none of which
+# is safe to re-parse as a shell assignment. STAGE/LAST_ERROR/UPDATED_AT
+# below are written purely for a human (or a future boot's diagnostic
+# read) to `cat`; only ATTEMPTS, always a plain digit string, is ever
+# read back programmatically, so only it needs parsing at all. A
+# corrupt, unreadable, or missing state file degrades to "no prior
+# attempts recorded" (0), never to a shell error.
+ATTEMPTS=0
+if [ -f "$STRATUX_PROVISION_STATE_FILE" ]; then
+	ATTEMPTS="$(grep '^ATTEMPTS=' "$STRATUX_PROVISION_STATE_FILE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+	case "$ATTEMPTS" in
+		''|*[!0-9]*) ATTEMPTS=0 ;;
+	esac
+fi
+ATTEMPTS=$((ATTEMPTS + 1))
+
+write_unsupported_marker() {
+	# $1: the specific reason - always ends up in
+	# readiness.UnsupportedPersistenceReason() via main/health.go's
+	# Storage.Reason, so an operator sees exactly why, never a generic
+	# "not mounted" message alone.
+	echo "$1" > "$STRATUX_PERSISTENCE_UNSUPPORTED_MARKER"
+}
+
+finalize_success() {
+	write_provision_state succeeded "$ATTEMPTS" ""
+	rm -f "$STRATUX_PROVISION_MARKER"
+	rm -f "$STRATUX_PROVISION_STATE_FILE"
+	echo "FINALIZE=success"
+	exit 0
+}
+
+finalize_exhausted() {
+	# $1: the sanitized reason, already run through sanitize_error by
+	# the caller.
+	write_provision_state failed-permanent "$ATTEMPTS" "$1"
+	write_unsupported_marker "automatic persistent-data provisioning failed after ${ATTEMPTS} attempt(s): $1; OTA and durable recording/calibration/diagnostics persistence are not supported until this card is re-provisioned or replaced; see docs/persistent-data-partition.md"
+	rm -f "$STRATUX_PROVISION_MARKER"
+	rm -f "$STRATUX_PROVISION_STATE_FILE"
+	echo "FINALIZE=exhausted"
+	exit 0
+}
+
+finalize_retry() {
+	# $1: the sanitized reason, already run through sanitize_error by
+	# the caller. The marker is deliberately NOT touched here - this is
+	# the one case where retrying is both possible and worthwhile, and
+	# is the entire reason MAX_PROVISION_ATTEMPTS exists as a *bound*
+	# rather than this simply never retrying at all.
+	write_provision_state failed-retryable "$ATTEMPTS" "$1"
+	echo "FINALIZE=retry"
+	exit 0
+}
+
+case "$RESULT_LINE" in
+	RESULT=provisioned*|RESULT=already-provisioned*)
+		# Partition table correct, root resize complete, partition 3
+		# exists, ext4 formatted+labeled and verified - all already
+		# guaranteed by provision-data-partition itself reporting
+		# exactly one of these two results (see its own, extensively
+		# tested, idempotent-resume logic). What remains before the
+		# marker may be removed: a durable fstab entry.
+		mkdir -p "$STRATUX_PERSISTENT_DATA_MOUNTPOINT"
+		if ! grep -q "[[:space:]]${STRATUX_PERSISTENT_DATA_MOUNTPOINT}[[:space:]]" "$STRATUX_FSTAB_PATH" 2>/dev/null; then
+			echo "LABEL=stratux-data  ${STRATUX_PERSISTENT_DATA_MOUNTPOINT}  ext4  defaults,noatime,nofail,x-systemd.device-timeout=5s,x-systemd.before=stratux.service  0  2" >> "$STRATUX_FSTAB_PATH"
+		fi
+		sync
+		# Mount validation succeeding THIS boot is not required before
+		# removing the marker - the fstab entry being durably written
+		# (just sync'd above) IS the "next-boot requirement explicitly
+		# recorded" this design's own removal gate allows: ordinary
+		# systemd boot will attempt this nofail-guarded mount on every
+		# future boot via the generated .mount unit regardless of
+		# whether the caller's own same-boot `mount` attempt (performed
+		# by init-overlay itself, after calling this script) happens to
+		# succeed right now.
+		finalize_success
+		;;
+	RESULT=grew-root-only-below-minimum-card-size*)
+		# Not a failure - the documented, honest small-card fallback.
+		# provision-data-partition itself already wrote the
+		# unsupported-persistence marker in this case; nothing further
+		# to record here. Never retried: the card's own measured
+		# capacity cannot change between attempts, so this is
+		# definitively complete, not merely this attempt's outcome.
+		finalize_success
+		;;
+	RESULT=skipped-unexpected-layout*)
+		# Never retry against an unexpected/custom layout - nothing
+		# about this card's own partition table changes between
+		# reboots, so every future attempt would deterministically
+		# reject it identically. Treat this as permanent immediately,
+		# regardless of the attempt budget, rather than wasting bounded
+		# retries (and reboots) on an outcome that cannot change.
+		finalize_exhausted "$(sanitize_error "$RESULT_LINE")"
+		;;
+	*)
+		# Anything else - most notably an EMPTY RESULT_LINE, meaning
+		# provision-data-partition's own invocation produced no
+		# parseable result at all (crashed, was killed, or its output
+		# could not be captured - the exact failure mode a hardware
+		# validation found: the previous design's own log file failed
+		# to open because root was still read-only at that point,
+		# silently discarding whatever provision-data-partition may
+		# have reported). Bounded-retry this, since the underlying
+		# cause may be transient (a real device enumeration race, for
+		# instance) and a later attempt - now that the caller has fixed
+		# the read-only-root timing defect - may succeed cleanly.
+		REASON="$(sanitize_error "${RESULT_LINE:-no RESULT= line was produced by provision-data-partition - see /var/log/provision-data-partition.log for its own output, if any was captured}")"
+		if [ "$ATTEMPTS" -ge "$MAX_PROVISION_ATTEMPTS" ]; then
+			finalize_exhausted "$REASON"
+		else
+			finalize_retry "$REASON"
+		fi
+		;;
+esac

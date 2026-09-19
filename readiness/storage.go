@@ -9,6 +9,71 @@ import (
 	"time"
 )
 
+// UnsupportedPersistenceMarkerPath is where provision-data-partition (see
+// image_build/stage2/10-stratux/files/) writes a plain-text explanation
+// on first boot if the card is below the minimum size a dedicated
+// persistent-data partition requires - see
+// docs/persistent-data-partition.md. Deliberately not under
+// PersistentDataPath itself: that path is exactly what is unavailable in
+// this case, so the explanation lives directly on the base image
+// filesystem instead, visible identically whether read through the
+// protected overlay or directly on bare ext4.
+const UnsupportedPersistenceMarkerPath = "/etc/stratux-persistence-unsupported"
+
+// UnsupportedPersistenceReason reads UnsupportedPersistenceMarkerPath and
+// returns its content, or "" if the file does not exist (the ordinary
+// case - a card at or above the minimum size never has this marker) or
+// cannot be read for any other reason (degrades to "no explanation
+// available" rather than erroring - this is purely explanatory, never
+// load-bearing for any decision).
+func UnsupportedPersistenceReason() string {
+	data, err := os.ReadFile(UnsupportedPersistenceMarkerPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// EnsurePersistentDir verifies that persistentRoot - the project's one
+// dedicated persistent-data mount point (main.PersistentDataPath in
+// production) - is genuinely mounted right now as a dedicated, writable,
+// non-volatile filesystem, returning a descriptive error if not.
+//
+// Every persistence namespace documented in
+// docs/persistent-data-partition.md's own namespace audit calls this
+// immediately before creating its own subdirectory/file under
+// persistentRoot, specifically so that a missing, failed, or not-yet-
+// resolved mount there (nofail - see
+// image_build/stage2/10-stratux/files/init-overlay) can never result in
+// silently writing into the RAM-backed overlay directory that exists at
+// that same path regardless of whether the real partition is mounted.
+// See docs/ota-persistent-storage-defect.md for the incident this exact
+// class of gap already caused once, for OTA staging specifically (closed
+// there by validateStagingPersistence/IsDedicatedPersistentMount) - this
+// is the same proof, generalized so every other namespace can share one
+// implementation instead of re-deriving it.
+//
+// Reuses IsDedicatedMount, the same canonical check DiscoverableMount and
+// ota.IsDedicatedPersistentMount already share - device number is never
+// compared (a dedicated partition and a bind-mounted subtree of the real
+// root both count equally), only that persistentRoot is genuinely its own
+// mount target (not merely an ordinary directory reached through some
+// covering ancestor, overwhelmingly in practice the root overlay) and its
+// filesystem type is not one of the volatile ones (tmpfs/overlay/etc).
+func EnsurePersistentDir(persistentRoot string) error {
+	mnt, err := FindMount(persistentRoot)
+	if err != nil {
+		return fmt.Errorf("could not verify %s is mounted: %w", persistentRoot, err)
+	}
+	if ok, reason := IsDedicatedMount(mnt, persistentRoot); !ok {
+		return fmt.Errorf("refusing to write: %s", reason)
+	}
+	if mnt.ReadOnly {
+		return fmt.Errorf("refusing to write: %s is mounted read-only", persistentRoot)
+	}
+	return nil
+}
+
 // StorageThresholds are the utilization points at which persistent storage
 // health degrades. Percentages are of used space (0-100).
 //
@@ -288,7 +353,56 @@ type MountInfo struct {
 // bind-mounted subtree - closes this for good, independent of which
 // filesystem type happens to be reported.
 func DiscoverableMount(path string, info MountInfo, present bool, expectedFSType string) bool {
-	return present && info.Mounted && !info.ReadOnly && info.Target == path && info.FSType == expectedFSType && info.UUID != ""
+	dedicated, _ := IsDedicatedMount(info, path)
+	return present && info.Mounted && !info.ReadOnly && dedicated && info.FSType == expectedFSType && info.UUID != ""
+}
+
+// volatileFSTypes are filesystem types that never persist across a
+// reboot - the same list ota.IsPersistent independently rejects for the
+// overlay-disable marker's own, differently-shaped check. Kept here too,
+// not imported from ota, so this leaf package (readiness has no
+// dependency on ota, and must not gain one just for this) stays free of
+// that dependency direction.
+var volatileFSTypes = map[string]bool{
+	"tmpfs":     true,
+	"overlay":   true,
+	"overlayfs": true,
+	"ramfs":     true,
+	"devtmpfs":  true,
+	"aufs":      true,
+	"unionfs":   true,
+}
+
+// IsDedicatedMount is the one, canonical, authoritative answer to "is
+// path genuinely its own separately-mounted, non-volatile filesystem" -
+// used by DiscoverableMount above, by ota.IsDedicatedPersistentMount
+// (main/ota.go's OTA-staging guard), and by
+// main/autorecordrun.go's autoRecordMountReady. Before this function
+// existed, each of those three call sites had its own, independently-
+// evolved version of this same check - the exact "duplicating
+// inconsistent filesystem checks" this function exists to stop; see
+// docs/ota-persistent-storage-defect.md for the incident an earlier,
+// weaker version of one of those checks (FSType alone, no Target
+// comparison) caused, and docs/persistent-data-partition.md for the
+// provisioning design this validates against.
+//
+// A dedicated partition (a different underlying device than root
+// entirely - the one currently-known-correct hardware layout) and a
+// bind-mounted subtree of the real lower root (sharing root's own
+// device, a valid alternative provisioning design) both satisfy this
+// equally, as they must - device number is deliberately never compared.
+// The only two facts that matter: info.Target must equal path exactly
+// (proving path is not merely an ordinary directory reached through some
+// covering ancestor mount, overwhelmingly in practice the root overlay),
+// and info.FSType must not be one of the volatile types above.
+func IsDedicatedMount(info MountInfo, path string) (bool, string) {
+	if volatileFSTypes[info.FSType] {
+		return false, fmt.Sprintf("%s is a volatile filesystem (%s), not persistent storage", path, info.FSType)
+	}
+	if info.Target != path {
+		return false, fmt.Sprintf("%s is not a dedicated mountpoint (covered by the mount at %q instead) - it is an ordinary directory, not genuine persistent storage", path, info.Target)
+	}
+	return true, ""
 }
 
 var findmntPairPattern = regexp.MustCompile(`(\w+)="([^"]*)"`)

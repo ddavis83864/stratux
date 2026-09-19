@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -137,5 +138,36 @@ func TestReadAll_IgnoresUnrelatedFiles(t *testing.T) {
 	}
 	if len(samples) != 1 {
 		t.Errorf("expected exactly 1 sample (unrelated file ignored), got %d", len(samples))
+	}
+}
+
+// TestPersistenceGuard_RefusesNewStoreWhenNotSafe proves the injectable
+// SetPersistenceGuard seam is consulted before NewStore ever creates its
+// directory or opens a file - see ensurePersistentDir's own doc comment
+// in store.go for why this exists (main wires it to the real
+// readiness.EnsurePersistentDir(PersistentDataPath) check in production;
+// this package's own tests never touch a real mount).
+func TestPersistenceGuard_RefusesNewStoreWhenNotSafe(t *testing.T) {
+	guardErr := errors.New("persistent-data partition is not mounted")
+	SetPersistenceGuard(func() error { return guardErr })
+	defer SetPersistenceGuard(func() error { return nil })
+
+	dir := filepath.Join(t.TempDir(), "recordings")
+	if _, err := NewStore(dir, 0, 0); err == nil || !errors.Is(err, guardErr) {
+		t.Fatalf("NewStore should refuse to start when the guard reports unsafe, got: %v", err)
+	}
+	if _, statErr := os.Stat(dir); statErr == nil {
+		t.Error("NewStore should not have created the recording directory when the guard refused")
+	}
+}
+
+// TestPersistenceGuard_DefaultAllowsNewStore proves the default (no-op)
+// guard never blocks NewStore - every pre-existing test in this file
+// relies on this remaining true without calling SetPersistenceGuard
+// itself.
+func TestPersistenceGuard_DefaultAllowsNewStore(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := NewStore(dir, 0, 0); err != nil {
+		t.Fatalf("NewStore should succeed under the default no-op guard: %v", err)
 	}
 }

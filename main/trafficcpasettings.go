@@ -167,6 +167,14 @@ func saveTrafficCPASettings(s TrafficCPASettings) error {
 	trafficCPASettingsMu.Lock()
 	defer trafficCPASettingsMu.Unlock()
 
+	// Refuse to persist rather than silently write into the RAM-backed
+	// overlay directory at PersistentDataPath when the real partition
+	// failed to mount - see readiness.EnsurePersistentDir and
+	// docs/persistent-data-partition.md's namespace audit.
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist traffic CPA settings: %w", err)
+	}
+
 	dir := filepath.Dir(trafficCPASettingsPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("could not create settings directory: %w", err)

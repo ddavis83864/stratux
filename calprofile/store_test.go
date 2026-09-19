@@ -1,6 +1,7 @@
 package calprofile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -356,5 +357,42 @@ func TestStore_ConcurrentReadsAndWrites(t *testing.T) {
 	active, err := s.Active()
 	if err != nil || active.ID != base.ID {
 		t.Errorf("active profile should be unchanged after concurrent access: %v, %+v", err, active)
+	}
+}
+
+// TestPersistenceGuard_RefusesWriteWhenNotSafe proves the injectable
+// SetPersistenceGuard seam is actually consulted before every write - see
+// ensurePersistentDir's own doc comment in store.go for why this exists
+// (main wires it to readiness.EnsurePersistentDir(PersistentDataPath) in
+// production; this package's own tests never touch a real mount).
+func TestPersistenceGuard_RefusesWriteWhenNotSafe(t *testing.T) {
+	guardErr := errors.New("persistent-data partition is not mounted")
+	SetPersistenceGuard(func() error { return guardErr })
+	defer SetPersistenceGuard(func() error { return nil })
+
+	dir := t.TempDir()
+	s := NewStore(dir)
+	p := newTestProfile("Refused")
+	if err := s.Save(p); err == nil || !errors.Is(err, guardErr) {
+		t.Fatalf("Save should refuse to persist when the guard reports unsafe, got: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("no file should have been created when the guard refused, found: %v", entries)
+	}
+}
+
+// TestPersistenceGuard_DefaultAllowsWrite proves the default (no-op) guard
+// never blocks a write - every pre-existing test in this file relies on
+// this remaining true without calling SetPersistenceGuard itself.
+func TestPersistenceGuard_DefaultAllowsWrite(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	p := newTestProfile("Allowed")
+	if err := s.Save(p); err != nil {
+		t.Fatalf("Save should succeed under the default no-op guard: %v", err)
 	}
 }
