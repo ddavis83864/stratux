@@ -56,12 +56,33 @@ func ReadSessionMarker(path string) (marker SessionMarker, ok bool, err error) {
 	return marker, true, nil
 }
 
+// ensurePersistentDir is called by WriteSessionMarkerAtomic immediately
+// before every write, to refuse persisting the session marker into the
+// RAM-backed overlay directory that exists at path's own directory even
+// when the real dedicated data partition backing it failed to mount -
+// see docs/persistent-data-partition.md's namespace audit.
+//
+// Defaults to a no-op (always safe to write) so this package's own
+// tests, which write to a plain t.TempDir() never intended to be its
+// own dedicated mount, are unaffected; this package stays free of any
+// dependency on main or readiness. SetPersistenceGuard lets main's own
+// startup wiring (main/powerapi.go) override this to the real check
+// exactly once.
+var ensurePersistentDir = func() error { return nil }
+
+// SetPersistenceGuard overrides the check WriteSessionMarkerAtomic runs
+// before every write. See ensurePersistentDir's own doc comment.
+func SetPersistenceGuard(f func() error) { ensurePersistentDir = f }
+
 // WriteSessionMarkerAtomic writes marker to path atomically - a temp file
 // in the same directory followed by os.Rename - so a concurrent reader
 // (or a crash mid-write) never observes a partially-written marker,
 // matching this project's established atomic-write pattern (see
 // readiness.WriteDiagnosticBundle).
 func WriteSessionMarkerAtomic(path string, marker SessionMarker) error {
+	if err := ensurePersistentDir(); err != nil {
+		return fmt.Errorf("power: could not persist session marker: %w", err)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("power: could not create session marker directory: %w", err)
