@@ -119,6 +119,102 @@ func TestDriver_Init_BusyTimeoutSurfacesAsErrBusyTimeout(t *testing.T) {
 	}
 }
 
+// TestDriver_Init_SendsVendorVerifiedCommandSequence is a direct
+// regression test for a real hardware-validation finding: a fully
+// wired, digitally error-free panel produced no visible output and no
+// refresh flicker at all, because Init() was missing several required
+// SSD1677 analog/RAM-setup commands (most critically VCOM voltage) and
+// setRAMWindow encoded the X-address command incorrectly. This test
+// asserts the exact command and data-byte sequence, verified
+// byte-for-byte against Waveshare's own reference driver
+// (EPD_3in7.c's EPD_3IN7_1Gray_Init()) for a 280x480 (native) panel -
+// not merely "some commands were sent", which is exactly the class of
+// test that existed before and never caught this.
+func TestDriver_Init_SendsVendorVerifiedCommandSequence(t *testing.T) {
+	bus := &fakeBus{}
+	d := &Driver{Bus: bus, WidthPx: 280, HeightPx: 480, BusyTimeout: 50 * time.Millisecond}
+	if err := d.Init(context.Background()); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	wantCommands := []byte{
+		cmdSWReset,
+		cmdAutoWriteRAMBW, cmdAutoWriteRAMRed,
+		cmdDriverOutputControl,
+		cmdGateDrivingVoltage,
+		cmdSourceDrivingVoltage,
+		cmdDataEntryMode,
+		cmdBorderWaveform,
+		cmdBoosterSoftStart,
+		cmdTemperatureSensor,
+		cmdVCOMVoltage,
+		cmdDisplayOption,
+		cmdSetRAMXAddress, cmdSetRAMYAddress, cmdSetRAMXCounter, cmdSetRAMYCounter,
+	}
+	if len(bus.commands) != len(wantCommands) {
+		t.Fatalf("command count = %d, want %d\ngot:  %v\nwant: %v", len(bus.commands), len(wantCommands), bus.commands, wantCommands)
+	}
+	for i, want := range wantCommands {
+		if bus.commands[i] != want {
+			t.Errorf("command[%d] = 0x%02X, want 0x%02X (full: %v)", i, bus.commands[i], want, bus.commands)
+		}
+	}
+
+	wantData := [][]byte{
+		{autoWriteRAMClearPattern},
+		{autoWriteRAMClearPattern},
+		{0xDF, 0x01, 0x00}, // gate count 479 (HeightPx-1), little-endian
+		{0x00},             // gate driving voltage
+		{0x41, 0xA8, 0x32}, // source driving voltage
+		{0x03},             // data entry mode
+		{0x03},             // border waveform
+		{0xAE, 0xC7, 0xC3, 0xC0, 0xC0}, // booster soft-start
+		{0x80},                         // temperature sensor
+		{0x44},                         // VCOM voltage
+		{0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x4F, 0xFF, 0xFF, 0xFF, 0xFF}, // display option
+		{0x00, 0x00, 0x17, 0x01}, // RAM X range: 0..279, little-endian (raw pixel, not byte-divided)
+		{0x00, 0x00, 0xDF, 0x01}, // RAM Y range: 0..479, little-endian
+		{0x00, 0x00},             // RAM X counter: 0, little-endian
+		{0x00, 0x00},             // RAM Y counter: 0, little-endian
+	}
+	if len(bus.data) != len(wantData) {
+		t.Fatalf("data payload count = %d, want %d\ngot:  %v\nwant: %v", len(bus.data), len(wantData), bus.data, wantData)
+	}
+	for i, want := range wantData {
+		got := bus.data[i]
+		if len(got) != len(want) {
+			t.Errorf("data[%d] length = %d, want %d (got %v, want %v)", i, len(got), len(want), got, want)
+			continue
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Errorf("data[%d][%d] = 0x%02X, want 0x%02X (got %v, want %v)", i, j, got[j], want[j], got, want)
+			}
+		}
+	}
+}
+
+// TestDriver_SetRAMWindow_UsesRawPixelAddressNotByteDivided is a focused
+// regression test for the X-address encoding bug in isolation: the
+// X-address command must carry the same raw-pixel, two-byte
+// little-endian start/end encoding as Y - not a byte-address (divided
+// by 8) value. A window ending at x1=279 must never appear as 279/8=34;
+// it must appear as the raw value 279 (0x0117 little-endian).
+func TestDriver_SetRAMWindow_UsesRawPixelAddressNotByteDivided(t *testing.T) {
+	bus := &fakeBus{}
+	d := &Driver{Bus: bus, WidthPx: 280, HeightPx: 480, BusyTimeout: 50 * time.Millisecond}
+	if err := d.setRAMWindow(0, 0, 279, 479); err != nil {
+		t.Fatalf("setRAMWindow failed: %v", err)
+	}
+	if len(bus.data) < 1 || len(bus.data[0]) != 4 {
+		t.Fatalf("expected the first data payload (X-address) to be 4 bytes, got %v", bus.data)
+	}
+	xEnd := int(bus.data[0][2]) | int(bus.data[0][3])<<8
+	if xEnd != 279 {
+		t.Errorf("X-address end = %d, want 279 (raw pixel value, not 279/8=%d)", xEnd, 279/8)
+	}
+}
+
 func TestDriver_Update_RejectsWrongSizedBitmap(t *testing.T) {
 	bus := &fakeBus{}
 	d := newTestDriver(bus)

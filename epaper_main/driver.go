@@ -69,17 +69,29 @@ const (
 	cmdDataEntryMode         = 0x11
 	cmdSWReset               = 0x12
 	cmdTemperatureSensor     = 0x18
+	cmdMasterActivate        = 0x20
 	cmdDisplayUpdateControl1 = 0x21
 	cmdDisplayUpdateControl2 = 0x22
-	cmdMasterActivate        = 0x20
+	cmdVCOMVoltage           = 0x2C
+	cmdBorderWaveform        = 0x3C
+	cmdDisplayOption         = 0x37
 	cmdSetRAMXAddress        = 0x44
 	cmdSetRAMYAddress        = 0x45
+	cmdAutoWriteRAMBW        = 0x46
+	cmdAutoWriteRAMRed       = 0x47
 	cmdSetRAMXCounter        = 0x4E
 	cmdSetRAMYCounter        = 0x4F
-	cmdBorderWaveform        = 0x3C
 	cmdWriteRAMBW            = 0x24
 	cmdWriteRAMRed           = 0x26
 )
+
+// autoWriteRAMClearPattern is the data byte sent with cmdAutoWriteRAMBW
+// and cmdAutoWriteRAMRed during Init - the vendor's own reference driver
+// sends this exact value for both RAM planes to clear them to a known
+// pattern before any other register write, and each write is followed by
+// a real BUSY wait (this is an asynchronous controller operation, not an
+// instant register write).
+const autoWriteRAMClearPattern = 0xF7
 
 // deepSleepModeRetainRAM is sent as cmdDeepSleep's data byte - the
 // controller keeps register/RAM contents in this mode (as opposed to
@@ -105,6 +117,21 @@ type Driver struct {
 // Init powers the panel on, resets it, and runs the documented
 // monochrome initialization sequence. Must be called (and succeed)
 // before any Update call.
+//
+// This exact command sequence - including the RAM auto-write clear,
+// gate/source driving voltage, booster soft-start, VCOM voltage, and
+// display option bytes - was verified byte-for-byte against Waveshare's
+// own reference driver (EPD_3in7.c's EPD_3IN7_1Gray_Init()) after real
+// hardware validation found the previous, shorter sequence left the
+// panel fully unresponsive: digitally error-free (clean BUSY handshakes,
+// zero reported faults) but with literally no visible output and no
+// refresh flicker, on multiple full and partial refreshes and across a
+// reboot. The commands this driver omitted - most critically VCOM
+// voltage (0x2C), with no gate/source analog bias configured either -
+// are not optional cosmetic steps; without them the panel's pixel
+// elements have no correctly-biased waveform to transition against,
+// which is consistent with "no flicker at all" rather than merely wrong
+// content.
 func (d *Driver) Init(ctx context.Context) error {
 	if err := d.Bus.SetPower(true); err != nil {
 		return fmt.Errorf("power on: %w", err)
@@ -123,21 +150,53 @@ func (d *Driver) Init(ctx context.Context) error {
 		return fmt.Errorf("post-swreset busy-wait: %w", err)
 	}
 
+	// Auto-write RAM to a known clear pattern on both planes before any
+	// other register write - the vendor's own driver does this first,
+	// immediately after SW reset, and each is a real asynchronous
+	// controller operation that must be waited out via BUSY.
+	if err := d.cmdData(cmdAutoWriteRAMBW, autoWriteRAMClearPattern); err != nil {
+		return err
+	}
+	if err := d.waitIdleWithTimeout(ctx); err != nil {
+		return fmt.Errorf("post-ram-clear-bw busy-wait: %w", err)
+	}
+	if err := d.cmdData(cmdAutoWriteRAMRed, autoWriteRAMClearPattern); err != nil {
+		return err
+	}
+	if err := d.waitIdleWithTimeout(ctx); err != nil {
+		return fmt.Errorf("post-ram-clear-red busy-wait: %w", err)
+	}
+
 	// Driver output control: set the panel's own vertical resolution
 	// (HeightPx-1, little-endian) and default scan direction.
 	if err := d.cmdData(cmdDriverOutputControl, byte((d.HeightPx-1)&0xFF), byte(((d.HeightPx-1)>>8)&0xFF), 0x00); err != nil {
 		return err
 	}
+	if err := d.cmdData(cmdGateDrivingVoltage, 0x00); err != nil {
+		return err
+	}
+	if err := d.cmdData(cmdSourceDrivingVoltage, 0x41, 0xA8, 0x32); err != nil {
+		return err
+	}
 	if err := d.cmdData(cmdDataEntryMode, 0x03); err != nil { // X/Y increment, X-then-Y
 		return err
 	}
-	if err := d.setRAMWindow(0, 0, d.WidthPx-1, d.HeightPx-1); err != nil {
+	if err := d.cmdData(cmdBorderWaveform, 0x03); err != nil {
 		return err
 	}
-	if err := d.cmdData(cmdBorderWaveform, 0x05); err != nil {
+	if err := d.cmdData(cmdBoosterSoftStart, 0xAE, 0xC7, 0xC3, 0xC0, 0xC0); err != nil {
 		return err
 	}
 	if err := d.cmdData(cmdTemperatureSensor, 0x80); err != nil { // internal temperature sensor
+		return err
+	}
+	if err := d.cmdData(cmdVCOMVoltage, 0x44); err != nil {
+		return err
+	}
+	if err := d.cmdData(cmdDisplayOption, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x4F, 0xFF, 0xFF, 0xFF, 0xFF); err != nil {
+		return err
+	}
+	if err := d.setRAMWindow(0, 0, d.WidthPx-1, d.HeightPx-1); err != nil {
 		return err
 	}
 	if err := d.waitIdleWithTimeout(ctx); err != nil {
@@ -205,14 +264,26 @@ func (d *Driver) Sleep() error {
 	return nil
 }
 
+// setRAMWindow programs the controller's RAM X/Y address window and
+// counters. A real hardware-validation finding: the X-address command
+// (0x44) was previously sent as a single byte-divided-by-8 value (a
+// byte-address convention) - but this SSD1677 panel's own vendor
+// reference driver sends X exactly like Y: a raw, undivided pixel
+// coordinate, as two little-endian bytes for both start and end (4 data
+// bytes total), confirmed against the vendor's own EPD_3in7.c. Sending
+// the wrong byte count/encoding here left the controller's RAM window
+// and address counter in an undefined state, silently corrupting every
+// subsequent RAM write - plausibly the primary cause of a fully-wired,
+// error-free panel that produced no visible output and no refresh
+// flicker at all.
 func (d *Driver) setRAMWindow(x0, y0, x1, y1 int) error {
-	if err := d.cmdData(cmdSetRAMXAddress, byte(x0/8), byte(x1/8)); err != nil {
+	if err := d.cmdData(cmdSetRAMXAddress, byte(x0&0xFF), byte((x0>>8)&0xFF), byte(x1&0xFF), byte((x1>>8)&0xFF)); err != nil {
 		return err
 	}
 	if err := d.cmdData(cmdSetRAMYAddress, byte(y0&0xFF), byte((y0>>8)&0xFF), byte(y1&0xFF), byte((y1>>8)&0xFF)); err != nil {
 		return err
 	}
-	if err := d.cmdData(cmdSetRAMXCounter, byte(x0/8)); err != nil {
+	if err := d.cmdData(cmdSetRAMXCounter, byte(x0&0xFF), byte((x0>>8)&0xFF)); err != nil {
 		return err
 	}
 	return d.cmdData(cmdSetRAMYCounter, byte(y0&0xFF), byte((y0>>8)&0xFF))

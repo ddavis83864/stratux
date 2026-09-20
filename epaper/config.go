@@ -68,7 +68,7 @@ const (
 )
 
 // DefaultRefreshIntervalSeconds/DefaultFullRefreshEvery are conservative
-// defaults appropriate for a 480x280 1-bit black/white panel (this driver
+// defaults appropriate for a 280x480 1-bit black/white panel (this driver
 // never uses the controller's grayscale LUT modes - see epaper_main/
 // render.go) with a multi-second full-refresh cost - see
 // docs/waveshare-epaper-display.md.

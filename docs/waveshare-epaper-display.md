@@ -24,9 +24,17 @@ dashboard and HTTP API.
 
 ## Hardware
 
-- **Panel**: Waveshare 3.7" e-Paper panel, 480×280 pixels, SSD1677
+- **Panel**: Waveshare 3.7" e-Paper panel, 280×480 pixels native
+  (portrait; rotation 0 in this feature's own settings), SSD1677
   controller. This driver uses the panel's 1-bit black/white mode only -
   it never uses the controller's grayscale LUT modes or red-RAM plane.
+  A real hardware-validation finding: an earlier version of this
+  document, and this project's own `PanelWidth`/`PanelHeight` constants,
+  had this reversed (480×280, "landscape at rotation 0") based on an
+  unverified assumption rather than Waveshare's own reference driver -
+  see epaper/layout.go and epaper_main/driver.go for the corrected,
+  vendor-verified values and the exact real-hardware symptom (a fully
+  wired, error-free, zero-flicker blank panel) this caused.
 - **Driver board**: Waveshare **E-Paper Driver HAT Rev2.3** - a separate,
   universal driver board, *not* an all-in-one integrated HAT. Confirmed
   from Waveshare's own wiki (more current than a statically-hosted PDF

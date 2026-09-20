@@ -2,16 +2,31 @@ package epaper
 
 import "fmt"
 
-// PanelWidth/PanelHeight are the Waveshare 3.7in panel's native pixel
-// dimensions (landscape, rotation 0) - confirmed from Waveshare's own
-// product documentation, see docs/waveshare-epaper-display.md.
+// PanelWidth/PanelHeight are the Waveshare 3.7in panel's native,
+// physically-fixed pixel dimensions at rotation 0 - portrait, 280 wide by
+// 480 tall. This is a real hardware-validation correction: the panel's
+// own vendor reference driver (EPD_3in7.h) defines EPD_3IN7_WIDTH=280,
+// EPD_3IN7_HEIGHT=480, and its own Driver Output Control command
+// (SSD1677 0x01) programs the controller with a fixed gate count of 479
+// (=480-1) regardless of how a caller wants content rotated - confirmed
+// against the vendor's own EPD_3IN7_1Gray_Init() byte sequence. An
+// earlier version of this constant reversed width and height (480x280,
+// "landscape at rotation 0"), which was never checked against the
+// vendor's own source; on real hardware this produced a fully-connected,
+// error-free, zero-flicker blank panel, because the controller's RAM
+// X/Y windowing and gate count were being programmed with the wrong
+// axis entirely. See epaper_main/driver.go's Init() for the corrected,
+// vendor-verified command sequence this feeds.
 const (
-	PanelWidth  = 480
-	PanelHeight = 280
+	PanelWidth  = 280
+	PanelHeight = 480
 )
 
 // Dimensions returns the effective (width, height) for rotation degrees
-// (0/90/180/270) - 90 and 270 swap width/height.
+// (0/90/180/270) - 90 and 270 swap width/height. Rotation 0 is the
+// panel's native, physical orientation (portrait, 280x480); this
+// project's own dashboard/settings default to rotation 0, so that is
+// the orientation validated first on real hardware.
 func Dimensions(rotation int) (width, height int) {
 	if rotation == 90 || rotation == 270 {
 		return PanelHeight, PanelWidth
