@@ -150,6 +150,7 @@ func TestDriver_Init_SendsVendorVerifiedCommandSequence(t *testing.T) {
 		cmdVCOMVoltage,
 		cmdDisplayOption,
 		cmdSetRAMXAddress, cmdSetRAMYAddress, cmdSetRAMXCounter, cmdSetRAMYCounter,
+		cmdDisplayUpdateControl2,
 	}
 	if len(bus.commands) != len(wantCommands) {
 		t.Fatalf("command count = %d, want %d\ngot:  %v\nwant: %v", len(bus.commands), len(wantCommands), bus.commands, wantCommands)
@@ -176,6 +177,7 @@ func TestDriver_Init_SendsVendorVerifiedCommandSequence(t *testing.T) {
 		{0x00, 0x00, 0xDF, 0x01}, // RAM Y range: 0..479, little-endian
 		{0x00, 0x00},             // RAM X counter: 0, little-endian
 		{0x00, 0x00},             // RAM Y counter: 0, little-endian
+		{0xCF},                   // Display Update Control 2 - the value Clear() depends on
 	}
 	if len(bus.data) != len(wantData) {
 		t.Fatalf("data payload count = %d, want %d\ngot:  %v\nwant: %v", len(bus.data), len(wantData), bus.data, wantData)
@@ -252,6 +254,81 @@ func TestDriver_Update_SendsCorrectlySizedBitmapAndActivates(t *testing.T) {
 // asserts the exact LUT command and byte-for-byte table content
 // (verified against Waveshare's own EPD_3in7.c lut_1Gray_DU/lut_1Gray_A2
 // arrays) for both full and partial refresh.
+// TestDriver_Clear_WritesAllWhiteAndActivatesWithoutTouchingControl2 is a
+// regression test for a real hardware-validation finding: a panel with
+// history from many malformed Update() calls (made before earlier fixes
+// in this same investigation) showed old content still visibly
+// superimposed under new content even after the LUT/dimension/RAM-
+// addressing fixes, because nothing ever forced the controller's
+// internal "previous image" tracking back to a known state. This
+// asserts Clear() writes an all-0xFF bitmap, loads the full-refresh LUT,
+// activates, and - critically - never sends cmdDisplayUpdateControl2
+// itself, since it depends on the value Init() already left in place
+// (0xCF), exactly matching the vendor's own EPD_3IN7_1Gray_Clear().
+func TestDriver_Clear_WritesAllWhiteAndActivatesWithoutTouchingControl2(t *testing.T) {
+	bus := &fakeBus{}
+	d := &Driver{Bus: bus, WidthPx: 280, HeightPx: 480, BusyTimeout: 50 * time.Millisecond}
+	if err := d.Clear(context.Background()); err != nil {
+		t.Fatalf("Clear failed: %v", err)
+	}
+
+	for _, c := range bus.commands {
+		if c == cmdDisplayUpdateControl2 {
+			t.Errorf("Clear must not send cmdDisplayUpdateControl2 itself - it depends on Init()'s own 0xCF still being in effect, got commands %v", bus.commands)
+		}
+	}
+
+	foundActivate := false
+	for _, c := range bus.commands {
+		if c == cmdMasterActivate {
+			foundActivate = true
+		}
+	}
+	if !foundActivate {
+		t.Errorf("expected cmdMasterActivate to be sent, got commands %v", bus.commands)
+	}
+
+	lutIdx := -1
+	for i, c := range bus.commands {
+		if c == cmdLUTRegister {
+			lutIdx = i
+		}
+	}
+	if lutIdx == -1 {
+		t.Fatalf("expected cmdLUTRegister (0x32) to be sent, got commands %v", bus.commands)
+	}
+	gotLUT := bus.data[lutIdx]
+	if len(gotLUT) != len(lutFullRefresh1Gray) {
+		t.Fatalf("LUT length = %d, want %d", len(gotLUT), len(lutFullRefresh1Gray))
+	}
+	for i := range lutFullRefresh1Gray {
+		if gotLUT[i] != lutFullRefresh1Gray[i] {
+			t.Errorf("LUT byte[%d] = 0x%02X, want 0x%02X (Clear must use the full-refresh LUT)", i, gotLUT[i], lutFullRefresh1Gray[i])
+		}
+	}
+
+	bwIdx := -1
+	for i, c := range bus.commands {
+		if c == cmdWriteRAMBW {
+			bwIdx = i
+		}
+	}
+	if bwIdx == -1 {
+		t.Fatalf("expected cmdWriteRAMBW (0x24) to be sent, got commands %v", bus.commands)
+	}
+	wantLen := ((280 + 7) / 8) * 480
+	gotBitmap := bus.data[bwIdx]
+	if len(gotBitmap) != wantLen {
+		t.Fatalf("blank bitmap length = %d, want %d", len(gotBitmap), wantLen)
+	}
+	for i, b := range gotBitmap {
+		if b != 0xFF {
+			t.Fatalf("blank bitmap byte[%d] = 0x%02X, want 0xFF (all white)", i, b)
+			break
+		}
+	}
+}
+
 func TestDriver_Update_LoadsVendorVerifiedLUTForFullVsPartial(t *testing.T) {
 	stride := (280 + 7) / 8
 	bitmap := make([]byte, stride*480)

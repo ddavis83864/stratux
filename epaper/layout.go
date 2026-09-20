@@ -40,6 +40,20 @@ type Line struct {
 	Text string
 }
 
+// shortBuild truncates a full git commit hash to the standard 7-character
+// short form. A real hardware-validation finding: the header line
+// (which also carries the version string) was sized for this project's
+// original, incorrect 480px-wide "landscape at rotation 0" assumption -
+// on the panel's actual native 280px-wide portrait canvas, a full 40-
+// character hash pushed the line well past the right edge, clipping it.
+func shortBuild(build string) string {
+	const shortLen = 7
+	if len(build) <= shortLen {
+		return build
+	}
+	return build[:shortLen]
+}
+
 // boolWord renders a bool as a short, unambiguous word rather than
 // "true"/"false", which reads poorly at a glance on a status panel.
 func boolWord(b bool, yes, no string) string {
@@ -56,7 +70,7 @@ func boolWord(b bool, yes, no string) string {
 // to every page; the remaining lines depend on Config.Page.
 func Layout(c Content, cfg Config, stale bool) []Line {
 	lines := []Line{
-		{Text: fmt.Sprintf("Stratux %s  build %s", c.Version, c.Build)},
+		{Text: fmt.Sprintf("Stratux %s  %s", c.Version, shortBuild(c.Build))},
 	}
 	if stale {
 		lines = append(lines, Line{Text: "** STATUS DATA STALE / OFFLINE **"})

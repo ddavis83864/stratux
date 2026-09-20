@@ -241,10 +241,63 @@ func (d *Driver) Init(ctx context.Context) error {
 	if err := d.setRAMWindow(0, 0, d.WidthPx-1, d.HeightPx-1); err != nil {
 		return err
 	}
+	// The vendor's own reference driver ends Init() by setting Display
+	// Update Control 2 to 0xCF - not a value used by any Update() call
+	// (which always set their own 0xF7/0xFF beforehand), but the exact
+	// register value Clear() below depends on already being in place,
+	// since Clear() never sets this register itself. A real hardware-
+	// validation finding: omitting this because it looked "overwritten
+	// before use anyway" was wrong - it is the value the very next
+	// operation (Clear) actually runs under.
+	if err := d.cmdData(cmdDisplayUpdateControl2, 0xCF); err != nil {
+		return err
+	}
 	if err := d.waitIdleWithTimeout(ctx); err != nil {
 		return fmt.Errorf("post-init busy-wait: %w", err)
 	}
 	return nil
+}
+
+// Clear writes an all-white bitmap and activates it - a real hardware-
+// validation finding: the vendor's own reference driver (EPD_3in7.c's
+// EPD_3IN7_1Gray_Clear()) always runs this exact sequence once before
+// ever drawing real content, and it is not merely cosmetic. This
+// panel's controller tracks a "previous image" internally to compute
+// each pixel's waveform; if that tracking is desynced from what is
+// actually on the panel - as this bench unit's was, from many
+// malformed Update() calls made before earlier fixes in this same
+// investigation - a normal content Update() can only correctly
+// transition pixels the controller correctly believes need to change,
+// leaving old content visibly superimposed under new content. An
+// explicit all-white Clear() forces every pixel toward white regardless
+// of that tracking, establishing a known-good baseline. Must be called
+// once after Init() succeeds, before the first real Update() - see
+// main.go. Deliberately does not touch DisplayUpdateControl2 itself:
+// it depends on running under the value Init() already left in
+// place (0xCF), exactly matching the vendor's own sequence.
+func (d *Driver) Clear(ctx context.Context) error {
+	stride := (d.WidthPx + 7) / 8
+	blank := make([]byte, stride*d.HeightPx)
+	for i := range blank {
+		blank[i] = 0xFF
+	}
+
+	if err := d.setRAMWindow(0, 0, d.WidthPx-1, d.HeightPx-1); err != nil {
+		return err
+	}
+	if err := d.cmd(cmdWriteRAMBW); err != nil {
+		return err
+	}
+	if err := d.Bus.SendData(blank...); err != nil {
+		return fmt.Errorf("write blank RAM: %w", err)
+	}
+	if err := d.cmdData(cmdLUTRegister, lutFullRefresh1Gray...); err != nil {
+		return fmt.Errorf("load LUT: %w", err)
+	}
+	if err := d.cmd(cmdMasterActivate); err != nil {
+		return err
+	}
+	return d.waitIdleWithTimeout(ctx)
 }
 
 // Update writes a 1-bit-per-pixel bitmap (MSB-first, row-major, stride

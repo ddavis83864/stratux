@@ -134,6 +134,19 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 				driver, bus = nil, nil
 				continue
 			}
+			// Clear() must run once, right after Init() and before any
+			// real content - see its own doc comment for why this isn't
+			// merely cosmetic. A failure here leaves the panel's internal
+			// image-tracking state unknown, so it is treated the same as
+			// an Init failure: retried from scratch next cycle, never
+			// papered over by drawing content on top of it.
+			if err := driver.Clear(ctx); err != nil {
+				health = errorHealth(health, classifyInitError(err))
+				writeHealth(health)
+				closeGPIOBus()
+				driver, bus = nil, nil
+				continue
+			}
 			startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
 			_ = driver.Update(ctx, Render(startupLines, w, h), true)
 		}
