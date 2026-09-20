@@ -243,6 +243,56 @@ func TestDriver_Update_SendsCorrectlySizedBitmapAndActivates(t *testing.T) {
 	}
 }
 
+// TestDriver_Update_LoadsVendorVerifiedLUTForFullVsPartial is a
+// regression test for a real hardware-validation finding: Update()
+// previously never loaded a custom waveform table at all, relying
+// entirely on the controller's OTP-stored default - which produced a
+// fully wired, digitally error-free, zero-flicker blank panel even
+// after every other vendor-verified Init() command was added. This
+// asserts the exact LUT command and byte-for-byte table content
+// (verified against Waveshare's own EPD_3in7.c lut_1Gray_DU/lut_1Gray_A2
+// arrays) for both full and partial refresh.
+func TestDriver_Update_LoadsVendorVerifiedLUTForFullVsPartial(t *testing.T) {
+	stride := (280 + 7) / 8
+	bitmap := make([]byte, stride*480)
+
+	for _, tc := range []struct {
+		name    string
+		full    bool
+		wantLUT []byte
+	}{
+		{"full", true, lutFullRefresh1Gray},
+		{"partial", false, lutPartialRefresh1Gray},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bus := &fakeBus{}
+			d := &Driver{Bus: bus, WidthPx: 280, HeightPx: 480, BusyTimeout: 50 * time.Millisecond}
+			if err := d.Update(context.Background(), bitmap, tc.full); err != nil {
+				t.Fatalf("Update failed: %v", err)
+			}
+			lutIdx := -1
+			for i, c := range bus.commands {
+				if c == cmdLUTRegister {
+					lutIdx = i
+					break
+				}
+			}
+			if lutIdx == -1 {
+				t.Fatalf("expected cmdLUTRegister (0x32) to be sent, got commands %v", bus.commands)
+			}
+			got := bus.data[lutIdx]
+			if len(got) != len(tc.wantLUT) {
+				t.Fatalf("LUT length = %d, want %d", len(got), len(tc.wantLUT))
+			}
+			for i := range tc.wantLUT {
+				if got[i] != tc.wantLUT[i] {
+					t.Errorf("LUT byte[%d] = 0x%02X, want 0x%02X", i, got[i], tc.wantLUT[i])
+				}
+			}
+		})
+	}
+}
+
 func TestDriver_Update_FullVsPartialUseDifferentControlByte(t *testing.T) {
 	stride := (480 + 7) / 8
 	bitmap := make([]byte, stride*280)
