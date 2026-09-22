@@ -58,6 +58,12 @@ type Config struct {
 // Supported panel identifiers.
 const (
 	PanelWaveshare37 = "waveshare-3.7in"
+	// PanelWaveshare42V2 identifies the Waveshare 4.2in e-Paper Module,
+	// PCB revision 2.2, 400x300, driven by the "V2" controller generation
+	// (the same one Waveshare's own epd4in2_V2.py reference targets) -
+	// distinct from the older, unsupported non-V2 4.2in revision, which
+	// uses a different, incompatible command sequence.
+	PanelWaveshare42V2 = "waveshare-4.2in-v2"
 )
 
 // Supported status pages.
@@ -68,8 +74,9 @@ const (
 )
 
 // DefaultRefreshIntervalSeconds/DefaultFullRefreshEvery are conservative
-// defaults appropriate for a 280x480 1-bit black/white panel (this driver
-// never uses the controller's grayscale LUT modes - see epaper_main/
+// defaults appropriate for any of this package's supported 1-bit
+// black/white panels (every driver in epaper_main uses 1-bit mode only,
+// never the controllers' grayscale LUT modes - see epaper_main/
 // render.go) with a multi-second full-refresh cost - see
 // docs/waveshare-epaper-display.md.
 const (
@@ -89,7 +96,7 @@ const (
 	StaleDataThresholdSeconds = 30
 )
 
-var validPanels = map[string]bool{PanelWaveshare37: true}
+var validPanels = map[string]bool{PanelWaveshare37: true, PanelWaveshare42V2: true}
 var validPages = map[string]bool{PageOverview: true, PageReceivers: true, PageHealth: true}
 var validRotations = map[int]bool{0: true, 90: true, 180: true, 270: true}
 

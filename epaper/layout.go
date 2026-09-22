@@ -22,16 +22,50 @@ const (
 	PanelHeight = 480
 )
 
-// Dimensions returns the effective (width, height) for rotation degrees
-// (0/90/180/270) - 90 and 270 swap width/height. Rotation 0 is the
-// panel's native, physical orientation (portrait, 280x480); this
-// project's own dashboard/settings default to rotation 0, so that is
-// the orientation validated first on real hardware.
-func Dimensions(rotation int) (width, height int) {
-	if rotation == 90 || rotation == 270 {
-		return PanelHeight, PanelWidth
+// Panel42V2Width/Panel42V2Height are the Waveshare 4.2in e-Paper Module
+// (Rev2.2, "V2" controller generation)'s native, physically-fixed pixel
+// dimensions at rotation 0 - landscape, 400 wide by 300 tall. Confirmed
+// directly against the vendor's own reference driver (epd4in2_V2.py):
+// EPD_WIDTH=400, EPD_HEIGHT=300, and its RAM X-address window (command
+// 0x44) is programmed in byte units up to 0x31 (49 = 50 bytes - 1 =
+// 400 pixels/8 - 1), while its RAM Y-address window (command 0x45) is
+// programmed in pixel units up to 0x012B (299 = HEIGHT-1) - confirming
+// the 400-pixel axis genuinely is this controller's X/byte-addressed
+// direction, unlike PanelWidth/PanelHeight above (the 3.7in panel, whose
+// own vendor reference turned out to be portrait-native despite an
+// initial, uncorrected assumption otherwise - see that constant's own
+// doc comment). Each panel's native axis convention was independently
+// verified against its own vendor source rather than assumed from the
+// other.
+const (
+	Panel42V2Width  = 400
+	Panel42V2Height = 300
+)
+
+// panelDimensions returns the named panel's native (width, height) at
+// rotation 0, before any rotation is applied. An unrecognized panel
+// identifier falls back to the 3.7in panel's dimensions, matching
+// Normalize's own "empty/unrecognized falls back to the shipped
+// default" convention - callers are expected to pass an already-
+// normalized, already-validated Config.Panel in practice.
+func panelDimensions(panel string) (width, height int) {
+	if panel == PanelWaveshare42V2 {
+		return Panel42V2Width, Panel42V2Height
 	}
 	return PanelWidth, PanelHeight
+}
+
+// Dimensions returns the effective (width, height) for the named panel
+// at rotation degrees (0/90/180/270) - 90 and 270 swap width/height.
+// Rotation 0 is each panel's own native, physical orientation; this
+// project's own dashboard/settings default to rotation 0, so that is
+// the orientation validated first on real hardware for each panel.
+func Dimensions(panel string, rotation int) (width, height int) {
+	w, h := panelDimensions(panel)
+	if rotation == 90 || rotation == 270 {
+		return h, w
+	}
+	return w, h
 }
 
 // Line is one row of text to render, with a bounded, pre-formatted

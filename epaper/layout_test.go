@@ -7,18 +7,35 @@ import (
 
 func TestDimensions_RotationBounds(t *testing.T) {
 	cases := []struct {
+		panel          string
 		rotation, w, h int
 	}{
-		{0, PanelWidth, PanelHeight},
-		{90, PanelHeight, PanelWidth},
-		{180, PanelWidth, PanelHeight},
-		{270, PanelHeight, PanelWidth},
+		{PanelWaveshare37, 0, PanelWidth, PanelHeight},
+		{PanelWaveshare37, 90, PanelHeight, PanelWidth},
+		{PanelWaveshare37, 180, PanelWidth, PanelHeight},
+		{PanelWaveshare37, 270, PanelHeight, PanelWidth},
+		{PanelWaveshare42V2, 0, Panel42V2Width, Panel42V2Height},
+		{PanelWaveshare42V2, 90, Panel42V2Height, Panel42V2Width},
+		{PanelWaveshare42V2, 180, Panel42V2Width, Panel42V2Height},
+		{PanelWaveshare42V2, 270, Panel42V2Height, Panel42V2Width},
 	}
 	for _, c := range cases {
-		w, h := Dimensions(c.rotation)
+		w, h := Dimensions(c.panel, c.rotation)
 		if w != c.w || h != c.h {
-			t.Errorf("Dimensions(%d) = (%d,%d), want (%d,%d)", c.rotation, w, h, c.w, c.h)
+			t.Errorf("Dimensions(%q, %d) = (%d,%d), want (%d,%d)", c.panel, c.rotation, w, h, c.w, c.h)
 		}
+	}
+}
+
+// TestDimensions_UnrecognizedPanelFallsBackTo37in mirrors Normalize's own
+// "empty/unrecognized falls back to the shipped default" convention -
+// Dimensions must never panic or silently return zero for an unexpected
+// panel string, since a value from a future/newer config could reach
+// this function before validation runs.
+func TestDimensions_UnrecognizedPanelFallsBackTo37in(t *testing.T) {
+	w, h := Dimensions("some-future-panel", 0)
+	if w != PanelWidth || h != PanelHeight {
+		t.Errorf("Dimensions(unrecognized, 0) = (%d,%d), want the 3.7in fallback (%d,%d)", w, h, PanelWidth, PanelHeight)
 	}
 }
 

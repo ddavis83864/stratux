@@ -66,7 +66,7 @@ func main() {
 func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval, settingsInterval time.Duration) {
 	cfg := epaper.Config{} // disabled zero value until the first settings poll succeeds
 	var bus *gpioBus
-	var driver *Driver
+	var driver PanelDriver
 	var policy epaper.PolicyState
 	health := epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
 	writeHealth(health)
@@ -79,7 +79,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 	shutdown := func() {
 		if driver != nil {
 			lines := append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine})
-			w, h := epaper.Dimensions(cfg.Rotation)
+			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
 			bmp := Render(lines, w, h)
 			_ = driver.Update(context.Background(), bmp, true)
 			_ = driver.Sleep()
@@ -125,8 +125,8 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 				writeHealth(health)
 				continue
 			}
-			w, h := epaper.Dimensions(cfg.Rotation)
-			driver = &Driver{Bus: bus, WidthPx: w, HeightPx: h}
+			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
+			driver = newPanelDriver(cfg.Panel, bus, w, h)
 			if err := driver.Init(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
 				writeHealth(health)
@@ -187,7 +187,7 @@ func pollConfig(src *StatusSource) (epaper.Config, bool) {
 // caught and reported as ErrorCategory, never a process crash that would
 // need systemd to restart it mid-refresh with the panel in an unknown
 // electrical state.
-func refreshOnce(ctx context.Context, driver *Driver, src *StatusSource, cfg epaper.Config, policy *epaper.PolicyState, prev epaper.Health) (result epaper.Health) {
+func refreshOnce(ctx context.Context, driver PanelDriver, src *StatusSource, cfg epaper.Config, policy *epaper.PolicyState, prev epaper.Health) (result epaper.Health) {
 	result = prev
 	defer func() {
 		if r := recover(); r != nil {
@@ -225,7 +225,7 @@ func refreshOnce(ctx context.Context, driver *Driver, src *StatusSource, cfg epa
 		return h
 	}
 
-	w, hgt := epaper.Dimensions(cfg.Rotation)
+	w, hgt := epaper.Dimensions(cfg.Panel, cfg.Rotation)
 	lines := epaper.Layout(content, cfg, stale)
 	if kind == epaper.RefreshFull {
 		lines = append(lines, epaper.Line{Text: epaper.DisclaimerLine})
