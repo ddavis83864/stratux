@@ -11,6 +11,7 @@ func TestValidateSettingsValue_EpaperPanel(t *testing.T) {
 		wantErr bool
 	}{
 		{"waveshare-3.7in", false},
+		{"waveshare-4.2in-v2", false},
 		{"", false},
 		{"not-a-real-panel", true},
 		{123, true}, // wrong type entirely

@@ -199,7 +199,7 @@ func validateSettingsValue(key string, val interface{}) error {
 	case "EpaperPanel":
 		// Mirrors epaper.Normalize exactly: empty string falls back to
 		// the default panel (always valid).
-		if s, ok := val.(string); ok && s != "" && s != epaper.PanelWaveshare37 {
+		if s, ok := val.(string); ok && s != "" && s != epaper.PanelWaveshare37 && s != epaper.PanelWaveshare42V2 {
 			return fmt.Errorf("setting %q: %q is not a supported panel", key, s)
 		}
 	case "EpaperPage":

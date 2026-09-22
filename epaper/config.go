@@ -28,9 +28,10 @@ type Config struct {
 	// disabled-by-default convention in this codebase.
 	Enabled bool `json:"enabled"`
 
-	// Panel identifies the physical panel model. Only "waveshare-3.7in"
-	// is supported today; the field exists so a future panel can be
-	// added without a breaking config change.
+	// Panel identifies the physical panel model - see the Panel* constants
+	// below for every supported value. Empty falls back to
+	// PanelWaveshare37 (see Normalize), preserving every existing
+	// installation's behavior from before a second panel was supported.
 	Panel string `json:"panel"`
 
 	// Rotation is one of 0, 90, 180, 270 (degrees, clockwise).

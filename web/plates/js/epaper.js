@@ -18,6 +18,10 @@ function EpaperCtrl($rootScope, $scope, $state, $http, $interval) {
 	$scope.Message = '';
 
 	$scope.rotations = [0, 90, 180, 270];
+	$scope.panels = [
+		{value: 'waveshare-3.7in', label: 'Waveshare 3.7" (280x480, Driver HAT Rev2.3, 9-wire harness)'},
+		{value: 'waveshare-4.2in-v2', label: 'Waveshare 4.2" V2 (400x300, Rev2.2, 8-pin SPI)'}
+	];
 	$scope.pages = [
 		{value: 'overview', label: 'Overview - version, readiness, GPS/time trust, storage/overlay'},
 		{value: 'receivers', label: 'Receivers - 978/1090/GDL90/traffic count'},

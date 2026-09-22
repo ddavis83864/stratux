@@ -16,12 +16,21 @@
 				<a href="#/readiness">Readiness</a> for those.
 			</p>
 			<p class="small text-muted">
-				Disabled by default. Supported hardware: Waveshare 3.7" e-Paper panel
-				(SSD1677 controller, 280&times;480 native) on the Waveshare E-Paper Driver HAT
-				Rev2.3, connected by its 9-wire harness - never mounted directly on the
-				Pi's 40-pin header, which the AHRS board already occupies. See
-				docs/waveshare-epaper-display.md in the Stratux repository for the full
-				installation procedure, GPIO ownership audit, and troubleshooting guide.
+				Disabled by default. Supported hardware:
+			</p>
+			<ul class="small text-muted">
+				<li>Waveshare 3.7" e-Paper panel (SSD1677 controller, 280&times;480
+					native) on the Waveshare E-Paper Driver HAT Rev2.3, connected by its
+					9-wire harness.</li>
+				<li>Waveshare 4.2" e-Paper Module V2 (Rev2.2, 400&times;300 native),
+					connected by its own 8-pin SPI harness.</li>
+			</ul>
+			<p class="small text-muted">
+				Neither panel is ever mounted directly on the Pi's 40-pin header,
+				which the AHRS board already occupies - both use a discrete wiring
+				harness instead. See docs/waveshare-epaper-display.md in the Stratux
+				repository for the full installation procedure, GPIO ownership audit,
+				and troubleshooting guide for each panel.
 			</p>
 		</div>
 	</div>
@@ -62,6 +71,10 @@
 				"panel not detected" and touches nothing else.
 			</p>
 			<div class="form-group">
+				<label>Panel model</label>
+				<select class="form-control" ng-model="Settings.EpaperPanel" ng-options="p.value as p.label for p in panels"></select>
+			</div>
+			<div class="form-group">
 				<label>Status page</label>
 				<select class="form-control" ng-model="Settings.EpaperPage" ng-options="p.value as p.label for p in pages"></select>
 			</div>
@@ -83,7 +96,7 @@
 	</div>
 
 	<div class="panel panel-default">
-		<div class="panel-heading"><span class="panel_label">Validated Wiring (do not power on while connecting)</span></div>
+		<div class="panel-heading"><span class="panel_label">Validated Wiring - Waveshare 3.7" (do not power on while connecting)</span></div>
 		<div class="panel-body">
 			<p class="small text-danger">
 				Power the Pi down completely and disconnect it before connecting or
@@ -113,6 +126,39 @@
 				Driver HAT switch positions: Display Config = A (3R), Interface
 				Config = 0 (4-line SPI) - see the installation doc for the
 				photographically-confirmed switch locations.
+			</p>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Proposed Wiring - Waveshare 4.2" V2 (software-only; NOT yet physically hardware-validated - do not power on while connecting)</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				Power the Pi down completely and disconnect it before connecting or
+				changing any wire. Never move a wire while powered. This panel has no
+				PWR line - VCC is always-on. DC/BUSY/RST intentionally reuse the exact
+				same GPIO pins already proven conflict-free for the 3.7" panel above,
+				since only one panel is ever electrically active at a time (only one
+				can be selected as "Panel model" above). Connect this panel's own
+				8-pin harness only - never mounted directly on the 40-pin header.
+			</p>
+			<div class="table-responsive">
+			<table class="table table-condensed small">
+				<tr><th>Signal</th><th>Physical pin</th><th>BCM / function</th></tr>
+				<tr><td>VCC</td><td>17</td><td>3.3V (never 5V)</td></tr>
+				<tr><td>GND</td><td>20</td><td>Ground</td></tr>
+				<tr><td>DIN</td><td>19</td><td>GPIO10 / SPI0 MOSI</td></tr>
+				<tr><td>CLK</td><td>23</td><td>GPIO11 / SPI0 SCLK</td></tr>
+				<tr><td>CS</td><td>24</td><td>GPIO8 / SPI0 CE0</td></tr>
+				<tr><td>DC</td><td>22</td><td>GPIO25</td></tr>
+				<tr><td>RST</td><td>13</td><td>GPIO27</td></tr>
+				<tr><td>BUSY</td><td>18</td><td>GPIO24</td></tr>
+			</table>
+			</div>
+			<p class="small text-muted">
+				This panel has no Driver HAT switches to set - its own small driver
+				board (if any, per the panel's own manual) has no equivalent
+				configuration step.
 			</p>
 		</div>
 	</div>

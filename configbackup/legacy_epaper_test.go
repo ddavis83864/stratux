@@ -237,6 +237,28 @@ func TestEnabledEpaperWithUnsupportedPanelRejected(t *testing.T) {
 	}
 }
 
+// TestEnabledEpaperWithWaveshare42V2PanelAccepted confirms the second
+// supported panel identifier, added alongside the Waveshare 4.2in V2
+// driver, is accepted exactly like waveshare-3.7in - configbackup
+// cannot import the epaper package (leaf-dependency direction), so its
+// own validEpaperPanels map is an independently-maintained copy that
+// must be kept in sync by hand; this is a direct regression test for
+// that sync.
+func TestEnabledEpaperWithWaveshare42V2PanelAccepted(t *testing.T) {
+	in := testBuildInputs()
+	in.EpaperSettings = EpaperSettingsSection{
+		Enabled: true, Panel: "waveshare-4.2in-v2", Page: "overview",
+		Rotation: 0, RefreshIntervalSeconds: 15, FullRefreshEvery: 20,
+	}
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); !res.OK() {
+		t.Fatalf("expected an enabled epaperSettings section with panel waveshare-4.2in-v2 to be accepted, got: %v", res.Errors)
+	}
+}
+
 func TestEpaperSettingsPreview_ShowsChange(t *testing.T) {
 	doc := validDoc(t)
 	doc.EpaperSettings = EpaperSettingsSection{
