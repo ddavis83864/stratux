@@ -50,6 +50,23 @@ func TestNormalize_RejectsUnsupportedValuesWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestNormalize_AcceptsEveryValidPanel confirms both supported panel
+// identifiers - not just the original 3.7in default - pass Normalize
+// when enabled with otherwise-valid fields, and that Normalize does not
+// rewrite an explicitly-set, already-valid Panel value.
+func TestNormalize_AcceptsEveryValidPanel(t *testing.T) {
+	for panel := range validPanels {
+		c := Config{Enabled: true, Panel: panel, Page: PageOverview, Rotation: 0, RefreshIntervalSeconds: 15, FullRefreshEvery: 20}
+		got, err := Normalize(c)
+		if err != nil {
+			t.Errorf("panel %q: unexpected error: %v", panel, err)
+		}
+		if got.Panel != panel {
+			t.Errorf("panel %q: Normalize rewrote Panel to %q", panel, got.Panel)
+		}
+	}
+}
+
 func TestNormalize_RejectsConflictingGPIOMapping(t *testing.T) {
 	c := Config{Enabled: true, GPIO: GPIOMapping{DC: 18, Busy: 24, Rst: 27, Pwr: 22}} // 18 = fan PWM
 	if _, err := Normalize(c); err == nil {
