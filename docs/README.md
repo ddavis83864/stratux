@@ -90,6 +90,12 @@ hardware integration). User-facing how-tos live in the
   production asset and its checksums, the automated validation, the manual render
   acceptance record, the automatic boot-splash unit (ordering, `EpaperEnabled` behavior,
   failure policy, timeouts), and the cold-boot acceptance gate.
+- **[epaper-shutdown-splash.md](epaper-shutdown-splash.md)** — the orderly-power-off ARS splash for
+  the same panel: the separate `stratux_epaper_shutdown.service` unit, why its `ExecStop`
+  ordering is correct in both the start-up and shutdown directions (with the measured
+  systemd 252 evidence), how power-off is told apart from reboot and ordinary service
+  stops, exclusive panel ownership, failure policy, and the prepared (not yet run)
+  physical acceptance procedure.
 
 ## Interfaces (for EFB / app / tool developers)
 
