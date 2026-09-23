@@ -409,6 +409,26 @@ could be mistaken for a core radio/AHRS/GPS/GDL90 problem (see
 `readiness/epaper.go`'s `BuildEpaperHealth` policy for the full state
 table).
 
+**Real hardware-validation finding: `PanelDetected` does not confirm panel
+identity.** During physical validation of the 4.2in V2 panel, the 3.7in
+driver - still configured and running on the production baseline at the
+time - reported `panelDetected: true`, `state: RUNNING`, and completed a
+full refresh plus 18 partial refreshes (all with zero errors) while the
+panel actually, physically wired was the Waveshare 4.2in V2, not the 3.7in
+panel the driver was built for. This is expected, not a bug to fix: both
+panels' controllers respond enough to the generic reset/BUSY handshake
+`PanelDetected` relies on for `Init()` to report success, even though the
+panel-specific RAM addressing and content would be wrong for whichever
+panel is actually connected. **`EpaperPanel` (the owner's own explicit
+setting) is the only authoritative source of which panel is configured -
+`PanelDetected: true` never confirms the physically-connected hardware
+matches it, and no reliable hardware identity register exists on either
+controller to check instead.** Always confirm `EpaperPanel` matches the
+hardware actually wired before relying on `PanelDetected`'s value for
+anything beyond "some SSD16xx-family e-paper controller answered the
+handshake." See `epaper.Health.PanelDetected`'s own doc comment for the
+same finding recorded in code.
+
 ## Installation procedure
 
 **Stop. Do not connect or power the display until every step through "GPIO
@@ -505,6 +525,7 @@ attention-worthy, never as if it were a core radio/AHRS/GPS failure.
 | Panel shows stale data | The main daemon's HTTP APIs are slow or unreachable | Check the main daemon's own health first - this is a symptom, not a separate fault |
 | Panel ghosting is excessive | `EpaperFullRefreshEvery` set too high | Lower it (dashboard Settings panel) |
 | Dashboard shows `DEGRADED`, panel not detected, but wiring looks correct | Wrong `EpaperPanel` selected for the hardware actually wired | Confirm the "Panel model" dropdown matches the panel physically connected - the two panels' driver protocols are not interchangeable |
+| Dashboard shows `RUNNING`/`panelDetected: true` with zero errors, but the panel shows nothing recognizable or stays blank | `EpaperPanel` may still be wrong even though `PanelDetected` says `true` - this field is protocol-success-based, not identity-based (see "Real hardware-validation finding" above) | Confirm `EpaperPanel` against the hardware actually wired regardless of what `PanelDetected` reports; it cannot catch this class of mismatch by itself |
 
 ## Recovery and rollback
 
@@ -527,6 +548,14 @@ calibration, or configuration.
 
 ## Known limitations
 
+- **`PanelDetected` cannot verify panel identity** - it is protocol-
+  success-based, not identity-based, and a real hardware-validation
+  finding confirmed a wrongly-configured `EpaperPanel` can still report
+  `PanelDetected: true` and complete real refresh cycles with zero
+  errors. See "Real hardware-validation finding" under "Observability"
+  above for the full evidence. `EpaperPanel` is the only authoritative
+  source of which panel is configured; always confirm it against the
+  hardware actually wired.
 - The `BUSY` line polarity this driver follows is based on the panel's
   documented reference-code behavior, not yet independently confirmed
   against this exact physical unit - final confirmation is part of the
@@ -634,6 +663,26 @@ Phase C - display enablement:
 - [ ] Enabled the display
 - [ ] Observed initialization; confirmed `panelDetected: true`
 - [ ] Confirmed one successful first refresh
+
+**Status as of this writing**: the panel has been physically wired per the
+table above, confirmed against it signal by signal. Stratux booted
+normally on the production baseline (`c77814c4...`). Core hardware
+(1090ES receiving, GPS 3D fix with 17 satellites locked, IMU connected,
+BMP connected) was confirmed functioning with the panel connected - no
+observable AHRS/I2C/GPS/ADS-B conflict from the wiring itself. One
+deviation from the Phase B item above: `EpaperEnabled` was still `true`
+(inherited from earlier 3.7in testing) at the moment the 4.2in panel was
+first connected, so the *old, still-configured* 3.7in driver briefly ran
+against the newly-wired 4.2in panel before being disabled - see "Real
+hardware-validation finding" under "Observability" above for what that
+produced (it reported success despite being the wrong driver for the
+connected hardware) and why this is understood to be electrically benign
+rather than a safety concern. `EpaperEnabled` has since been explicitly
+set back to `false` and confirmed via `/run/stratux-epaper/status.json`
+(`state: DISABLED`, all counters zero). Panel-specific software has not
+yet been installed or run against this hardware - that is the next step,
+gated on a fresh deployment of `feature/waveshare-4in2-v2-support` with
+`EpaperEnabled` kept `false` throughout.
 
 Phase D - functional test:
 - [ ] Overview page legible, correctly oriented, no clipping

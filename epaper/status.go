@@ -50,10 +50,24 @@ const (
 type Health struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 
-	State           ServiceState  `json:"state"`
-	ConfiguredPanel string        `json:"configuredPanel,omitempty"`
-	PanelDetected   bool          `json:"panelDetected"`
-	LastErrorCat    ErrorCategory `json:"lastErrorCategory,omitempty"`
+	State           ServiceState `json:"state"`
+	ConfiguredPanel string       `json:"configuredPanel,omitempty"`
+	// PanelDetected is protocol-success-based, not identity-based: it
+	// means the configured driver's last refresh attempt completed its
+	// BUSY handshake without a timeout or SPI error - never that the
+	// physically-connected hardware has been confirmed to actually be
+	// ConfiguredPanel. A real hardware-validation finding: the 3.7in
+	// driver reported PanelDetected=true (and completed real refresh
+	// cycles) while a Waveshare 4.2in V2 panel was the one actually
+	// wired, because both panels' controllers respond enough to the
+	// generic reset/BUSY handshake this check relies on for Init() to
+	// succeed, even though the panel-specific RAM addressing/content
+	// would be wrong. ConfiguredPanel (from the owner's own EpaperPanel
+	// setting) is the only authoritative source of which panel is
+	// configured - this field can never substitute for it, and no
+	// hardware identity register exists to check instead.
+	PanelDetected bool          `json:"panelDetected"`
+	LastErrorCat  ErrorCategory `json:"lastErrorCategory,omitempty"`
 
 	LastSuccessfulRefresh time.Time `json:"lastSuccessfulRefresh,omitempty"`
 	ConsecutiveFailures   int       `json:"consecutiveFailures"`
