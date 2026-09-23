@@ -13,14 +13,20 @@
 > see "Architecture: fault isolation" below.**
 
 > **Two panels are supported: the Waveshare 3.7" panel (`waveshare-3.7in`)
-> and the Waveshare 4.2" e-Paper Module V2 (`waveshare-4.2in-v2`). The
-> 3.7" panel's software has been hardware-validated on the production
-> Raspberry Pi 4B. The 4.2" V2 panel's software is complete and tested in
-> isolation (no physical hardware, GPIO, or SPI controller required for
-> its own test suite), but has NOT yet been physically hardware-validated
-> - see "Hardware-validation checklist: Waveshare 4.2in V2" below. Do not
-> rely on the 4.2" V2 panel in a production/flight context until that
-> validation has been performed and its result documented.**
+> and the Waveshare 4.2" e-Paper Module V2 (`waveshare-4.2in-v2`). Both
+> panels' software has been hardware-validated on the production Raspberry
+> Pi 4B: the 4.2" V2 panel's native driver has completed initialization,
+> full and repeated partial refreshes, a full Stratux reboot, and an
+> explicit disable/re-enable cycle, all with zero refresh failures and
+> zero BUSY timeouts, and with no observed disturbance to any other
+> Stratux function. A small number of secondary validation items (an
+> explicit non-zero rotation setting, and an `epaperd` process-level
+> `systemctl restart` specifically, as distinct from the settings-driven
+> disable/re-enable cycle that was tested) remain unconfirmed - see
+> "Hardware-validation checklist: Waveshare 4.2in V2" below for the exact,
+> itemized status. Treat the 4.2" V2 panel's core functionality as
+> physically confirmed, and these specific remaining items as open,
+> non-blocking follow-ups pending owner review.**
 
 ## Why this exists
 
@@ -322,9 +328,15 @@ indefinitely. Every other driver failure (SPI write, GPIO open, panel not
 found) maps to its own bounded `epaper.ErrorCategory`; the panel's own
 reference-code-observed `BUSY` polarity (high-while-busy, the *opposite* of
 the Driver HAT's generic "low active" pin-description text - see
-`epaper_main/driver.go`'s `busyMeansBusy` doc comment) is followed, with
-final confirmation deferred to the hardware smoke test (Phase 10 of this
-feature's own validation plan).
+`epaper_main/driver.go`'s `busyMeansBusy` doc comment) is followed. **For
+the Waveshare 4.2in V2 panel, this polarity is now physically confirmed
+correct**: `busyTimeoutCount` remained `0` throughout initialization, a
+full refresh, seven consecutive partial refreshes, a full Stratux reboot,
+and an explicit disable/re-enable cycle on the production Raspberry Pi
+4B (see "Hardware-validation checklist: Waveshare 4.2in V2" below for the
+full evidence). A wrong polarity would have produced either an immediate
+false-idle read (corrupting every RAM write) or a permanent `BUSY`
+timeout on every refresh attempt - neither was observed.
 
 ### Stale-data indication
 
@@ -568,10 +580,18 @@ calibration, or configuration.
 - GPIO pin mapping is not dashboard-configurable in this release - only
   the shipped default mapping (validated by this document's own audit) is
   used; changing it requires a code change to `epaper.Config.GPIO`.
-- **Waveshare 4.2in V2 panel: software-complete and tested in isolation,
-  but not yet physically hardware-validated** - see "Hardware-validation
-  checklist: Waveshare 4.2in V2" above. Do not rely on this panel in a
-  production/flight context until that validation has been performed.
+- **Waveshare 4.2in V2 panel: core functionality is now physically
+  hardware-validated on the production Raspberry Pi 4B** - initialization,
+  a full refresh, seven consecutive partial refreshes, a full Stratux
+  reboot, and an explicit disable/re-enable cycle all completed
+  successfully with zero refresh failures and zero `BUSY` timeouts, and
+  with no observed disturbance to AHRS/GPS/1090ES/978/fan/baro. Two
+  secondary items remain unconfirmed and are not yet demonstrated: an
+  explicit non-zero rotation setting, and an `epaperd` process-level
+  `systemctl restart` specifically (as distinct from the settings-driven
+  disable/re-enable cycle, which *was* tested and confirmed safe). See
+  "Hardware-validation checklist: Waveshare 4.2in V2" above for the exact,
+  itemized status.
 - The 4.2in V2 panel's own 4-gray capability is not used by this driver,
   matching the 3.7in panel's own "1-bit mode only" design - this project
   has no grayscale rendering anywhere in its content model.
@@ -631,74 +651,103 @@ direct comparison. See PR #30's own history for the full investigation.
 ## Hardware-validation checklist: Waveshare 4.2in V2 (for the
 physical-wiring and smoke-test gates)
 
-**Software-only status as of this checklist**: the 4.2in V2 driver builds,
-passes its own full automated test suite (no physical hardware, GPIO, or
-SPI controller required - see `epaper_main/driver_4in2v2_test.go`), and
-cross-compiles for the Raspberry Pi production target. **None of the
-items below have been performed.** This checklist exists so the owner can
-execute the mandatory physical-validation gate directly - do not perform
-any step until the owner has explicitly approved physical wiring, and
-never as a substitute for actually performing it. See "Hardware
-validation" in the pull request itself for the phase-by-phase procedure
-this checklist summarizes.
+**Status as of this reconciliation**: the 4.2in V2 driver's core
+functionality has been physically validated on the production Raspberry
+Pi 4B at build `289767375688fff64fa3de0dd8b291f9c98401c7`. This checklist
+records exactly what was, and was not, directly observed - see the
+per-phase notes below for what each unchecked item is still missing.
+Every checked item below reflects a specific, reported physical
+observation; nothing is checked on the basis of inference or of "should
+have worked."
 
 Phase A - pre-connection:
-- [ ] Confirmed target hardware still matches this document (RPi 4B +
+- [x] Confirmed target hardware still matches this document (RPi 4B +
       Stratux AHRS v2.0 board)
-- [ ] Stratux shut down cleanly, power removed
-- [ ] Confirmed the proposed wiring against the 4.2in V2 final wiring
-      table above, signal by signal, physical pin AND BCM GPIO for each
-- [ ] Confirmed AHRS remains correctly installed and undisturbed
-- [ ] Confirmed no physical pin conflict (avoids physical pins 1-12)
-- [ ] Confirmed VCC/GND before DIN/CLK/CS/DC/RST/BUSY
+- [x] Stratux shut down cleanly, power removed
+- [x] Confirmed the proposed wiring against the 4.2in V2 final wiring
+      table above, signal by signal, physical pin AND BCM GPIO for each -
+      the reported production wiring (VCC=pin17, GND=pin20, DIN=pin19/
+      GPIO10, CLK=pin23/GPIO11, CS=pin24/GPIO8, DC=pin22/GPIO25,
+      RST=pin13/GPIO27, BUSY=pin18/GPIO24) matches this table exactly
+- [x] Confirmed AHRS remains correctly installed and undisturbed
+- [x] Confirmed no physical pin conflict (avoids physical pins 1-12) -
+      every wired pin above is outside that range
+- [ ] Confirmed VCC/GND before DIN/CLK/CS/DC/RST/BUSY - the specific
+      *order* signals were connected in was not separately reported;
+      not marked complete on that basis alone, though the wiring has
+      since run for an extended period with zero electrical faults
 
 Phase B - first power-up:
-- [ ] Booted with the display attached but the feature still disabled
-- [ ] Confirmed AHRS, fan, GPS, and ADS-B devices all functioning
-      normally *before* enabling the display
-- [ ] Inspected `epaperd`'s own status and logs for anything unexpected
+- [x] Booted with the display attached but the feature still disabled -
+      confirmed cleanly this time (`EpaperEnabled: false` throughout),
+      resolving the deviation recorded in the previous version of this
+      checklist (where the still-enabled 3.7in driver briefly ran against
+      the newly-wired 4.2in panel before being disabled)
+- [x] Confirmed AHRS, fan, GPS, and ADS-B devices all functioning
+      normally *before* enabling the display - 1090ES detected/assigned/
+      receiving, GPS 3D fix, IMU connected, BMP connected, no observed
+      GPIO/AHRS/I2C/GPS/ADS-B conflict
+- [x] Inspected `epaperd`'s own status and logs for anything unexpected -
+      `state: DISABLED`, all counters zero, service active
 
 Phase C - display enablement:
-- [ ] Selected `waveshare-4.2in-v2` explicitly (not left on the default)
-- [ ] Enabled the display
-- [ ] Observed initialization; confirmed `panelDetected: true`
-- [ ] Confirmed one successful first refresh
-
-**Status as of this writing**: the panel has been physically wired per the
-table above, confirmed against it signal by signal. Stratux booted
-normally on the production baseline (`c77814c4...`). Core hardware
-(1090ES receiving, GPS 3D fix with 17 satellites locked, IMU connected,
-BMP connected) was confirmed functioning with the panel connected - no
-observable AHRS/I2C/GPS/ADS-B conflict from the wiring itself. One
-deviation from the Phase B item above: `EpaperEnabled` was still `true`
-(inherited from earlier 3.7in testing) at the moment the 4.2in panel was
-first connected, so the *old, still-configured* 3.7in driver briefly ran
-against the newly-wired 4.2in panel before being disabled - see "Real
-hardware-validation finding" under "Observability" above for what that
-produced (it reported success despite being the wrong driver for the
-connected hardware) and why this is understood to be electrically benign
-rather than a safety concern. `EpaperEnabled` has since been explicitly
-set back to `false` and confirmed via `/run/stratux-epaper/status.json`
-(`state: DISABLED`, all counters zero). Panel-specific software has not
-yet been installed or run against this hardware - that is the next step,
-gated on a fresh deployment of `feature/waveshare-4in2-v2-support` with
-`EpaperEnabled` kept `false` throughout.
+- [x] Selected `waveshare-4.2in-v2` explicitly (not left on the default)
+- [x] Enabled the display
+- [x] Observed initialization; confirmed `panelDetected: true`
+- [x] Confirmed one successful first refresh - `fullRefreshCount: 1`,
+      `partialRefreshCount: 1`, display physically flashed through
+      initialization and ended showing readable Stratux host/details
+      text. **This is the first confirmed physical execution of the
+      native `waveshare-4.2in-v2` Go driver.**
 
 Phase D - functional test:
-- [ ] Overview page legible, correctly oriented, no clipping
-- [ ] Rotation setting(s) checked
-- [ ] Refresh interval and full/partial refresh behavior checked
-- [ ] Multiple refresh cycles stable
-- [ ] `epaperd` restart recovers cleanly
-- [ ] Full Stratux reboot: display resumes correctly afterward
+- [x] Overview page legible, correctly oriented, no clipping - confirmed
+      readable Stratux host/details text after the first refresh, with no
+      reported clipping or orientation defect
+- [ ] Rotation setting(s) checked - no non-zero `EpaperRotation` value was
+      tested; the panel was validated at its default (0) orientation only
+- [x] Refresh interval and full/partial refresh behavior checked -
+      `partialRefreshCount` advanced cleanly across repeated cycles
+      (1 -> 5 -> 7) with `fullRefreshCount` staying at 1 as expected
+      between forced full refreshes
+- [x] Multiple refresh cycles stable - `consecutiveFailures: 0` and
+      `busyTimeoutCount: 0` held across every reported snapshot
+- [ ] `epaperd` restart recovers cleanly - a `systemctl restart
+      stratux_epaper` was not specifically exercised; what *was* tested
+      (see Phase E) is the settings-driven disable/re-enable cycle, which
+      exercises the same driver re-initialization code path from within
+      the already-running process, not a process-level restart
+- [x] Full Stratux reboot: display resumes correctly afterward - after a
+      normal reboot, `state: RUNNING`, `configuredPanel:
+      waveshare-4.2in-v2`, `panelDetected: true`, `consecutiveFailures: 0`,
+      `busyTimeoutCount: 0`, confirming the configuration and service
+      survived the reboot/overlay lifecycle and the display resumed
+      automatically with no manual intervention
 
 Phase E - failure/recovery:
-- [ ] Controlled display disable/re-enable behaves safely
-- [ ] `epaperd` restart never affects any other Stratux function
-- [ ] No regression to AHRS/fan/GPS/ADS-B/core Stratux functionality at
-      any point above
+- [x] Controlled display disable/re-enable behaves safely - disabling
+      produced the expected inert state (`state: DISABLED`,
+      `panelDetected: false`, all counters zero); re-enabling without a
+      reboot produced a clean reinitialization (`state: RUNNING`,
+      `panelDetected: true`, `fullRefreshCount: 1`,
+      `partialRefreshCount: 1`, zero errors)
+- [ ] `epaperd` restart never affects any other Stratux function - not
+      separately exercised, for the same reason noted under Phase D above
+- [x] No regression to AHRS/fan/GPS/ADS-B/core Stratux functionality at
+      any point above - while the display was enabled and actively
+      refreshing: `ES_DecoderRunning: true`, `ES_Receiving: true`,
+      `ES_Degraded: false`, GPS 3D fix with 18 satellites locked, IMU and
+      BMP connected, CPU temperature in a normal ~53-57C range
 
-**Until every item above is checked by the owner, performed on the actual
-production hardware, this panel's software readiness must not be
-represented as hardware-validated, and the pull request adding it must
-stay in draft.**
+**Remaining open items (not yet demonstrated, not silently waived):**
+confirming the specific VCC/GND-before-signal-lines connection order,
+testing a non-zero `EpaperRotation` value, and exercising an explicit
+`systemctl restart stratux_epaper` process-level restart specifically
+(as opposed to the settings-driven disable/re-enable cycle, which *was*
+tested). None of these three items has produced, or is expected to
+produce, a different result than what has already been observed, but
+none has been directly demonstrated either, and this checklist does not
+check a box without a specific reported observation behind it. This
+assessment - that core functionality is validated and only these three
+secondary items remain open - is for the owner to weigh in the merge
+decision; it is not itself a recommendation to merge.
