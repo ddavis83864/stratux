@@ -52,6 +52,10 @@ const (
 	exitRefused = 2 // bad usage, or refused before touching hardware
 )
 
+// loadBitmap returns the embedded production bitmap. A variable so tests
+// can substitute a corrupt asset.
+var loadBitmap = assets.Bitmap
+
 // splashBitmap returns the production splash for the given content
 // rotation. 0 is the bitmap exactly as generated; 180 is a pure
 // point-symmetric transform of it using the same rotateImage and
@@ -60,7 +64,7 @@ const (
 // landscape, and a portrait 300x400 logical canvas would need a
 // separately generated and separately approved layout.
 func splashBitmap(rotation int) ([]byte, error) {
-	bm := assets.Bitmap()
+	bm := loadBitmap()
 	switch rotation {
 	case 0:
 		return bm, nil
@@ -145,6 +149,13 @@ func runSplash(ctx context.Context, panel string, rotation int, force bool, stat
 	if panel != epaper.PanelWaveshare42V2 {
 		fmt.Fprintf(errOut, "splash: the approved artwork is generated for %q only, not %q\n", epaper.PanelWaveshare42V2, panel)
 		return exitRefused
+	}
+	// The asset is embedded, so it cannot be "missing" at runtime, but
+	// prove it is intact before any hardware is opened: a bad build must
+	// fail here, not put garbage on the panel.
+	if _, err := splash.Validate(loadBitmap()); err != nil {
+		fmt.Fprintln(errOut, "splash: embedded splash asset is invalid:", err)
+		return exitFailure
 	}
 	bitmap, err := splashBitmap(rotation)
 	if err != nil {

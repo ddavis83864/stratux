@@ -1,0 +1,58 @@
+[Unit]
+Description=Stratux e-paper boot splash (cosmetic; once per boot, only when EpaperEnabled)
+
+# THE ONLY ORDERING: run to completion BEFORE the operational e-paper
+# renderer. stratux_epaper.service is ordered after this unit's job, and
+# because this is Type=oneshot (below) systemd does not start it until
+# this process has exited - i.e. until the splash has put the panel to
+# sleep and released SPI/GPIO. That is what guarantees the two never own
+# the panel at the same time; no sleep or polling is involved.
+Before=stratux_epaper.service
+
+# Deliberately NOT After=stratux.service (or network): the logo should
+# appear at power-on, not after that service's ExecStartPre (which can run
+# OTA installs). And deliberately NO Requires=/Wants=/BindsTo= in either
+# direction: the splash is cosmetic, so a failed or hung splash must never
+# block, fail, or delay stratux, stratux_epaper, or anything else. Ordering
+# alone means the operational renderer still starts after this unit
+# finishes, whether it finished successfully, failed, or timed out.
+
+[Service]
+Type=oneshot
+
+# Run once per boot. Once it has run, the unit stays "active (exited)", so
+# restarting stratux_epaper (manual restart, settings change, OTA) never
+# replays the splash - it is a power-on graphic, not a restart animation.
+RemainAfterExit=yes
+
+# Same binary as stratux_epaper.service, so the splash and the operational
+# renderer can never be from mismatched builds. The splash bitmap is
+# embedded in it; there is no separate asset file to install or lose.
+#
+# -splash-boot reads EpaperEnabled/EpaperPanel/EpaperRotation from
+# /boot/firmware/stratux.conf - the same durable, owner-controlled setting
+# that gates the operational display - and draws nothing (exit 0) unless
+# the e-paper feature is enabled for the Waveshare 4.2in V2 panel.
+ExecStart=/opt/stratux/bin/epaperd -splash-boot
+
+# Bounded, no retries. epaperd enforces its own 45 s deadline (a healthy
+# run is ~10-15 s; an absent display fails in ~10 s); this is only the
+# backstop if it ever hangs. Worst-case boot delay to the operational
+# e-paper renderer: TimeoutStartSec. It delays nothing else.
+TimeoutStartSec=60
+TimeoutStopSec=10
+Restart=no
+
+# stdout/stderr go to the journal (a handful of lines per boot):
+#   journalctl -b -u stratux_epaper_splash
+
+[Install]
+WantedBy=multi-user.target
+
+# Like stratux_epaper.service, this unit IS enabled unconditionally by the
+# package's postinst - before its STRATUX_OTA_INSTALL early-exit, so an
+# OTA-delivered install enables it too - and is never started by the
+# package (it runs at the next boot). Running it on every device is safe:
+# with EpaperEnabled false (the shipped default), no config file, or an
+# unsupported panel/rotation, it logs why and exits 0 without touching any
+# GPIO/SPI. Only EpaperEnabled decides; there is no second switch.

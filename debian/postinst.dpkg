@@ -30,6 +30,11 @@ if  [ "$arch" == "aarch64" ]; then
     if [ -f "/boot/firmware/config.txt" ]; then
             systemctl enable stratux_fancontrol
             systemctl enable stratux_epaper
+            # The once-per-boot ARS splash: enabled here for the same
+            # reason as stratux_epaper (before the OTA early-exit), but
+            # never started by this script - it runs at boot, strictly
+            # before stratux_epaper (see debian/stratux_epaper_splash.service).
+            systemctl enable stratux_epaper_splash
     fi
 fi
 

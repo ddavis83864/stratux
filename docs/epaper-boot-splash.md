@@ -1,11 +1,16 @@
 # ARS e-paper splash: approved artwork, production asset, acceptance gate
 
-> **Status: `ARS_EPAPER_SPLASH_PHYSICAL_ACCEPTANCE_PASSED_BOOT_INTEGRATION_READY`.
-> The manual splash render and the hand-off back to the operational display
-> were physically validated by the owner on the real Stratux Pi and
-> Waveshare 4.2" V2 panel on 2026-09-23 (see
-> [Acceptance record](#acceptance-record)). The splash is not yet wired into
-> boot.**
+> **Status: `ARS_EPAPER_BOOT_SPLASH_INTEGRATED_COLD_BOOT_ACCEPTANCE_REQUIRED`.**
+>
+> - The **manual** splash render and the hand-off back to the operational
+>   display were physically validated by the owner on the real Stratux Pi and
+>   Waveshare 4.2" V2 panel on 2026-09-23 (see
+>   [Acceptance record](#acceptance-record)).
+> - **Automatic boot integration** is implemented and passes all
+>   non-hardware validation (see [Automatic boot integration](#automatic-boot-integration)).
+>   It has **not** been physically validated: the
+>   [cold-boot acceptance gate](#cold-boot-acceptance-gate) is
+>   **NOT PERFORMED**. Passing the manual test does not validate boot.
 
 This covers only the Waveshare **4.2" V2** panel (400×300; see
 [waveshare-epaper-display.md](waveshare-epaper-display.md)). It is a
@@ -21,7 +26,9 @@ supplemental branding image, not flight information.
 | `epaper/splash/assets/CHECKSUMS.sha256` | SHA-256 of the source and the `.bin` (`sha256sum -c` format). |
 | `epaper/splash/splash.go` | The converter and validator (`splash.Convert`, `splash.Validate`). |
 | `epaper/splash/cmd/splashgen/` | The generator command. |
-| `epaper_main/splash.go` | The one-shot renderer behind `epaperd -splash`. |
+| `epaper_main/splash.go` | The one-shot renderer behind `epaperd -splash` (manual). |
+| `epaper_main/splashboot.go` | `epaperd -splash-boot`: the once-per-boot mode (reads `EpaperEnabled`, then reuses the renderer above). |
+| `debian/stratux_epaper_splash.service` | The boot unit that runs `-splash-boot` strictly before `stratux_epaper.service`. |
 
 The splash is the oval ARS border, mountains, evergreen tree line, swoosh
 elements, "AERIAL" and "RESPONSE SYSTEMS" - and nothing else: no rectangular
@@ -172,7 +179,9 @@ procedure that was run, and must be repeated if the artwork changes.
 
 The renderer is a manual, run-to-completion mode of `epaperd`:
 `Init → Clear → one full refresh → Sleep`, then it releases SPI/GPIO and
-exits. Nothing calls it at boot.
+exits. (Automatic boot use is a separate mode, described in
+[Automatic boot integration](#automatic-boot-integration), with its own
+gate.)
 
 ### Get a binary that has `-splash`
 
@@ -329,3 +338,257 @@ any change to it repeats this gate.
 
 This validates the **manual** path only. It does not validate boot
 integration; see the cold-boot gate in the boot-integration section.
+
+## Automatic boot integration
+
+Software-complete; **physically unvalidated** (see the
+[cold-boot gate](#cold-boot-acceptance-gate)).
+
+### Lifecycle
+
+```
+power on -> Linux -> basic.target
+   -> stratux_epaper_splash.service   (Type=oneshot)
+        epaperd -splash-boot:
+          read EpaperEnabled from /boot/firmware/stratux.conf
+          if enabled (4.2in V2, rotation 0/180):
+             Init -> Clear -> full refresh (ARS logo) -> Sleep
+             release SPI/GPIO -> exit
+   -> stratux_epaper.service          (starts only after the splash process exited)
+        epaperd (operational): Init -> Clear -> "Starting..." -> status page
+```
+
+`stratux_epaper.service` is itself still `After=stratux.service`, exactly as
+before, so the operational display appears once the daemon is up. The logo
+stays on the (bistable) panel from the moment the splash finishes until the
+operational renderer's first refresh replaces it.
+
+### Systemd architecture
+
+Reuses the repository's existing pattern: a separate, fault-isolated
+`epaperd` invocation as its own unit, enabled by `debian/postinst.dpkg`
+unconditionally (before its OTA early-exit, like `stratux_epaper`), with the
+binary itself deciding at runtime. No new binary, no new configuration
+authority.
+
+| Item | Where |
+|---|---|
+| New unit | `debian/stratux_epaper_splash.service` |
+| Packaged into | `lib/systemd/system/` by the `Makefile` `dpkg` target |
+| Enabled by | `debian/postinst.dpkg`: `systemctl enable stratux_epaper_splash`, inside the Pi guard, **before** the `STRATUX_OTA_INSTALL` early-exit; **never started** by the package |
+| Stopped by | `debian/prerm.dpkg`, before `stratux_epaper`, so the two can never overlap while the package is replaced |
+| Binary | `/opt/stratux/bin/epaperd` (same as `stratux_epaper.service`; the bitmap is embedded, so there is no asset file to install or lose) |
+| Validated operational unit | `debian/stratux_epaper.service` is **unchanged** |
+
+**Ordering:** `stratux_epaper_splash.service` has `Before=stratux_epaper.service`
+and nothing else. Because it is `Type=oneshot`, systemd does not start
+`stratux_epaper.service` until the splash process has exited - i.e. after the
+panel is asleep and SPI/GPIO are released. Both units are pulled in by
+`multi-user.target` in the same boot transaction, so the ordering applies.
+There are no sleeps or polling.
+
+Deliberately absent (each is asserted by a test):
+- `Requires=`/`Wants=`/`BindsTo=`/`PartOf=`/`OnFailure=` in either direction,
+  so a failed or hung splash cannot block, fail, or stop `stratux_epaper`,
+  `stratux`, or anything else.
+- `After=stratux.service` / network, so the logo appears at power-on rather
+  than after `stratux.service`'s `ExecStartPre` (which can run OTA installs).
+- Any reference to the splash inside `stratux_epaper.service`.
+
+`RemainAfterExit=yes` makes it run **once per boot**: afterwards the unit is
+`active (exited)`, so `systemctl restart stratux_epaper` (manual, settings
+change, OTA restart) never replays the splash. Every boot, including a warm
+reboot, runs it.
+
+### EpaperEnabled behavior
+
+`EpaperEnabled` (in `/boot/firmware/stratux.conf`, the same setting that gates
+the operational renderer) is the **only** authority; there is no second
+switch. The splash runs before the daemon's HTTP API exists, so
+`-splash-boot` reads that file directly, with the daemon's own loader
+semantics (`main.readSettings`): at most 10,000 bytes, JSON overlaid on
+defaults, case-insensitive keys, any parse failure means defaults
+(`EpaperEnabled` false).
+
+| Settings | Splash | Operational renderer | Exit |
+|---|---|---|---|
+| `EpaperEnabled` false / absent / no or unparseable config | none | idles, touches no hardware | 0 (logged: skipped) |
+| Enabled, panel `waveshare-4.2in-v2`, rotation 0 or 180 | **ARS logo** | starts after the splash | 0 |
+| Enabled, panel 3.7" (or panel unset, which defaults to 3.7") | none (no artwork for it) | runs as before | 0 (logged) |
+| Enabled, 4.2" V2, rotation 90/270 | none (artwork is landscape only) | runs as before | 0 (logged) |
+| Enabled, invalid panel/rotation value | none | refuses the config as before | 0 (logged) |
+
+The splash unit is enabled on every device including ones with no display;
+with the shipped default (disabled) it touches no GPIO/SPI at all.
+
+Note for this image: `systemctl enable/disable` done by hand persists only in
+the protected overlay's RAM layer and is lost on reboot (see
+`ota-persistent-storage-defect.md`). To stop the splash, disable the e-paper
+feature (`EpaperEnabled` false, which also stops the operational display) or
+ship a build without the unit; do not rely on `systemctl disable`.
+
+### Failure policy
+
+The splash is cosmetic. Its failure must not prevent anything else from
+starting, and it never retries (`Restart=no`).
+
+| Failure | Behavior | Unit result | Effect on the rest |
+|---|---|---|---|
+| Display absent / BUSY never idles | First BUSY wait times out (~10 s); panel not touched further; SPI/GPIO released | failed (exit 1) | `stratux_epaper` starts afterwards; nothing else affected |
+| GPIO/SPI unavailable (`/dev/gpiomem`) | Fails immediately, nothing opened | failed (exit 1) | same |
+| SPI write / reset error mid-sequence | Panel put to sleep if it was initialized, hardware released | failed (exit 1) | same |
+| Embedded asset invalid | Detected before any hardware is opened | failed (exit 1) | same |
+| Operational renderer already running (unit started by hand mid-run) | Refuses before opening anything | failed (exit 2) | operational renderer untouched |
+| Hang / slow panel | Process deadline, then systemd backstop (below) | failed (exit 1, or killed on timeout) | delays only `stratux_epaper`, by at most the systemd timeout |
+| Not applicable (disabled, wrong panel/rotation, no config) | Logged reason | success (exit 0) | none |
+
+A failed unit shows in `systemctl --failed` and `journalctl -b -u
+stratux_epaper_splash`; on a device with the feature disabled it never fails.
+
+### Timeouts (all bounded, no indefinite wait)
+
+| Bound | Value | Where |
+|---|---|---|
+| Process deadline (whole run) | 45 s | `bootSplashTimeout`, `epaper_main/splashboot.go` |
+| Per-BUSY wait | 10 s | existing driver default |
+| systemd backstop | `TimeoutStartSec=60` | unit; a test requires it to exceed the process deadline so the process ends itself (panel asleep) before systemd must kill it |
+| Stop | `TimeoutStopSec=10` | unit |
+
+A healthy run takes roughly 10-15 s (Init, Clear, one full refresh). The worst
+case delays only `stratux_epaper` (never the core daemon) by at most 60 s.
+
+### Automated validation
+
+`go test ./epaper_main/...` and `bash test/epaper_packaging_test.sh` cover:
+
+- unit structure: oneshot, `RemainAfterExit`, `Restart=no`, `ExecStart`, both
+  timeouts bounded and correctly related, `WantedBy=multi-user.target`
+- ordering: `Before=stratux_epaper.service`; no coupling keys; no `After=`;
+  the operational unit is unchanged and never mentions the splash; an
+  ordering-graph check (splash before operational, no cycle)
+- both units run the same installed binary path; the Makefile installs that
+  binary at that path and packages the unit
+- the enable decision against 20 config variants (including the daemon's
+  10,000-byte and partial-type-error semantics)
+- disabled/not-applicable touches no hardware; enabled writes the exact
+  production bitmap to both RAM planes and ends in deep sleep; 180° works
+- every failure class above exits non-zero, releases the hardware, and does
+  not touch the operational status file; a stuck BUSY line is cut off by the
+  deadline; a corrupt embedded asset fails before hardware is opened
+- no concurrent ownership: refuses while the operational renderer's status is
+  fresh
+- the real `postinst`/`prerm` scripts executed against stubs, in OTA and
+  normal modes: the splash is enabled before the OTA early-exit, is never
+  started, and `prerm` stops it before `stratux_epaper`
+- the real systemd parser (`systemd-analyze verify`) accepts both units
+
+These were mutation-tested: removing/altering each property (drop `Before=`,
+`Type=simple`, add `Requires=`, add `After=stratux.service`, shrink/unbound
+timeouts, `Restart=always`, ignore `EpaperEnabled`, drop the deadline, skip
+asset validation, never release hardware, start the splash from `postinst`,
+etc.) makes a test fail.
+
+What software cannot prove: real-systemd ordering on the device, panel
+timing, and how it looks. That is the cold-boot gate.
+
+### Cold-boot acceptance gate
+
+**NOT PERFORMED.** The owner must run this on the actual Stratux Pi; do not
+call automatic boot validated until then.
+
+**0. Install a real package build.** The change must arrive through the
+normal package path: build the ARM64 `.deb` (`make ddpkg`) and install it
+via the web-UI OTA upload (see [ota.md](ota.md)) or your usual `dpkg -i`
+route. **Do not** hand-copy `epaperd` or the unit: on this image such copies
+live only in the overlay's RAM layer and vanish on reboot, which would make
+the test meaningless. After the install reboots, confirm:
+
+```sh
+systemctl is-enabled stratux_epaper_splash        # enabled
+ls -l /lib/systemd/system/stratux_epaper_splash.service
+/opt/stratux/bin/epaperd -h 2>&1 | grep splash-boot   # flag present
+grep -o '"EpaperEnabled": *[a-z]*' /boot/firmware/stratux.conf   # true
+```
+
+**1. Power off completely.** Use Stratux's normal shutdown, wait for the
+panel to show the shutdown screen, then physically remove power for ~10 s.
+(The shutdown screen persists on the bistable panel, so the splash replacing
+it is unambiguous.)
+
+**2. Power on** and do **not** run `epaperd` or touch any service. Note the
+time from applying power.
+
+**3. Watch the panel** and record:
+- the ARS splash appears by itself (roughly when?)
+- it stays visible while Stratux initializes
+- the normal operational display later replaces it by itself
+
+**4. After it settles**, on the Pi:
+
+```sh
+systemctl is-active stratux_epaper                       # active
+systemctl status stratux_epaper_splash --no-pager        # active (exited), status=0/SUCCESS
+cat /run/stratux-epaper/status.json                      # RUNNING, panelDetected true, consecutiveFailures 0
+systemctl --failed --no-pager                            # no e-paper units listed
+journalctl -b -u stratux_epaper_splash --no-pager        # the 5 progress lines, no errors
+journalctl -b -o short-precise -u stratux_epaper_splash -u stratux_epaper --no-pager
+```
+
+In the last command, the splash's `Finished stratux_epaper_splash.service`
+line must precede `Started stratux_epaper.service` (this is the ordering
+proof).
+
+**5. Verify normal Stratux operation:** Wi-Fi access point up and a client
+connects; web UI loads; ADS-B receiving; GPS fix; AHRS live; GDL90/ForeFlight
+connects and shows traffic (as applicable).
+
+**Recommended extra checks** (not required for the gate): (a) with
+`EpaperEnabled` false, reboot: no splash and no operational display, and the
+splash unit exits 0 with "skipped" in its journal; (b) `sudo systemctl restart
+stratux_epaper` does not replay the splash.
+
+| # | Check | Result |
+|---|---|---|
+| C1 | Package installed durably (step 0 checks pass after reboot) | |
+| C2 | Cold power-on: ARS splash appears automatically, no manual `epaperd` | |
+| C3 | Splash remains visible during Stratux initialization | |
+| C4 | Operational display replaces it automatically | |
+| C5 | `stratux_epaper` `active` | |
+| C6 | `status.json` RUNNING, `panelDetected` true, `consecutiveFailures` 0 | |
+| C7 | Splash unit `active (exited)`, 0/SUCCESS; no failed e-paper units | |
+| C8 | Journals show the splash finishing before `stratux_epaper` starts, no SPI/GPIO/BUSY errors | |
+| C9 | Wi-Fi, ADS-B, GPS, AHRS, web UI, GDL90/ForeFlight normal | |
+
+### Cold-boot acceptance record
+
+| Field | Value |
+|---|---|
+| Cold-boot acceptance | **NOT PERFORMED** |
+| Date / unit / build | |
+| Tester | |
+| Notes (time to splash, how long it stayed, anything unexpected) | |
+
+### Dependencies, risks and open items
+
+- **Depends on PR #34** (`feature/waveshare-4in2-v2-support`, unmerged): this
+  branch is built on top of it and cannot be merged before it. The validated
+  Waveshare driver and the operational unit are unchanged.
+- **Splash lifetime is not fixed.** The logo stays until the operational
+  renderer's first refresh, which follows `stratux.service` starting plus the
+  renderer's first poll cycle. If the daemon were ever very fast, the logo
+  could be brief. No minimum hold was added (a fixed sleep is not a
+  synchronization mechanism); revisit only if the cold-boot test shows it.
+- **Takeover flash.** When the operational renderer starts it does its usual
+  full-refresh `Clear()` before "Starting...", so the hand-off has a blank
+  flash (unchanged, validated operational behavior).
+- **Config is read directly.** `-splash-boot` mirrors `main.readSettings`
+  (path, 10,000-byte cap, overlay-on-defaults). If the daemon's loader ever
+  changes, `decideBootSplash` and its table test must change with it.
+- **A failed unit is visible** (`systemctl --failed`) when the feature is
+  enabled but the display is absent or faulty; this is intentional and
+  harmless to everything else.
+- Only the 4.2" V2 at rotation 0/180 gets a splash; other enabled
+  configurations skip it (logged).
+- **Not verified here:** an actual `make ddpkg` build/install and real-systemd
+  boot ordering on the device; those are covered by the cold-boot gate.
+

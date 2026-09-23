@@ -20,6 +20,10 @@ if  [ "$arch" == "aarch64" ]; then
 		# debian/stratux_epaper.service for why always-running is safe) -
 		# it idles with no display attached or the feature disabled, but
 		# is still stopped here like any other stratux service.
+		# The boot splash first, so it can never still own the panel
+		# while the package is being replaced (a no-op once it has
+		# exited, which is the normal case).
+		systemctl stop stratux_epaper_splash 2>/dev/null || true
 		systemctl stop stratux_epaper 2>/dev/null || true
 	fi
 fi

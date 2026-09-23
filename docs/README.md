@@ -87,8 +87,9 @@ hardware integration). User-facing how-tos live in the
   and troubleshooting/recovery.
 - **[epaper-boot-splash.md](epaper-boot-splash.md)** — the approved ARS splash artwork for
   the Waveshare 4.2" panel: the deterministic source-to-bitmap generator, the committed
-  production asset and its checksums, the automated validation, and the physical
-  acceptance gate that must pass before any automatic boot splash is enabled.
+  production asset and its checksums, the automated validation, the manual render
+  acceptance record, the automatic boot-splash unit (ordering, `EpaperEnabled` behavior,
+  failure policy, timeouts), and the cold-boot acceptance gate.
 
 ## Interfaces (for EFB / app / tool developers)
 
