@@ -40,8 +40,10 @@ type PanelDriver interface {
 }
 
 // newPanelDriver constructs the concrete PanelDriver for panel, wired to
-// width/height (from epaper.Dimensions(cfg.Panel, cfg.Rotation) - the
-// caller's responsibility, not this function's, so this stays a pure
+// width/height (from epaper.NativeDimensions(cfg.Panel) - the panel's
+// own fixed physical dimensions, never epaper.Dimensions's rotation-
+// swapped ones; see NativeDimensions's own doc comment for why - this is
+// the caller's responsibility, not this function's, so this stays a pure
 // selection/construction step with no dimension logic duplicated here).
 // Neither concrete driver has its BusyTimeout set explicitly here,
 // preserving this package's existing behavior exactly: each driver's own

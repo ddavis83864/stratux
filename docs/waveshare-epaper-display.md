@@ -14,19 +14,21 @@
 
 > **Two panels are supported: the Waveshare 3.7" panel (`waveshare-3.7in`)
 > and the Waveshare 4.2" e-Paper Module V2 (`waveshare-4.2in-v2`). Both
-> panels' software has been hardware-validated on the production Raspberry
-> Pi 4B: the 4.2" V2 panel's native driver has completed initialization,
-> full and repeated partial refreshes, a full Stratux reboot, and an
-> explicit disable/re-enable cycle, all with zero refresh failures and
-> zero BUSY timeouts, and with no observed disturbance to any other
-> Stratux function. A small number of secondary validation items (an
-> explicit non-zero rotation setting, and an `epaperd` process-level
-> `systemctl restart` specifically, as distinct from the settings-driven
-> disable/re-enable cycle that was tested) remain unconfirmed - see
-> "Hardware-validation checklist: Waveshare 4.2in V2" below for the exact,
-> itemized status. Treat the 4.2" V2 panel's core functionality as
-> physically confirmed, and these specific remaining items as open,
-> non-blocking follow-ups pending owner review.**
+> panels' core software (content, initialization, full/partial refresh,
+> reboot persistence, disable/re-enable recovery) has been hardware-
+> validated on the production Raspberry Pi 4B. **`EpaperRotation` at any
+> non-zero value (90/180/270) was found, by physical hardware testing, to
+> not actually rotate the displayed content** - see "Real hardware-
+> validation finding: non-zero EpaperRotation did not rotate the display"
+> below for the full account. A source fix has been implemented and
+> covered by new deterministic regression tests, but **physical
+> revalidation of the corrected build on real hardware has not yet
+> occurred** - do not rely on any non-zero `EpaperRotation` value in a
+> production/flight context until that revalidation is complete and its
+> result is recorded here. The connection-order and `systemctl restart`
+> checklist items remain separately open and unrelated to this defect -
+> see "Hardware-validation checklist: Waveshare 4.2in V2" below for the
+> exact, itemized status of every item.**
 
 ## Why this exists
 
@@ -319,6 +321,65 @@ full (flashing, slower, ghosting-clearing) refresh is forced every
 very first refresh after startup is always full, since there is nothing on
 the panel yet to partially update from (`epaper.Decide`).
 
+### Display rotation (EpaperRotation)
+
+**Real hardware-validation finding: non-zero `EpaperRotation` did not
+rotate the display.** Physical testing on the production Raspberry Pi 4B
+(4.2in V2 panel) set `EpaperRotation` from 0 to 180 via `/setSettings`.
+The setting was accepted and persisted, and the change was correctly
+detected by `epaperd` - the panel physically flashed and redrew, and
+`fullRefreshCount`/`partialRefreshCount` both advanced, with zero errors
+throughout - but the displayed content did not visibly rotate.
+
+**Root cause**: `epaper.Dimensions(panel, rotation)` correctly swaps
+width/height for 90/270 (so the *canvas shape* passed to rendering is
+correct for those two values), but nothing anywhere in the render
+pipeline ever transformed the *pixel content* drawn onto that canvas -
+`epaper_main/render.go`'s `Render` took only `(lines, width, height)`
+and always drew text in the same fixed screen-space orientation,
+regardless of rotation. For 180 degrees specifically, `Dimensions` does
+not even swap width/height (correctly - 180 degrees does not change the
+aspect ratio), so the entire render call was **byte-for-byte identical**
+whether `EpaperRotation` was 0 or 180 - exactly matching the reported
+symptom. A repository-wide search (`grep -rn "rotate|Rotate|transform|
+Transform"`) confirmed no rotation/transform logic existed anywhere in
+`epaper` or `epaper_main` before this fix. This was never a 4.2in-panel-
+specific bug: `Render` is shared by both drivers, so the 3.7in panel's
+own render path was equally affected at every non-zero rotation value -
+it had simply never been physically exercised at a non-zero rotation
+before this test.
+
+A related, not-yet-physically-observed defect was found and fixed in the
+same investigation: the pre-fix code fed `Dimensions`'s already rotation-
+swapped width/height directly into the `PanelDriver` constructor
+(`newPanelDriver`), which would have misprogrammed each controller's own
+fixed-hardware RAM-window addressing (and, for the 3.7in panel, its
+Driver Output Control gate count - a fixed property of the physical
+silicon, not something a software rotation setting can reprogram) at
+90/270 degrees specifically. This was not the reported symptom (180
+degrees does not swap dimensions), but is part of the same rotation
+path and is fixed by the same change.
+
+**Fix**: `epaper.NativeDimensions(panel)` was added - the panel's fixed
+physical (width, height), always at rotation 0, used exclusively for
+`PanelDriver` construction from now on. `Render` now draws onto the
+*logical* (reading-orientation) canvas exactly as before, then applies a
+new `rotateImage` transform onto the panel's native canvas before
+packing - a real geometric rotation (0: identity; 180: point-symmetric
+flip; 90/270: transpose), verified by exact single-pixel-marker
+relocation tests, not merely a dimension or byte-length check. See
+`epaper_main/render.go`'s `Render`/`rotateImage` and
+`epaper.NativeDimensions` doc comments for the full technical account,
+and `epaper_main/render_rotation_test.go` for the regression coverage.
+
+**This fix has not yet been physically validated.** Automated tests
+prove the geometric transform is correct in isolation and that the
+overall pipeline is internally self-consistent, but only a real panel
+can confirm the corrected build visibly rotates as expected. Until that
+revalidation is recorded, treat every non-zero `EpaperRotation` value as
+unverified on real hardware - see "Hardware-validation checklist:
+Waveshare 4.2in V2" below.
+
 ### BUSY timeout and driver-error handling
 
 Every wait on the panel's `BUSY` line is bounded (`defaultBusyTimeout`, 10
@@ -353,7 +414,7 @@ value.
 |---|---|---|---|
 | `EpaperEnabled` | bool | `false` | Master enable. Safe to leave `false` indefinitely, including with the display physically connected. |
 | `EpaperPanel` | string | `waveshare-3.7in` | Panel model identifier: `waveshare-3.7in` or `waveshare-4.2in-v2`. Empty string means the default (`waveshare-3.7in`), preserving every installation's behavior from before the second panel was added. Selectable via the dashboard's "Panel model" dropdown. |
-| `EpaperRotation` | number | `0` | Degrees clockwise: 0, 90, 180, or 270. |
+| `EpaperRotation` | number | `0` | Degrees clockwise: 0, 90, 180, or 270. See "Display rotation (EpaperRotation)" below - non-zero values await physical revalidation of a recent fix; do not rely on them in production/flight until that is recorded. |
 | `EpaperRefreshIntervalSeconds` | number | `15` | Minimum seconds between refreshes (floor: 5). |
 | `EpaperFullRefreshEvery` | number | `20` | Partial refreshes between forced full refreshes (max: 200). |
 | `EpaperPage` | string | `overview` | Which status page is shown - see the content table above. |
@@ -586,12 +647,23 @@ calibration, or configuration.
   reboot, and an explicit disable/re-enable cycle all completed
   successfully with zero refresh failures and zero `BUSY` timeouts, and
   with no observed disturbance to AHRS/GPS/1090ES/978/fan/baro. Two
-  secondary items remain unconfirmed and are not yet demonstrated: an
-  explicit non-zero rotation setting, and an `epaperd` process-level
+  secondary items remain unconfirmed and are not yet demonstrated: the
+  VCC/GND-before-signals connection order, and an `epaperd` process-level
   `systemctl restart` specifically (as distinct from the settings-driven
   disable/re-enable cycle, which *was* tested and confirmed safe). See
   "Hardware-validation checklist: Waveshare 4.2in V2" above for the exact,
   itemized status.
+- **Non-zero `EpaperRotation` (90/180/270) is FAILED/PENDING
+  REVALIDATION, not merely untested** - physical hardware testing found
+  that a 180-degree rotation setting was accepted, persisted, and
+  correctly triggered a re-initialization and refresh, but the displayed
+  content did not visibly rotate. Root-caused (no rotation/transform
+  logic existed anywhere in the render pipeline) and fixed in source,
+  with new deterministic pixel-relocation regression tests, but **not yet
+  physically revalidated on real hardware**. See "Display rotation
+  (EpaperRotation)" above for the full account. Do not rely on any
+  non-zero rotation value in a production/flight context until physical
+  revalidation is complete and recorded.
 - The 4.2in V2 panel's own 4-gray capability is not used by this driver,
   matching the 3.7in panel's own "1-bit mode only" design - this project
   has no grayscale rendering anywhere in its content model.
@@ -704,8 +776,19 @@ Phase D - functional test:
 - [x] Overview page legible, correctly oriented, no clipping - confirmed
       readable Stratux host/details text after the first refresh, with no
       reported clipping or orientation defect
-- [ ] Rotation setting(s) checked - no non-zero `EpaperRotation` value was
-      tested; the panel was validated at its default (0) orientation only
+- [ ] **FAILED/PENDING REVALIDATION** - Rotation setting(s) checked:
+      physical testing set `EpaperRotation: 180`; the setting was
+      accepted, persisted, and correctly triggered a re-initialization
+      and refresh (`fullRefreshCount`/`partialRefreshCount` both
+      advanced, zero errors), but the displayed content did not visibly
+      rotate. Root-caused and a source fix implemented and covered by
+      new deterministic regression tests - see "Display rotation
+      (EpaperRotation)" above for the full account. **This checkbox may
+      not be marked passed based on automated tests alone.** It remains
+      FAILED/PENDING REVALIDATION until the owner physically deploys the
+      corrected build and confirms visible 180-degree rotation on the
+      Waveshare 4.2in V2 panel; 90/270 remain additionally untested on
+      any real hardware, before or after this fix.
 - [x] Refresh interval and full/partial refresh behavior checked -
       `partialRefreshCount` advanced cleanly across repeated cycles
       (1 -> 5 -> 7) with `fullRefreshCount` staying at 1 as expected
@@ -739,15 +822,16 @@ Phase E - failure/recovery:
       `ES_Degraded: false`, GPS 3D fix with 18 satellites locked, IMU and
       BMP connected, CPU temperature in a normal ~53-57C range
 
-**Remaining open items (not yet demonstrated, not silently waived):**
-confirming the specific VCC/GND-before-signal-lines connection order,
-testing a non-zero `EpaperRotation` value, and exercising an explicit
-`systemctl restart stratux_epaper` process-level restart specifically
-(as opposed to the settings-driven disable/re-enable cycle, which *was*
-tested). None of these three items has produced, or is expected to
-produce, a different result than what has already been observed, but
-none has been directly demonstrated either, and this checklist does not
-check a box without a specific reported observation behind it. This
-assessment - that core functionality is validated and only these three
-secondary items remain open - is for the owner to weigh in the merge
-decision; it is not itself a recommendation to merge.
+**Checklist accounting as of this reconciliation: 18 PASSED, 1 FAILED
+(non-zero rotation - root-caused, fixed in source, pending physical
+revalidation), 2 OPEN** (the specific VCC/GND-before-signal-lines
+connection order, and an explicit `systemctl restart stratux_epaper`
+process-level restart specifically, as opposed to the settings-driven
+disable/re-enable cycle, which *was* tested). The rotation item is not
+merely untested - it is a confirmed physical failure of the pre-fix
+build, distinct in kind from the two still-open items, neither of which
+has produced or is expected to produce a different result than already
+observed. None of these three items may be marked passed on the basis of
+automated tests alone; each requires a specific, directly reported
+physical observation. This assessment is for the owner to weigh in the
+merge decision; it is not itself a recommendation to merge.

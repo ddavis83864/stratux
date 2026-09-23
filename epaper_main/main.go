@@ -80,7 +80,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 		if driver != nil {
 			lines := append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine})
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
-			bmp := Render(lines, w, h)
+			bmp := Render(lines, w, h, cfg.Rotation)
 			_ = driver.Update(context.Background(), bmp, true)
 			_ = driver.Sleep()
 		}
@@ -125,8 +125,19 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 				writeHealth(health)
 				continue
 			}
+			// The driver is always constructed with the panel's fixed
+			// native dimensions (NativeDimensions), never the rotation-
+			// swapped logical ones (Dimensions) - a controller's RAM-
+			// window addressing (and, for the 3.7in panel, its Driver
+			// Output Control gate count) is a fixed property of the
+			// physical silicon that EpaperRotation must never reprogram.
+			// See epaper.NativeDimensions's own doc comment for the real
+			// hardware-validation finding this corrects. Content-level
+			// rotation is applied separately, in Render below, using the
+			// logical (w, h) dimensions for drawing.
+			nativeW, nativeH := epaper.NativeDimensions(cfg.Panel)
+			driver = newPanelDriver(cfg.Panel, bus, nativeW, nativeH)
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
-			driver = newPanelDriver(cfg.Panel, bus, w, h)
 			if err := driver.Init(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
 				writeHealth(health)
@@ -148,7 +159,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 				continue
 			}
 			startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
-			_ = driver.Update(ctx, Render(startupLines, w, h), true)
+			_ = driver.Update(ctx, Render(startupLines, w, h, cfg.Rotation), true)
 		}
 
 		health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
@@ -230,7 +241,7 @@ func refreshOnce(ctx context.Context, driver PanelDriver, src *StatusSource, cfg
 	if kind == epaper.RefreshFull {
 		lines = append(lines, epaper.Line{Text: epaper.DisclaimerLine})
 	}
-	bmp := Render(lines, w, hgt)
+	bmp := Render(lines, w, hgt, cfg.Rotation)
 
 	if err := driver.Update(ctx, bmp, kind == epaper.RefreshFull); err != nil {
 		cat := epaper.ErrorSPIWrite

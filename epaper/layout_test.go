@@ -27,6 +27,33 @@ func TestDimensions_RotationBounds(t *testing.T) {
 	}
 }
 
+// TestNativeDimensions_NeverSwapsRegardlessOfRotation is a direct
+// regression test for a real hardware-validation finding: a PanelDriver
+// must always be constructed with the panel's fixed native dimensions,
+// never Dimensions's rotation-swapped ones - feeding a swapped
+// width/height into a driver's own RAM-window/gate-count programming
+// would misconfigure the physical controller, since those are fixed
+// properties of the silicon, not something a software rotation setting
+// can reprogram. NativeDimensions takes no rotation parameter at all
+// (by design, so it cannot be misused the way the pre-fix code misused
+// Dimensions for driver construction).
+func TestNativeDimensions_NeverSwapsRegardlessOfRotation(t *testing.T) {
+	cases := []struct {
+		panel string
+		w, h  int
+	}{
+		{PanelWaveshare37, PanelWidth, PanelHeight},
+		{PanelWaveshare42V2, Panel42V2Width, Panel42V2Height},
+		{"some-future-panel", PanelWidth, PanelHeight}, // unrecognized falls back to 3.7in
+	}
+	for _, c := range cases {
+		w, h := NativeDimensions(c.panel)
+		if w != c.w || h != c.h {
+			t.Errorf("NativeDimensions(%q) = (%d,%d), want (%d,%d)", c.panel, w, h, c.w, c.h)
+		}
+	}
+}
+
 // TestDimensions_UnrecognizedPanelFallsBackTo37in mirrors Normalize's own
 // "empty/unrecognized falls back to the shipped default" convention -
 // Dimensions must never panic or silently return zero for an unexpected

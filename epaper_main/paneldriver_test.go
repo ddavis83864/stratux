@@ -26,7 +26,12 @@ func TestNewPanelDriver_SelectsCorrectConcreteType(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w, h := epaper.Dimensions(c.panel, 0)
+			// A PanelDriver must always be constructed with the panel's
+			// fixed native dimensions (NativeDimensions), never the
+			// rotation-swapped ones (Dimensions) - see NativeDimensions's
+			// own doc comment for the real hardware-validation finding
+			// this reflects.
+			w, h := epaper.NativeDimensions(c.panel)
 			drv := newPanelDriver(c.panel, bus, w, h)
 
 			switch c.panel {

@@ -25,7 +25,7 @@ func TestRender_OutputSizeMatchesStrideForBothPanels(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			lines := []epaper.Line{{Text: "test line"}}
-			got := Render(lines, c.width, c.height)
+			got := Render(lines, c.width, c.height, 0)
 			want := ((c.width + 7) / 8) * c.height
 			if len(got) != want {
 				t.Errorf("Render(%dx%d) produced %d bytes, want %d (stride %d x height %d)", c.width, c.height, len(got), want, (c.width+7)/8, c.height)
@@ -52,7 +52,7 @@ func TestRender_NeverPanicsOnRealOverviewPageContentForBothPanels(t *testing.T) 
 			lines := epaper.Layout(content, epaper.Config{Panel: panel, Page: epaper.PageOverview}, false)
 			lines = append(lines, epaper.Line{Text: epaper.DisclaimerLine})
 
-			got := Render(lines, w, h)
+			got := Render(lines, w, h, 0)
 			want := ((w + 7) / 8) * h
 			if len(got) != want {
 				t.Errorf("Render produced %d bytes for panel %q, want %d", len(got), panel, want)
@@ -73,7 +73,7 @@ func TestRender_NeverDrawsPastPanelBounds(t *testing.T) {
 		many = append(many, epaper.Line{Text: "line"})
 	}
 	const w, h = 400, 300
-	got := Render(many, w, h)
+	got := Render(many, w, h, 0)
 	want := ((w + 7) / 8) * h
 	if len(got) != want {
 		t.Fatalf("Render with 500 lines produced %d bytes, want exactly %d (must never grow past the panel's own bounds)", len(got), want)
@@ -86,7 +86,7 @@ func TestRender_NeverDrawsPastPanelBounds(t *testing.T) {
 // stride must round up, never truncate or misalign subsequent rows.
 func TestRender_OddWidthPadsStrideToWholeBytes(t *testing.T) {
 	const w, h = 401, 10 // 401 is not divisible by 8
-	got := Render(nil, w, h)
+	got := Render(nil, w, h, 0)
 	wantStride := 51 // ceil(401/8)
 	want := wantStride * h
 	if len(got) != want {
@@ -100,7 +100,7 @@ func TestRender_OddWidthPadsStrideToWholeBytes(t *testing.T) {
 // convention) - an all-white canvas (no lines drawn) must pack to all
 // 0xFF bytes.
 func TestPackMonochrome_WhiteIsBitSetBlackIsBitClear(t *testing.T) {
-	got := Render(nil, 16, 2) // no lines drawn -> fully white canvas
+	got := Render(nil, 16, 2, 0) // no lines drawn -> fully white canvas
 	for i, b := range got {
 		if b != 0xFF {
 			t.Errorf("byte[%d] = 0x%02X, want 0xFF (fully white canvas, no lines drawn)", i, b)

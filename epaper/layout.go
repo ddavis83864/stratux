@@ -55,11 +55,38 @@ func panelDimensions(panel string) (width, height int) {
 	return PanelWidth, PanelHeight
 }
 
-// Dimensions returns the effective (width, height) for the named panel
-// at rotation degrees (0/90/180/270) - 90 and 270 swap width/height.
-// Rotation 0 is each panel's own native, physical orientation; this
-// project's own dashboard/settings default to rotation 0, so that is
-// the orientation validated first on real hardware for each panel.
+// NativeDimensions returns the named panel's real, physically-fixed
+// (width, height) - always at rotation 0, regardless of the configured
+// EpaperRotation. This is the only dimension pair that may ever be fed
+// into a PanelDriver's own construction (WidthPx/HeightPx): a
+// controller's RAM-window addressing and, for the 3.7in panel, its
+// Driver Output Control gate count, are fixed properties of the
+// physical silicon - see driver.go's and driver_4in2v2.go's own
+// setRAMWindow doc comments - not something a software rotation setting
+// can or should reprogram. A real hardware-validation finding: an
+// earlier version of this feature fed Dimensions' already rotation-
+// swapped (width, height) directly into the driver constructor, which
+// would have misprogrammed the 3.7in panel's fixed 479-gate Driver
+// Output Control command at EpaperRotation 90/270, and additionally
+// never actually rotated the rendered content at any rotation - see
+// epaper_main/render.go's Render for where content rotation is now
+// actually applied, onto this function's own native canvas, after
+// drawing at Dimensions' logical (reading-orientation) canvas size.
+func NativeDimensions(panel string) (width, height int) {
+	return panelDimensions(panel)
+}
+
+// Dimensions returns the *logical*, reading-orientation (width, height)
+// for the named panel at rotation degrees (0/90/180/270) - 90 and 270
+// swap width/height, since the content is drawn as the viewer will read
+// it once the configured rotation is applied, not as the panel's own
+// physically-fixed RAM is addressed. Use this for render/layout sizing
+// (epaper_main/render.go's Render, epaper.Layout's header-width check);
+// use NativeDimensions above, never this function, for constructing a
+// PanelDriver. Rotation 0 is each panel's own native, physical
+// orientation; this project's own dashboard/settings default to
+// rotation 0, so that is the orientation validated first on real
+// hardware for each panel.
 func Dimensions(panel string, rotation int) (width, height int) {
 	w, h := panelDimensions(panel)
 	if rotation == 90 || rotation == 270 {
