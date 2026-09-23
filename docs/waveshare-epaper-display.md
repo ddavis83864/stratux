@@ -12,6 +12,16 @@
 > GPIO fault in this feature can never affect any other Stratux function -
 > see "Architecture: fault isolation" below.**
 
+> **Two panels are supported: the Waveshare 3.7" panel (`waveshare-3.7in`)
+> and the Waveshare 4.2" e-Paper Module V2 (`waveshare-4.2in-v2`). The
+> 3.7" panel's software has been hardware-validated on the production
+> Raspberry Pi 4B. The 4.2" V2 panel's software is complete and tested in
+> isolation (no physical hardware, GPIO, or SPI controller required for
+> its own test suite), but has NOT yet been physically hardware-validated
+> - see "Hardware-validation checklist: Waveshare 4.2in V2" below. Do not
+> rely on the 4.2" V2 panel in a production/flight context until that
+> validation has been performed and its result documented.**
+
 ## Why this exists
 
 The Stratux dashboard requires a phone, tablet, or laptop connected over
@@ -66,6 +76,33 @@ dashboard and HTTP API.
   physical-wiring gate (see "Installation procedure" below) before power is
   ever applied.
 
+### Hardware: Waveshare 4.2" e-Paper Module V2
+
+- **Panel**: Waveshare 4.2" e-Paper Module, PCB revision **Rev2.2**,
+  400×300 pixels native (landscape; rotation 0 in this feature's own
+  settings), driven by the "V2" controller generation - the same one
+  Waveshare's own reference driver
+  (`RaspberryPi_JetsonNano/python/lib/waveshare_epd/epd4in2_V2.py`)
+  targets. Unlike the 3.7" panel above, the 400-pixel axis genuinely is
+  this controller's own byte-addressed RAM direction (X) - confirmed
+  directly against the vendor's own `init()`, not assumed. Black/white
+  only in this driver (this panel also has a 4-gray capability the
+  vendor's reference exposes via a separate `Init_4Gray()`/`Lut()` path;
+  this driver deliberately does not use it, matching the existing 3.7"
+  driver's own "1-bit mode only" design).
+- **Interface**: 8-pin SPI - `VCC GND DIN CLK CS DC RST BUSY`. No `PWR`
+  pin - this panel's VCC is always-on; there is nothing for this driver
+  to power-enable or power-down beyond the controller's own deep-sleep
+  command.
+- **Harness**: this panel's own discrete wiring harness only - like the
+  3.7" panel above, **never** mount it directly on the Raspberry Pi's
+  40-pin GPIO header, which the AHRS board already occupies (and covers
+  physical pins 1 and 6 outright).
+- **Operating voltage**: **3.3V**. Treated identically to the 3.7" panel
+  above - never assert 5V on any signal.
+- **No panel-specific driver-board switches** to set, unlike the 3.7"
+  panel's Driver HAT.
+
 ## GPIO ownership audit
 
 Before any wiring is proposed, every GPIO this project's own software or
@@ -99,6 +136,27 @@ GPIO, any duplicate assignment, and any non-positive pin number - so a
 future configuration change cannot silently reintroduce a conflict this
 audit already ruled out. See `epaper/gpio_test.go` for the exercised
 cases.
+
+### GPIO plan: Waveshare 4.2in V2
+
+This audit did not need to be redone from scratch for the second panel.
+The 4.2" V2 panel deliberately **reuses the exact same DC=GPIO25/
+BUSY=GPIO24/RST=GPIO27 pins** already proven conflict-free above for the
+3.7" panel, and the same fixed SPI0 MOSI/SCLK/CE0 pins for DIN/CLK/CS.
+This is safe because only one panel is ever electrically active at a
+time - the `EpaperPanel` setting selects exactly one - so there is no
+scenario where both panels' control lines are driven simultaneously.
+`GPIOMapping.Validate()` itself has no panel-specific logic at all; the
+same validated mapping and the same `DefaultGPIOMapping()` serve both
+panels. The one candidate pin explicitly considered and rejected for
+this panel was **GPIO17 / physical pin 11** (used in this panel's own
+Pi 3B+ bench-test wiring, without an AHRS board present) - unusable on
+the production Raspberry Pi 4B because it falls inside physical pins
+1-12, which the AHRS board physically covers outright, independent of
+GPIO17's own logical/electrical availability. This panel has no `PWR`
+line, so GPIO22 (used for the 3.7" panel's own PWR line) is simply
+unused when this panel is selected - not reserved, not repurposed, just
+not wired.
 
 ## Final wiring table
 
@@ -138,6 +196,26 @@ the same `Validate()` conflict check.
   pin 23 (GPIO11) ---- Yellow----> CLK   (SPI0 SCLK)
   pin 24 (GPIO8)  ---- Orange----> CS    (SPI0 CE0)
 ```
+
+### Final wiring table: Waveshare 4.2in V2
+
+**Not yet physically hardware-validated** - see "Hardware-validation
+checklist: Waveshare 4.2in V2" below.
+
+| Signal | Physical pin | BCM / function |
+|---|---|---|
+| VCC | 17 | 3.3V (never 5V) |
+| GND | 20 | Ground |
+| DIN | 19 | GPIO10 / SPI0 MOSI (hardware SPI, fixed) |
+| CLK | 23 | GPIO11 / SPI0 SCLK (hardware SPI, fixed) |
+| CS | 24 | GPIO8 / SPI0 CE0 (hardware SPI, fixed) |
+| DC | 22 | GPIO25 (plain GPIO, configurable) |
+| RST | 13 | GPIO27 (plain GPIO, configurable) |
+| BUSY | 18 | GPIO24 (plain GPIO, configurable) |
+
+No `PWR` row - this panel has no power-enable line; VCC is always-on.
+Every physical pin above is identical to the 3.7" panel's own table -
+see "GPIO plan: Waveshare 4.2in V2" above for why reusing them is safe.
 
 ## Architecture: fault isolation
 
@@ -262,7 +340,7 @@ value.
 | Setting | Type | Default | Meaning |
 |---|---|---|---|
 | `EpaperEnabled` | bool | `false` | Master enable. Safe to leave `false` indefinitely, including with the display physically connected. |
-| `EpaperPanel` | string | `waveshare-3.7in` | Panel model identifier. Only this one is supported today. |
+| `EpaperPanel` | string | `waveshare-3.7in` | Panel model identifier: `waveshare-3.7in` or `waveshare-4.2in-v2`. Empty string means the default (`waveshare-3.7in`), preserving every installation's behavior from before the second panel was added. Selectable via the dashboard's "Panel model" dropdown. |
 | `EpaperRotation` | number | `0` | Degrees clockwise: 0, 90, 180, or 270. |
 | `EpaperRefreshIntervalSeconds` | number | `15` | Minimum seconds between refreshes (floor: 5). |
 | `EpaperFullRefreshEvery` | number | `20` | Partial refreshes between forced full refreshes (max: 200). |
@@ -339,18 +417,21 @@ authorized physical wiring.** A pin being physically accessible does not
 prove it is logically free, and this document's own audit is only as good
 as the hardware it was checked against - confirm the target unit still
 matches this document's stated hardware (RPi 4B + Stratux AHRS v2.0 board)
-before proceeding.
+before proceeding. This procedure applies to either supported panel -
+follow whichever panel's own wiring table above matches the hardware
+actually being installed, and skip step 2 (switches) entirely for the
+4.2" V2 panel, which has none.
 
 1. **Power down completely.** Confirm fans have stopped, LEDs are off,
    Wi-Fi ("Stratux" AP) is gone from nearby device lists, and power is
    physically disconnected - not merely `shutdown`, but power removed.
-2. **Confirm switch positions** on the Driver HAT against this document's
-   photographically-confirmed labels: Display Config = A (3R), Interface
-   Config = 0 (4-line SPI).
-3. **Connect one wire at a time**, checking each against the final wiring
-   table above before moving to the next. Check for reversed connectors,
-   loose contacts, and exposed conductors. Never move a wire while
-   powered.
+2. **Confirm switch positions** (3.7" panel only) on the Driver HAT
+   against this document's photographically-confirmed labels: Display
+   Config = A (3R), Interface Config = 0 (4-line SPI).
+3. **Connect one wire at a time**, checking each against the correct
+   panel's own final wiring table above before moving to the next. Check
+   for reversed connectors, loose contacts, and exposed conductors. Never
+   move a wire while powered.
 4. **Reconcile against a photograph** of the completed harness before
    applying power, comparing every wire's physical-pin position against
    the table above.
@@ -364,9 +445,10 @@ before proceeding.
    - see "Startup and shutdown behavior" below): `systemctl status
    stratux_epaper` should show `active (running)`. No manual `systemctl
    enable` step is needed or expected.
-7. **Enable the feature** in Settings or on the E-Paper Display dashboard
-   page, and confirm one controlled full refresh: correct orientation,
-   legible contrast, no clipping, no unexpected ghosting.
+7. **Select the correct panel model** (dashboard's "Panel model"
+   dropdown, or `EpaperPanel`) matching the hardware just wired, **then**
+   enable the feature, and confirm one controlled full refresh: correct
+   orientation, legible contrast, no clipping, no unexpected ghosting.
 8. **Confirm no disturbance** to any other subsystem: radio reception,
    AHRS attitude, fan operation, GPS fix, GDL90/ForeFlight connectivity,
    and audio alerts all continue exactly as before.
@@ -422,6 +504,7 @@ attention-worthy, never as if it were a core radio/AHRS/GPS failure.
 | Dashboard shows `DEGRADED`, an error category | A transient SPI/GPIO issue, or a genuine wiring fault | Note the exact `LastErrorCategory`; power down and re-check the connection named by the affected signal in the wiring table |
 | Panel shows stale data | The main daemon's HTTP APIs are slow or unreachable | Check the main daemon's own health first - this is a symptom, not a separate fault |
 | Panel ghosting is excessive | `EpaperFullRefreshEvery` set too high | Lower it (dashboard Settings panel) |
+| Dashboard shows `DEGRADED`, panel not detected, but wiring looks correct | Wrong `EpaperPanel` selected for the hardware actually wired | Confirm the "Panel model" dropdown matches the panel physically connected - the two panels' driver protocols are not interchangeable |
 
 ## Recovery and rollback
 
@@ -456,6 +539,13 @@ calibration, or configuration.
 - GPIO pin mapping is not dashboard-configurable in this release - only
   the shipped default mapping (validated by this document's own audit) is
   used; changing it requires a code change to `epaper.Config.GPIO`.
+- **Waveshare 4.2in V2 panel: software-complete and tested in isolation,
+  but not yet physically hardware-validated** - see "Hardware-validation
+  checklist: Waveshare 4.2in V2" above. Do not rely on this panel in a
+  production/flight context until that validation has been performed.
+- The 4.2in V2 panel's own 4-gray capability is not used by this driver,
+  matching the 3.7in panel's own "1-bit mode only" design - this project
+  has no grayscale rendering anywhere in its content model.
 
 ## Aviation disclaimer
 
@@ -467,33 +557,99 @@ application, or pilot procedure. Its absence, failure, or disconnection
 has no effect on Stratux's core ADS-B reception, GDL90 output, AHRS, GPS,
 or alerting functions.**
 
-## Hardware-validation checklist (for the physical-wiring and smoke-test
-gates)
+## Hardware-validation checklist: Waveshare 3.7in (for the physical-wiring
+and smoke-test gates)
 
 This checklist exists for the phases of this feature's own validation plan
 that require physical hardware and explicit owner authorization - it is
 not itself an authorization, and none of its steps should be performed
 until the owner has explicitly approved physical wiring.
 
-- [ ] Confirmed target hardware still matches this document (RPi 4B +
+- [x] Confirmed target hardware still matches this document (RPi 4B +
       Stratux AHRS v2.0 board)
-- [ ] Confirmed bench-only setup, grounded, known-good recovery image
+- [x] Confirmed bench-only setup, grounded, known-good recovery image
       available
-- [ ] Confirmed power fully removed before any wiring change
-- [ ] Confirmed Driver HAT switch positions against this document
-- [ ] Confirmed every wire against the final wiring table, one at a time
-- [ ] Confirmed no reversed connectors, loose contacts, or exposed
+- [x] Confirmed power fully removed before any wiring change
+- [x] Confirmed Driver HAT switch positions against this document
+- [x] Confirmed every wire against the final wiring table, one at a time
+- [x] Confirmed no reversed connectors, loose contacts, or exposed
       conductors
-- [ ] Booted with the feature disabled first; confirmed normal boot
+- [x] Booted with the feature disabled first; confirmed normal boot
       (no undervoltage/throttling/failed units/abnormal temperature)
-- [ ] Confirmed AHRS/baro/fan/GPS/978/1090/GDL90 all functioning
+- [x] Confirmed AHRS/baro/fan/GPS/978/1090/GDL90 all functioning
       normally *before* enabling the display
-- [ ] Enabled the display; confirmed one controlled full refresh
+- [x] Enabled the display; confirmed one controlled full refresh
       (orientation, contrast, no clipping, no unexpected ghosting)
-- [ ] Confirmed no disturbance to any other subsystem after enabling
+- [x] Confirmed no disturbance to any other subsystem after enabling
 - [ ] Ran the full hardware regression campaign (reboots, shutdown/
       restore, service restart, missing-display recovery, ≥30-minute
       stability window, portrait/landscape on the existing dashboard,
       GDL90/GPS/978/1090/AHRS/baro/fan/alerts/AFR/power/storage
       continuity) with before/after counts recorded
 - [ ] Restored the final intended configuration and recorded the result
+
+Status as of this panel's most recent bench session: the panel produces
+real, correct, confirmed-flickering full refreshes, but shows old and new
+content superimposed in roughly its top fifth (the remainder renders and
+stays correctly blank), reproducible and unaffected by a power-off rest,
+repeated full refreshes, or an explicit from-scratch clear cycle. Every
+protocol/timing/calibration value has been confirmed correct against the
+vendor's own reference and this specific panel's own printed VCOM spec.
+The most likely remaining explanation is a physical defect specific to
+this bench unit - not proven without a second, known-good panel for
+direct comparison. See PR #30's own history for the full investigation.
+
+## Hardware-validation checklist: Waveshare 4.2in V2 (for the
+physical-wiring and smoke-test gates)
+
+**Software-only status as of this checklist**: the 4.2in V2 driver builds,
+passes its own full automated test suite (no physical hardware, GPIO, or
+SPI controller required - see `epaper_main/driver_4in2v2_test.go`), and
+cross-compiles for the Raspberry Pi production target. **None of the
+items below have been performed.** This checklist exists so the owner can
+execute the mandatory physical-validation gate directly - do not perform
+any step until the owner has explicitly approved physical wiring, and
+never as a substitute for actually performing it. See "Hardware
+validation" in the pull request itself for the phase-by-phase procedure
+this checklist summarizes.
+
+Phase A - pre-connection:
+- [ ] Confirmed target hardware still matches this document (RPi 4B +
+      Stratux AHRS v2.0 board)
+- [ ] Stratux shut down cleanly, power removed
+- [ ] Confirmed the proposed wiring against the 4.2in V2 final wiring
+      table above, signal by signal, physical pin AND BCM GPIO for each
+- [ ] Confirmed AHRS remains correctly installed and undisturbed
+- [ ] Confirmed no physical pin conflict (avoids physical pins 1-12)
+- [ ] Confirmed VCC/GND before DIN/CLK/CS/DC/RST/BUSY
+
+Phase B - first power-up:
+- [ ] Booted with the display attached but the feature still disabled
+- [ ] Confirmed AHRS, fan, GPS, and ADS-B devices all functioning
+      normally *before* enabling the display
+- [ ] Inspected `epaperd`'s own status and logs for anything unexpected
+
+Phase C - display enablement:
+- [ ] Selected `waveshare-4.2in-v2` explicitly (not left on the default)
+- [ ] Enabled the display
+- [ ] Observed initialization; confirmed `panelDetected: true`
+- [ ] Confirmed one successful first refresh
+
+Phase D - functional test:
+- [ ] Overview page legible, correctly oriented, no clipping
+- [ ] Rotation setting(s) checked
+- [ ] Refresh interval and full/partial refresh behavior checked
+- [ ] Multiple refresh cycles stable
+- [ ] `epaperd` restart recovers cleanly
+- [ ] Full Stratux reboot: display resumes correctly afterward
+
+Phase E - failure/recovery:
+- [ ] Controlled display disable/re-enable behaves safely
+- [ ] `epaperd` restart never affects any other Stratux function
+- [ ] No regression to AHRS/fan/GPS/ADS-B/core Stratux functionality at
+      any point above
+
+**Until every item above is checked by the owner, performed on the actual
+production hardware, this panel's software readiness must not be
+represented as hardware-validated, and the pull request adding it must
+stay in draft.**
