@@ -33,6 +33,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -45,7 +46,21 @@ func main() {
 	baseURL := flag.String("baseurl", "http://127.0.0.1", "base URL of the main Stratux daemon's HTTP API")
 	pollInterval := flag.Duration("poll", 5*time.Second, "how often to sample status and consider a refresh")
 	settingsInterval := flag.Duration("settings-poll", 15*time.Second, "how often to re-check configuration")
+	splashOnce := flag.Bool("splash", false, "render the approved ARS splash once and exit (manual acceptance test; see docs/epaper-boot-splash.md)")
+	splashPanel := flag.String("splash-panel", epaper.PanelWaveshare42V2, "with -splash: panel model")
+	splashRotation := flag.Int("splash-rotation", 0, "with -splash: content rotation in degrees (0 or 180)")
+	splashForce := flag.Bool("splash-force", false, "with -splash: skip the check that the epaperd service is not running")
+	splashBoot := flag.Bool("splash-boot", false, "boot mode: render the ARS splash once if EpaperEnabled in the config file says so, then exit (run by stratux_epaper_splash.service)")
+	bootConfig := flag.String("splash-config", defaultBootConfigPath, "with -splash-boot: stratux.conf to read EpaperEnabled/EpaperPanel/EpaperRotation from")
 	flag.Parse()
+
+	if *splashBoot {
+		os.Exit(runSplashBootCommand(*bootConfig))
+	}
+
+	if *splashOnce {
+		os.Exit(runSplashCommand(*splashPanel, *splashRotation, *splashForce))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -570,6 +570,13 @@ understood.
 
 ## Startup and shutdown behavior
 
+> **Boot splash (4.2" V2 only, `EpaperEnabled` true).** At boot a separate
+> once-per-boot unit, `stratux_epaper_splash.service`, shows the ARS logo
+> and exits *before* this service starts (`Before=`, oneshot); a failed
+> splash cannot prevent this service from starting, and a hung one can
+> delay it by at most 60 s (the unit's `TimeoutStartSec`). See
+> [epaper-boot-splash.md](epaper-boot-splash.md).
+
 - On `epaperd`'s own startup, before the first real content sample
   completes, the panel shows a fixed "Starting..." screen
   (`epaper.StartupLines`) - it is never left blank during startup.

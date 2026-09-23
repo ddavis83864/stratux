@@ -38,6 +38,19 @@ fancontrol: fancontrol_main/*.go common/*.go
 epaperd: epaper_main/*.go epaper/*.go common/*.go
 	go build $(BUILDINFO) -o epaperd -p 4 ./epaper_main/
 
+# Regenerate / verify the production e-paper splash bitmap from the
+# owner-approved artwork. Pure Go, deterministic, host-independent - see
+# docs/epaper-boot-splash.md. `make epaper-splash` rewrites
+# epaper/splash/assets/{ars-splash-400x300.bin,*.preview.png,CHECKSUMS.sha256};
+# `make epaper-splash-check` writes nothing and fails if they are stale.
+epaper-splash:
+	go run ./epaper/splash/cmd/splashgen
+
+epaper-splash-check:
+	go run ./epaper/splash/cmd/splashgen -check
+
+.PHONY: epaper-splash epaper-splash-check
+
 xdump1090:
 	cd dump1090 && make BLADERF=no
 
@@ -161,6 +174,8 @@ dpkg: all prep_dpkg wwwdpkg ogn/ddb.json optinstall_dpkg
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_fancontrol.service
 	cp debian/stratux_epaper.service $(DEBPKG_BASE)/lib/systemd/system
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_epaper.service
+	cp debian/stratux_epaper_splash.service $(DEBPKG_BASE)/lib/systemd/system
+	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_epaper_splash.service
 	#ln -s $(DEBPKG_BASE)/lib/systemd/system/stratux.service $(DEBPKG_BASE)/etc/systemd/system/multi-user.target.wants/stratux.service
 	# Set up the versioning inside of the dpkg system. This puts the version number inside of the config file
 	sed -i 's/VERSION/$(VERSIONSTR)/g' $(DEBPKG_BASE)/DEBIAN/control
