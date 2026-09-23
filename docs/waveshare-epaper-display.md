@@ -16,19 +16,19 @@
 > and the Waveshare 4.2" e-Paper Module V2 (`waveshare-4.2in-v2`). Both
 > panels' core software (content, initialization, full/partial refresh,
 > reboot persistence, disable/re-enable recovery) has been hardware-
-> validated on the production Raspberry Pi 4B. **`EpaperRotation` at any
-> non-zero value (90/180/270) was found, by physical hardware testing, to
-> not actually rotate the displayed content** - see "Real hardware-
-> validation finding: non-zero EpaperRotation did not rotate the display"
-> below for the full account. A source fix has been implemented and
-> covered by new deterministic regression tests, but **physical
-> revalidation of the corrected build on real hardware has not yet
-> occurred** - do not rely on any non-zero `EpaperRotation` value in a
-> production/flight context until that revalidation is complete and its
-> result is recorded here. The connection-order and `systemctl restart`
-> checklist items remain separately open and unrelated to this defect -
-> see "Hardware-validation checklist: Waveshare 4.2in V2" below for the
-> exact, itemized status of every item.**
+> validated on the production Raspberry Pi 4B. **A real hardware-
+> validation defect was found and fixed**: `EpaperRotation` at 180 degrees
+> did not actually rotate the displayed content in the original
+> implementation - root-caused, fixed in commit `c0dcd19c`, and the
+> corrected build has since been physically deployed and re-tested, with
+> the display now **confirmed to visibly rotate 180 degrees correctly**.
+> See "Display rotation (EpaperRotation)" below for the full defect/fix/
+> revalidation history. 90/270 remain software-tested only, with no
+> physical hardware evidence either way. As of this reconciliation, 21 of
+> 22 hardware-validation checklist lines have direct physical evidence;
+> one narrow, low-risk item remains open - see "Hardware-validation
+> checklist: Waveshare 4.2in V2" below for the exact, itemized status of
+> every item.**
 
 ## Why this exists
 
@@ -372,13 +372,25 @@ relocation tests, not merely a dimension or byte-length check. See
 `epaper.NativeDimensions` doc comments for the full technical account,
 and `epaper_main/render_rotation_test.go` for the regression coverage.
 
-**This fix has not yet been physically validated.** Automated tests
-prove the geometric transform is correct in isolation and that the
-overall pipeline is internally self-consistent, but only a real panel
-can confirm the corrected build visibly rotates as expected. Until that
-revalidation is recorded, treat every non-zero `EpaperRotation` value as
-unverified on real hardware - see "Hardware-validation checklist:
-Waveshare 4.2in V2" below.
+**Physical revalidation: PASSED.** The corrected build
+(`c0dcd19cdde390db7b8c640ef674608e64d5da34`) was deployed to the
+production Raspberry Pi 4B via the established `/updateUpload` OTA
+mechanism (artifact `stratux-2.0.0~rc2-arm64.deb`, SHA-256
+`f70cb6427acb6692917bb48ae644f9fbe6593d134d1616a25b01b7b0dbddffd4`,
+verified before upload). With a healthy baseline confirmed at
+`EpaperRotation: 0`, the owner set `EpaperRotation: 180` and **physically
+observed the entire displayed content visibly rotate 180 degrees
+correctly** - `state: RUNNING`, `panelDetected: true`,
+`fullRefreshCount: 2`, `partialRefreshCount: 3`,
+`consecutiveFailures: 0`, `busyTimeoutCount: 0`. `EpaperRotation` was
+then restored to `0` and confirmed via `/getSettings`. This resolves the
+defect described above end to end: reported, root-caused, fixed,
+covered by regression tests, deployed, and physically confirmed. Only 0
+and 180 degrees have physical hardware evidence - 90/270 remain
+software-tested only (see `epaper_main/render_rotation_test.go`), with
+no physical confirmation either way; do not treat 90/270 as hardware-
+validated on the strength of this finding. See "Hardware-validation
+checklist: Waveshare 4.2in V2" below for the full itemized status.
 
 ### BUSY timeout and driver-error handling
 
@@ -390,14 +402,17 @@ found) maps to its own bounded `epaper.ErrorCategory`; the panel's own
 reference-code-observed `BUSY` polarity (high-while-busy, the *opposite* of
 the Driver HAT's generic "low active" pin-description text - see
 `epaper_main/driver.go`'s `busyMeansBusy` doc comment) is followed. **For
-the Waveshare 4.2in V2 panel, this polarity is now physically confirmed
+the Waveshare 4.2in V2 panel, this polarity is physically confirmed
 correct**: `busyTimeoutCount` remained `0` throughout initialization, a
-full refresh, seven consecutive partial refreshes, a full Stratux reboot,
-and an explicit disable/re-enable cycle on the production Raspberry Pi
-4B (see "Hardware-validation checklist: Waveshare 4.2in V2" below for the
-full evidence). A wrong polarity would have produced either an immediate
-false-idle read (corrupting every RAM write) or a permanent `BUSY`
-timeout on every refresh attempt - neither was observed.
+full refresh, repeated partial refreshes, a full Stratux reboot, an
+explicit disable/re-enable cycle, the corrected 180-degree rotation
+test, an explicit `systemctl restart stratux_epaper` process restart,
+and a full power-off/reconnect/power-on cycle - all on the production
+Raspberry Pi 4B (see "Hardware-validation checklist: Waveshare 4.2in V2"
+below for the full evidence). A wrong polarity would have produced
+either an immediate false-idle read (corrupting every RAM write) or a
+permanent `BUSY` timeout on every refresh attempt - neither was observed
+across any of these cycles.
 
 ### Stale-data indication
 
@@ -414,7 +429,7 @@ value.
 |---|---|---|---|
 | `EpaperEnabled` | bool | `false` | Master enable. Safe to leave `false` indefinitely, including with the display physically connected. |
 | `EpaperPanel` | string | `waveshare-3.7in` | Panel model identifier: `waveshare-3.7in` or `waveshare-4.2in-v2`. Empty string means the default (`waveshare-3.7in`), preserving every installation's behavior from before the second panel was added. Selectable via the dashboard's "Panel model" dropdown. |
-| `EpaperRotation` | number | `0` | Degrees clockwise: 0, 90, 180, or 270. See "Display rotation (EpaperRotation)" below - non-zero values await physical revalidation of a recent fix; do not rely on them in production/flight until that is recorded. |
+| `EpaperRotation` | number | `0` | Degrees clockwise: 0, 90, 180, or 270. See "Display rotation (EpaperRotation)" below - 0 and 180 are physically validated (4.2in V2); 90/270 are software-tested only, with no physical hardware evidence. |
 | `EpaperRefreshIntervalSeconds` | number | `15` | Minimum seconds between refreshes (floor: 5). |
 | `EpaperFullRefreshEvery` | number | `20` | Partial refreshes between forced full refreshes (max: 200). |
 | `EpaperPage` | string | `overview` | Which status page is shown - see the content table above. |
@@ -629,10 +644,14 @@ calibration, or configuration.
   above for the full evidence. `EpaperPanel` is the only authoritative
   source of which panel is configured; always confirm it against the
   hardware actually wired.
-- The `BUSY` line polarity this driver follows is based on the panel's
-  documented reference-code behavior, not yet independently confirmed
-  against this exact physical unit - final confirmation is part of the
-  hardware smoke test, not yet performed as of this writing.
+- The `BUSY` line polarity the 3.7in driver follows is based on the
+  panel's documented reference-code behavior; independent physical
+  confirmation against that exact unit is part of its own still-pending
+  hardware regression campaign (see the 3.7in checklist below). **This
+  no longer applies to the 4.2in V2 panel** - its `BUSY` polarity is now
+  physically confirmed correct, including across the corrected rotation
+  fix, an explicit `systemctl restart`, and a full power cycle; see
+  "BUSY timeout and driver-error handling" above.
 - The Rev2.3-specific `PWR` pin's 3.3V logic-level convention is
   corroborated by two independent secondary sources, not yet a direct
   primary-source quote - flagged for the same hardware smoke test to
@@ -641,29 +660,34 @@ calibration, or configuration.
 - GPIO pin mapping is not dashboard-configurable in this release - only
   the shipped default mapping (validated by this document's own audit) is
   used; changing it requires a code change to `epaper.Config.GPIO`.
-- **Waveshare 4.2in V2 panel: core functionality is now physically
-  hardware-validated on the production Raspberry Pi 4B** - initialization,
-  a full refresh, seven consecutive partial refreshes, a full Stratux
-  reboot, and an explicit disable/re-enable cycle all completed
-  successfully with zero refresh failures and zero `BUSY` timeouts, and
-  with no observed disturbance to AHRS/GPS/1090ES/978/fan/baro. Two
-  secondary items remain unconfirmed and are not yet demonstrated: the
-  VCC/GND-before-signals connection order, and an `epaperd` process-level
-  `systemctl restart` specifically (as distinct from the settings-driven
-  disable/re-enable cycle, which *was* tested and confirmed safe). See
-  "Hardware-validation checklist: Waveshare 4.2in V2" above for the exact,
-  itemized status.
-- **Non-zero `EpaperRotation` (90/180/270) is FAILED/PENDING
-  REVALIDATION, not merely untested** - physical hardware testing found
-  that a 180-degree rotation setting was accepted, persisted, and
-  correctly triggered a re-initialization and refresh, but the displayed
-  content did not visibly rotate. Root-caused (no rotation/transform
-  logic existed anywhere in the render pipeline) and fixed in source,
-  with new deterministic pixel-relocation regression tests, but **not yet
-  physically revalidated on real hardware**. See "Display rotation
-  (EpaperRotation)" above for the full account. Do not rely on any
-  non-zero rotation value in a production/flight context until physical
-  revalidation is complete and recorded.
+- **Waveshare 4.2in V2 panel: 21 of 22 hardware-validation checklist
+  lines now have direct physical evidence on the production Raspberry Pi
+  4B** - initialization, full and repeated partial refreshes, a full
+  Stratux reboot, disable/re-enable recovery, an explicit `systemctl
+  restart stratux_epaper` process restart, a full power-off/reconnect/
+  power-on cycle following the documented connection order, and the
+  corrected 180-degree rotation fix, all completed successfully with
+  zero refresh failures and zero `BUSY` timeouts, and with no observed
+  disturbance to AHRS/GPS/1090ES/978/fan/baro. **One line remains open**:
+  confirming that an `epaperd` process restart specifically has no effect
+  on any *other* Stratux function - the restart itself was performed and
+  `epaperd` recovered cleanly, but no core-system field readout was
+  separately reported for that exact cycle. See "Hardware-validation
+  checklist: Waveshare 4.2in V2" above for the exact, itemized status and
+  why this is judged low-risk.
+- **Non-zero `EpaperRotation`: 180 degrees is now physically validated;
+  90/270 are not.** The *original* implementation FAILED physical
+  testing at 180 degrees - the setting was accepted and persisted, and
+  correctly triggered a refresh, but the content did not visibly rotate.
+  Root-caused (no rotation/transform logic existed anywhere in the
+  render pipeline) and fixed in commit `c0dcd19c`, with new deterministic
+  pixel-relocation regression tests. The *corrected* build was then
+  physically deployed and re-tested, and the display was **confirmed to
+  visibly rotate 180 degrees correctly**. See "Display rotation
+  (EpaperRotation)" above for the full defect/fix/revalidation history.
+  90 and 270 degrees remain software-tested only, with no physical
+  hardware evidence either way - do not rely on them in a production/
+  flight context.
 - The 4.2in V2 panel's own 4-gray capability is not used by this driver,
   matching the 3.7in panel's own "1-bit mode only" design - this project
   has no grayscale rendering anywhere in its content model.
@@ -744,10 +768,15 @@ Phase A - pre-connection:
 - [x] Confirmed AHRS remains correctly installed and undisturbed
 - [x] Confirmed no physical pin conflict (avoids physical pins 1-12) -
       every wired pin above is outside that range
-- [ ] Confirmed VCC/GND before DIN/CLK/CS/DC/RST/BUSY - the specific
-      *order* signals were connected in was not separately reported;
-      not marked complete on that basis alone, though the wiring has
-      since run for an extended period with zero electrical faults
+- [x] Confirmed VCC/GND before DIN/CLK/CS/DC/RST/BUSY - physically
+      re-validated under power-off conditions: Stratux shut down and
+      power removed, VCC (pin 17) and GND (pin 20) connected first,
+      *then* DIN/CLK/CS/DC/RST/BUSY in sequence, Pi unpowered throughout
+      reconnection, power restored only afterward. Post-boot: `Build:
+      c0dcd19c...`, `state: RUNNING`, `panelDetected: true`,
+      `fullRefreshCount: 1`, `partialRefreshCount: 3`,
+      `consecutiveFailures: 0`, `busyTimeoutCount: 0` - the display
+      returned to normal operation.
 
 Phase B - first power-up:
 - [x] Booted with the display attached but the feature still disabled -
@@ -776,30 +805,40 @@ Phase D - functional test:
 - [x] Overview page legible, correctly oriented, no clipping - confirmed
       readable Stratux host/details text after the first refresh, with no
       reported clipping or orientation defect
-- [ ] **FAILED/PENDING REVALIDATION** - Rotation setting(s) checked:
-      physical testing set `EpaperRotation: 180`; the setting was
-      accepted, persisted, and correctly triggered a re-initialization
-      and refresh (`fullRefreshCount`/`partialRefreshCount` both
-      advanced, zero errors), but the displayed content did not visibly
-      rotate. Root-caused and a source fix implemented and covered by
-      new deterministic regression tests - see "Display rotation
-      (EpaperRotation)" above for the full account. **This checkbox may
-      not be marked passed based on automated tests alone.** It remains
-      FAILED/PENDING REVALIDATION until the owner physically deploys the
-      corrected build and confirms visible 180-degree rotation on the
-      Waveshare 4.2in V2 panel; 90/270 remain additionally untested on
-      any real hardware, before or after this fix.
+- [x] **PASSED after a source fix - see full defect/fix/revalidation
+      history below.** Rotation setting(s) checked: the *original*
+      implementation physically FAILED this test (`EpaperRotation: 180`
+      was accepted, persisted, and correctly triggered a
+      re-initialization and refresh, but the displayed content did not
+      visibly rotate - root-caused and fixed in commit `c0dcd19c...`, see
+      "Display rotation (EpaperRotation)" above for the full account).
+      The *corrected* build (`c0dcd19cdde390db7b8c640ef674608e64d5da34`)
+      was then physically deployed and re-tested: `EpaperRotation` set to
+      180, and **the display correctly and visibly rotated the entire
+      rendered content 180 degrees** - `state: RUNNING`, `panelDetected:
+      true`, `fullRefreshCount: 2`, `partialRefreshCount: 3`,
+      `consecutiveFailures: 0`, `busyTimeoutCount: 0`. `EpaperRotation`
+      was then restored to `0` and confirmed via `/getSettings`. Only 0
+      and 180 degrees have physical hardware evidence; 90/270 remain
+      software-tested only (deterministic pixel-relocation tests, see
+      `epaper_main/render_rotation_test.go`) and are not claimed to be
+      physically validated.
 - [x] Refresh interval and full/partial refresh behavior checked -
       `partialRefreshCount` advanced cleanly across repeated cycles
       (1 -> 5 -> 7) with `fullRefreshCount` staying at 1 as expected
       between forced full refreshes
 - [x] Multiple refresh cycles stable - `consecutiveFailures: 0` and
       `busyTimeoutCount: 0` held across every reported snapshot
-- [ ] `epaperd` restart recovers cleanly - a `systemctl restart
-      stratux_epaper` was not specifically exercised; what *was* tested
-      (see Phase E) is the settings-driven disable/re-enable cycle, which
-      exercises the same driver re-initialization code path from within
-      the already-running process, not a process-level restart
+- [x] `epaperd` restart recovers cleanly - an explicit `sudo systemctl
+      restart stratux_epaper` was physically exercised at
+      `EpaperRotation: 0`. `systemctl status` reported `Loaded: loaded`,
+      `Active: active (running)`, `Main process: /opt/stratux/bin/
+      epaperd`; the physical display successfully recovered/
+      reinitialized; `state: RUNNING`, `panelDetected: true`,
+      `fullRefreshCount: 1`, `partialRefreshCount: 2`,
+      `consecutiveFailures: 0`, `busyTimeoutCount: 0`. Distinct from the
+      settings-driven disable/re-enable cycle already covered by Phase E
+      below - this is a genuine process-level restart.
 - [x] Full Stratux reboot: display resumes correctly afterward - after a
       normal reboot, `state: RUNNING`, `configuredPanel:
       waveshare-4.2in-v2`, `panelDetected: true`, `consecutiveFailures: 0`,
@@ -814,24 +853,53 @@ Phase E - failure/recovery:
       reboot produced a clean reinitialization (`state: RUNNING`,
       `panelDetected: true`, `fullRefreshCount: 1`,
       `partialRefreshCount: 1`, zero errors)
-- [ ] `epaperd` restart never affects any other Stratux function - not
-      separately exercised, for the same reason noted under Phase D above
+- [ ] `epaperd` restart never affects any other Stratux function - the
+      same `systemctl restart stratux_epaper` test above was physically
+      performed and confirmed `epaperd` itself recovered cleanly, but the
+      report of that test did not include a contemporaneous core-system
+      readout (`ES_DecoderRunning`/`GPS_connected`/`IMUConnected`/
+      `BMPConnected`, etc.) taken specifically during or immediately
+      after that restart, unlike every other item in this checklist that
+      makes this same claim. Not checked on that basis alone. This is
+      architecturally very unlikely to matter - `stratux_epaper` is a
+      separate systemd unit/process from `stratux` itself (see
+      "Architecture: fault isolation" above), so a restart of one cannot
+      directly restart or crash the other - but this document does not
+      check a box without a specific reported observation behind it, and
+      none exists yet for this exact claim. A trivial follow-up (checking
+      `/getStatus`/`/getHealth` immediately after a
+      `systemctl restart stratux_epaper`) would close this.
 - [x] No regression to AHRS/fan/GPS/ADS-B/core Stratux functionality at
       any point above - while the display was enabled and actively
       refreshing: `ES_DecoderRunning: true`, `ES_Receiving: true`,
       `ES_Degraded: false`, GPS 3D fix with 18 satellites locked, IMU and
       BMP connected, CPU temperature in a normal ~53-57C range
 
-**Checklist accounting as of this reconciliation: 18 PASSED, 1 FAILED
-(non-zero rotation - root-caused, fixed in source, pending physical
-revalidation), 2 OPEN** (the specific VCC/GND-before-signal-lines
-connection order, and an explicit `systemctl restart stratux_epaper`
-process-level restart specifically, as opposed to the settings-driven
-disable/re-enable cycle, which *was* tested). The rotation item is not
-merely untested - it is a confirmed physical failure of the pre-fix
-build, distinct in kind from the two still-open items, neither of which
-has produced or is expected to produce a different result than already
-observed. None of these three items may be marked passed on the basis of
-automated tests alone; each requires a specific, directly reported
-physical observation. This assessment is for the owner to weigh in the
-merge decision; it is not itself a recommendation to merge.
+**Checklist accounting as of this final reconciliation: 21 PASSED, 0
+FAILED, 1 OPEN, out of 22 total checklist lines.** A note on this count:
+the previous version of this document's own accounting ("18 PASSED, 1
+FAILED, 2 OPEN" = 21) undercounted the true total by one line - it
+treated the Phase D and Phase E `systemctl restart stratux_epaper` items
+as a single conceptual item, when they are two distinct checklist lines
+testing two different claims (the daemon's own recovery, and the
+absence of any effect on other Stratux functions). This reconciliation
+corrects that: there are 22 discrete lines in this checklist, not 21.
+
+Since the previous version: the corrected build
+(`c0dcd19cdde390db7b8c640ef674608e64d5da34`) was physically deployed and
+re-tested at `EpaperRotation: 180`, and the display **visibly rotated
+180 degrees correctly** - the rotation item moves from FAILED to
+PASSED, with its full defect/fix/revalidation history preserved above
+and in the item itself, not erased. An explicit
+`systemctl restart stratux_epaper` was physically exercised and
+`epaperd` recovered cleanly - Phase D's line PASSES. The
+VCC/GND-before-signals connection order was physically re-validated
+under power-off conditions - Phase A's line PASSES. **One line remains
+open**: Phase E's "`epaperd` restart never affects any other Stratux
+function" - the same restart test was performed, but the report of it
+did not include a core-system readout taken specifically during or
+after that cycle, unlike every other claim of this kind elsewhere in
+this checklist; see that line's own note for the full reasoning and why
+this is judged a low-risk, narrowly-scoped gap rather than a substantive
+open question. This assessment is for the owner to weigh in the merge
+decision; it is not itself a recommendation to merge.
