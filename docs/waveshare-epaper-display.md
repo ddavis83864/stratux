@@ -24,11 +24,12 @@
 > the display now **confirmed to visibly rotate 180 degrees correctly**.
 > See "Display rotation (EpaperRotation)" below for the full defect/fix/
 > revalidation history. 90/270 remain software-tested only, with no
-> physical hardware evidence either way. As of this reconciliation, 21 of
-> 22 hardware-validation checklist lines have direct physical evidence;
-> one narrow, low-risk item remains open - see "Hardware-validation
-> checklist: Waveshare 4.2in V2" below for the exact, itemized status of
-> every item.**
+> physical hardware evidence either way. As of this reconciliation, all
+> 22 of 22 hardware-validation checklist lines have direct physical
+> evidence - see "Hardware-validation checklist: Waveshare 4.2in V2"
+> below for the exact, itemized status of every item. A fully-passed
+> checklist is not itself a recommendation to merge; that decision is
+> the owner's alone.**
 
 ## Why this exists
 
@@ -660,21 +661,20 @@ calibration, or configuration.
 - GPIO pin mapping is not dashboard-configurable in this release - only
   the shipped default mapping (validated by this document's own audit) is
   used; changing it requires a code change to `epaper.Config.GPIO`.
-- **Waveshare 4.2in V2 panel: 21 of 22 hardware-validation checklist
+- **Waveshare 4.2in V2 panel: all 22 of 22 hardware-validation checklist
   lines now have direct physical evidence on the production Raspberry Pi
   4B** - initialization, full and repeated partial refreshes, a full
   Stratux reboot, disable/re-enable recovery, an explicit `systemctl
-  restart stratux_epaper` process restart, a full power-off/reconnect/
-  power-on cycle following the documented connection order, and the
-  corrected 180-degree rotation fix, all completed successfully with
-  zero refresh failures and zero `BUSY` timeouts, and with no observed
-  disturbance to AHRS/GPS/1090ES/978/fan/baro. **One line remains open**:
-  confirming that an `epaperd` process restart specifically has no effect
-  on any *other* Stratux function - the restart itself was performed and
-  `epaperd` recovered cleanly, but no core-system field readout was
-  separately reported for that exact cycle. See "Hardware-validation
-  checklist: Waveshare 4.2in V2" above for the exact, itemized status and
-  why this is judged low-risk.
+  restart stratux_epaper` process restart (including direct,
+  contemporaneous confirmation that it has no effect on any other
+  Stratux function), a full power-off/reconnect/power-on cycle following
+  the documented connection order, and the corrected 180-degree rotation
+  fix, all completed successfully with zero refresh failures and zero
+  `BUSY` timeouts, and with no observed disturbance to AHRS/GPS/1090ES/
+  978/fan/baro. See "Hardware-validation checklist: Waveshare 4.2in V2"
+  above for the full itemized history - not merely a limitation notice,
+  this bullet is kept as a permanent record of what was validated and
+  how.
 - **Non-zero `EpaperRotation`: 180 degrees is now physically validated;
   90/270 are not.** The *original* implementation FAILED physical
   testing at 180 degrees - the setting was accepted and persisted, and
@@ -853,53 +853,77 @@ Phase E - failure/recovery:
       reboot produced a clean reinitialization (`state: RUNNING`,
       `panelDetected: true`, `fullRefreshCount: 1`,
       `partialRefreshCount: 1`, zero errors)
-- [ ] `epaperd` restart never affects any other Stratux function - the
-      same `systemctl restart stratux_epaper` test above was physically
-      performed and confirmed `epaperd` itself recovered cleanly, but the
-      report of that test did not include a contemporaneous core-system
-      readout (`ES_DecoderRunning`/`GPS_connected`/`IMUConnected`/
-      `BMPConnected`, etc.) taken specifically during or immediately
-      after that restart, unlike every other item in this checklist that
-      makes this same claim. Not checked on that basis alone. This is
-      architecturally very unlikely to matter - `stratux_epaper` is a
-      separate systemd unit/process from `stratux` itself (see
-      "Architecture: fault isolation" above), so a restart of one cannot
-      directly restart or crash the other - but this document does not
-      check a box without a specific reported observation behind it, and
-      none exists yet for this exact claim. A trivial follow-up (checking
-      `/getStatus`/`/getHealth` immediately after a
-      `systemctl restart stratux_epaper`) would close this.
+- [x] `epaperd` restart never affects any other Stratux function -
+      closed with direct, contemporaneous evidence: immediately after an
+      explicit `sudo systemctl restart stratux_epaper`, `epaperd`'s own
+      status read `state: RUNNING`, `configuredPanel: waveshare-4.2in-v2`,
+      `panelDetected: true`, `consecutiveFailures: 0`,
+      `busyTimeoutCount: 0`, `fullRefreshCount: 1`,
+      `partialRefreshCount: 0`, and `/getStatus` taken from that *same*
+      restart cycle read `ES_DecoderRunning: true`, `ES_Receiving: true`,
+      `ES_Degraded: false` (1 message received), `GPS_connected: true`,
+      `GPS_solution: 3D GPS` (13 satellites locked), `IMUConnected: true`,
+      `BMPConnected: true`, CPU temperature in a normal ~54-57C range.
+      This is directly measured, not inferred - the exact gap this line
+      previously identified is now closed.
 - [x] No regression to AHRS/fan/GPS/ADS-B/core Stratux functionality at
       any point above - while the display was enabled and actively
       refreshing: `ES_DecoderRunning: true`, `ES_Receiving: true`,
       `ES_Degraded: false`, GPS 3D fix with 18 satellites locked, IMU and
       BMP connected, CPU temperature in a normal ~53-57C range
 
-**Checklist accounting as of this final reconciliation: 21 PASSED, 0
-FAILED, 1 OPEN, out of 22 total checklist lines.** A note on this count:
-the previous version of this document's own accounting ("18 PASSED, 1
-FAILED, 2 OPEN" = 21) undercounted the true total by one line - it
-treated the Phase D and Phase E `systemctl restart stratux_epaper` items
-as a single conceptual item, when they are two distinct checklist lines
-testing two different claims (the daemon's own recovery, and the
-absence of any effect on other Stratux functions). This reconciliation
-corrects that: there are 22 discrete lines in this checklist, not 21.
+**Checklist accounting as of this final reconciliation: 22 PASSED, 0
+FAILED, 0 OPEN, out of 22 total checklist lines.** Every line was
+individually re-audited against its own specific supporting evidence
+before reaching this count - see each item's own note above for exactly
+what was observed.
 
-Since the previous version: the corrected build
-(`c0dcd19cdde390db7b8c640ef674608e64d5da34`) was physically deployed and
-re-tested at `EpaperRotation: 180`, and the display **visibly rotated
-180 degrees correctly** - the rotation item moves from FAILED to
-PASSED, with its full defect/fix/revalidation history preserved above
-and in the item itself, not erased. An explicit
-`systemctl restart stratux_epaper` was physically exercised and
-`epaperd` recovered cleanly - Phase D's line PASSES. The
-VCC/GND-before-signals connection order was physically re-validated
-under power-off conditions - Phase A's line PASSES. **One line remains
-open**: Phase E's "`epaperd` restart never affects any other Stratux
-function" - the same restart test was performed, but the report of it
-did not include a core-system readout taken specifically during or
-after that cycle, unlike every other claim of this kind elsewhere in
-this checklist; see that line's own note for the full reasoning and why
-this is judged a low-risk, narrowly-scoped gap rather than a substantive
-open question. This assessment is for the owner to weigh in the merge
-decision; it is not itself a recommendation to merge.
+The full history behind this final count, preserved rather than
+erased:
+
+- **18 PASSED** as of the first hardware-validation pass on this panel.
+- The document's own accounting at that point ("18 PASSED, 1 FAILED, 2
+  OPEN" = 21) undercounted the true total by one line - it treated the
+  Phase D and Phase E `systemctl restart stratux_epaper` items as a
+  single conceptual item, when they are two distinct checklist lines
+  testing two different claims (the daemon's own recovery, and the
+  absence of any effect on other Stratux functions). A later
+  reconciliation corrected the true total to 22 discrete lines.
+- **Non-zero rotation** was physically tested and **FAILED**: the
+  original implementation accepted and persisted `EpaperRotation: 180`
+  and correctly triggered a refresh, but the displayed content did not
+  visibly rotate. Root-caused (the render pipeline never transformed
+  pixel content based on rotation; a related architectural issue also
+  fed rotation-swapped logical dimensions toward the driver's fixed
+  native RAM-window construction) and fixed in commit
+  `c0dcd19cdde390db7b8c640ef674608e64d5da34`, which added
+  `epaper.NativeDimensions` and a real `rotateImage` framebuffer
+  transform. The corrected build was physically deployed and re-tested,
+  and the display was confirmed to **visibly rotate 180 degrees
+  correctly** - this line moves to PASSED. 90 and 270 degrees remain
+  software-tested only (see `epaper_main/render_rotation_test.go`); no
+  physical evidence exists for them and none is claimed.
+- An explicit `systemctl restart stratux_epaper` was physically
+  exercised and `epaperd` recovered cleanly - Phase D's line PASSED.
+- The VCC/GND-before-signals connection order was physically
+  re-validated under power-off conditions - Phase A's line PASSED.
+- Phase E's "`epaperd` restart never affects any other Stratux
+  function" was, for one round, left open: the restart itself had been
+  performed and `epaperd`'s own recovery confirmed, but no core-system
+  field readout had been captured specifically during that cycle. That
+  gap is now closed with direct, contemporaneous evidence - see the item
+  itself above - completing the checklist at 22/22.
+
+**BUSY-line polarity is physically confirmed correct** for the 4.2in V2
+panel/driver/wiring combination across every cycle in this entire
+validation history. **`PanelDetected` remains protocol-success-based,
+not identity-based** - it confirms the configured driver's hardware
+handshake succeeded, never that the physically-connected panel matches
+`EpaperPanel`; `EpaperPanel` remains the sole authoritative source of
+which panel is configured, and no automatic model-identification
+mechanism has been added. Legacy Waveshare 3.7in support is unmodified
+by this PR - its own separate hardware-validation checklist is untouched
+above.
+
+This checklist being fully passed is not itself a recommendation to
+merge; the merge decision is the owner's alone.
