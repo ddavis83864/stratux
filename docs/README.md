@@ -80,6 +80,11 @@ hardware integration). User-facing how-tos live in the
   disabled-by-default detection state machine that can start/stop the existing manual
   recording subsystem on the operator's behalf from conservative, GNSS-derived movement
   thresholds.
+- **[waveshare-epaper-display.md](waveshare-epaper-display.md)** — the optional,
+  disabled-by-default Waveshare 3.7" e-paper status display: the GPIO ownership audit and
+  final wiring table, the separate fault-isolated `epaperd` service, change-driven/
+  ghosting-bounded refresh policy, configuration and observability, installation procedure,
+  and troubleshooting/recovery.
 
 ## Interfaces (for EFB / app / tool developers)
 

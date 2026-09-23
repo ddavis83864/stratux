@@ -15,6 +15,12 @@ arch=$(uname -m)
 if  [ "$arch" == "aarch64" ]; then
 	if [ -f "/boot/firmware/config.txt" ]; then
 		systemctl stop stratux_fancontrol
+		# stratux_epaper runs on every device, exactly like
+		# stratux_fancontrol above (see debian/postinst.dpkg and
+		# debian/stratux_epaper.service for why always-running is safe) -
+		# it idles with no display attached or the feature disabled, but
+		# is still stopped here like any other stratux service.
+		systemctl stop stratux_epaper 2>/dev/null || true
 	fi
 fi
 # Example: Stop the stratux service before removing this version

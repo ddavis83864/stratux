@@ -1,5 +1,24 @@
 # configbackup/testdata
 
+## `legacy-pre-epaper-backup.json`
+
+An **authentic** Configuration Backup document, produced by literally
+running commit `6ca35c8f815b8b7b50a6c5976c65d94261ec3f2b`'s (`feature/
+waveshare-epaper-display`, the merge of `origin/master`'s PR #31/#32
+into this branch, immediately before the e-paper feature's own
+`EpaperSettings` section was added to `configbackup`) exact
+`configbackup.BuildDocument` - not hand-written or simulated. Its
+section-checksum key set is exactly `{configuration,
+calibrationProfiles, alertSettings, autoRecordSettings,
+trafficCpaSettings}` - no `epaperSettings` key, and no such field in the
+document body at all - the shape `legacy.go`'s
+`verifyLegacyPreEpaperChecksum` recognizes.
+
+Regenerated the same way as `legacy-pre-autorecord-backup.json` below,
+substituting the commit and output filename; its one calibration profile
+is named "Legacy Backup Aircraft (pre-epaper)" for the same
+name-uniqueness reason given below.
+
 ## `legacy-pre-trafficcpa-backup.json`
 
 An **authentic** Configuration Backup document, produced by literally

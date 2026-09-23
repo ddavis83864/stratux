@@ -5,6 +5,34 @@ systemctl daemon-reload
 echo "Enabling stratux"
 systemctl enable stratux
 
+# Raspberry Pi's have the config.txt so this is one way to determine if its a raspberry pi
+arch=$(uname -m)
+
+# Durably ENABLE (never start) every Pi-specific optional unit here,
+# unconditionally, before the STRATUX_OTA_INSTALL early-exit below - a
+# real hardware-validation finding: enabling stratux_epaper only in the
+# later, OTA-skipped block meant an OTA-delivered install of this
+# newly-added service never actually created its durable enablement
+# symlink at all, leaving it permanently disabled/inactive on any device
+# that received it via OTA rather than a fresh image build. `systemctl
+# enable` alone (no --now) only creates/updates a unit-file symlink; it
+# never starts anything and never invokes any unit's own ExecStartPre, so
+# unlike start/restart (see the STRATUX_OTA_INSTALL comment below) it
+# carries no recursion hazard and is safe to run even while dpkg's lock
+# is held during an OTA install - exactly the same reasoning that already
+# lets `systemctl enable stratux` run unconditionally above. This is safe
+# on every device, including ones with no e-paper display attached:
+# epaperd idles with zero GPIO/SPI access whenever EpaperEnabled is false
+# in settings (the durable, owner-controlled switch - see
+# epaper_main/main.go's early !cfg.Enabled check) - only that setting
+# decides whether it ever touches hardware, never whether the unit runs.
+if  [ "$arch" == "aarch64" ]; then
+    if [ -f "/boot/firmware/config.txt" ]; then
+            systemctl enable stratux_fancontrol
+            systemctl enable stratux_epaper
+    fi
+fi
+
 # STRATUX_OTA_INSTALL is set by the OTA install mechanism
 # (debian/stratux-pre-start.sh) when it runs dpkg -i itself. That script
 # always reboots once dpkg -i returns (success, retry, or rollback), so
@@ -12,7 +40,10 @@ systemctl enable stratux
 # is invoked from stratux.service's own ExecStartPre, and systemctl
 # start/restart here would recurse into that same unit's ExecStartPre
 # while this dpkg -i still holds dpkg's lock, corrupting the install.
-# Found on real hardware; see docs/ota.md.
+# Found on real hardware; see docs/ota.md. Any newly-enabled unit above
+# still starts normally on the OTA mechanism's own subsequent reboot,
+# via systemd's ordinary boot sequence - no explicit start is needed here
+# for that path.
 if [ -n "${STRATUX_OTA_INSTALL:-}" ]; then
     exit 0
 fi
@@ -23,12 +54,12 @@ systemctl restart udev
 echo "Starting stratux"
 systemctl start stratux
 
-# Raspberry Pi's have the config.txt so this is one way to determine if its a raspberry pi
-arch=$(uname -m)
+# Non-OTA path (fresh image build, or a manual dpkg -i): start
+# immediately rather than waiting for a reboot that isn't coming.
 if  [ "$arch" == "aarch64" ]; then
     if [ -f "/boot/firmware/config.txt" ]; then
-            systemctl enable stratux_fancontrol
             systemctl start stratux_fancontrol
+            systemctl start stratux_epaper
     fi
 fi
 exit 0

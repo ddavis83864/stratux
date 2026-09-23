@@ -1289,6 +1289,20 @@ type settings struct {
 	// silently accepts an arbitrary mount: once pinned (by either path),
 	// every later check requires an exact match.
 	PersistentDataUUID   string
+
+	// Waveshare e-paper display settings (see epaper package and
+	// docs/waveshare-epaper-display.md). EpaperEnabled defaults to
+	// false, matching every other optional-hardware subsystem's own
+	// disabled-by-default convention - epaper_main (a separate,
+	// fault-isolated process/service) is the only code that ever acts
+	// on these. Zero-valued Epaper* fields (the shipped default) are
+	// filled in with safe defaults by epaper.Normalize, never here.
+	EpaperEnabled                bool
+	EpaperPanel                  string
+	EpaperRotation               int
+	EpaperRefreshIntervalSeconds int
+	EpaperFullRefreshEvery       int
+	EpaperPage                   string
 }
 
 type status struct {
@@ -1487,6 +1501,14 @@ func defaultSettings() {
 	globalSettings.GpsManualDevice = "/dev/ttyAMA0"
 	globalSettings.GpsManualTargetBaud = 115200
 	globalSettings.GpsManualChip = "ublox"
+
+	// Optional Waveshare e-paper display: disabled by default, matching
+	// every other optional-hardware subsystem above. The remaining
+	// zero-valued fields are intentionally left blank here - epaper.Normalize
+	// (called only by the separate epaper_main process) fills them in with
+	// safe, panel-appropriate defaults whenever the display is enabled, so
+	// this daemon never needs to know or duplicate those defaults itself.
+	globalSettings.EpaperEnabled = false
 }
 
 func readSettings() {

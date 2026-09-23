@@ -16,7 +16,11 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/stratux/stratux/epaper"
+)
 
 // maxSettingsRequestKeys bounds how many top-level keys a single
 // /setSettings request may contain. This is well above the largest
@@ -89,6 +93,12 @@ var settingsFieldTypes = map[string]settingsFieldKind{
 	"OGNReg":                         settingsFieldString,
 	"OGNTxPower":                     settingsFieldNumber,
 	"PWMDutyMin":                     settingsFieldNumber,
+	"EpaperEnabled":                  settingsFieldBool,
+	"EpaperPanel":                    settingsFieldString,
+	"EpaperRotation":                 settingsFieldNumber,
+	"EpaperRefreshIntervalSeconds":   settingsFieldNumber,
+	"EpaperFullRefreshEvery":         settingsFieldNumber,
+	"EpaperPage":                     settingsFieldString,
 }
 
 // validateSettingsKeyCount rejects a request carrying more top-level keys
@@ -170,6 +180,56 @@ func validateSettingsValue(key string, val interface{}) error {
 	case settingsFieldWiFiClientNetworks:
 		if _, err := decodeWiFiClientNetworks(val); err != nil {
 			return fmt.Errorf("setting %q: %s", key, err.Error())
+		}
+	}
+
+	// The four Epaper* fields with a real value space beyond their raw
+	// JSON type get it enforced here too - a real hardware-validation
+	// finding: without this, an out-of-range value (e.g. Rotation: 999)
+	// was silently accepted and persisted by this endpoint, then
+	// silently never applied by epaperd (epaper.Normalize's own
+	// validation runs only inside that separate process, on its own poll
+	// cycle) - a client had no way to learn its "successfully saved"
+	// request had no effect. Rejected here regardless of the request's
+	// own EpaperEnabled value (this function validates one key in
+	// isolation and never reads current settings state), since a value
+	// that could never be valid once the feature is enabled should never
+	// be accepted as if it were.
+	switch key {
+	case "EpaperPanel":
+		// Mirrors epaper.Normalize exactly: empty string falls back to
+		// the default panel (always valid).
+		if s, ok := val.(string); ok && s != "" && s != epaper.PanelWaveshare37 && s != epaper.PanelWaveshare42V2 {
+			return fmt.Errorf("setting %q: %q is not a supported panel", key, s)
+		}
+	case "EpaperPage":
+		// Mirrors epaper.Normalize exactly: empty string falls back to
+		// the default page (always valid).
+		if s, ok := val.(string); ok && s != "" {
+			switch s {
+			case epaper.PageOverview, epaper.PageReceivers, epaper.PageHealth:
+			default:
+				return fmt.Errorf("setting %q: %q is not a supported page", key, s)
+			}
+		}
+	case "EpaperRotation":
+		if n, ok := val.(float64); ok {
+			switch n {
+			case 0, 90, 180, 270:
+			default:
+				return fmt.Errorf("setting %q must be 0, 90, 180, or 270", key)
+			}
+		}
+	case "EpaperRefreshIntervalSeconds":
+		// Mirrors epaper.Normalize exactly: zero or negative falls back
+		// to the default (always valid), so only the dead zone strictly
+		// between 0 and the minimum is rejected.
+		if n, ok := val.(float64); ok && n > 0 && n < epaper.MinRefreshIntervalSeconds {
+			return fmt.Errorf("setting %q must be 0 or negative (use the default) or at least %d", key, epaper.MinRefreshIntervalSeconds)
+		}
+	case "EpaperFullRefreshEvery":
+		if n, ok := val.(float64); ok && n > epaper.MaxFullRefreshEvery {
+			return fmt.Errorf("setting %q must be at most %d", key, epaper.MaxFullRefreshEvery)
 		}
 	}
 	return nil

@@ -348,6 +348,39 @@ func applyTrafficCPASettingsSection(base TrafficCPASettings, section configbacku
 	return base
 }
 
+// --- Epaper* fields <-> configbackup.EpaperSettingsSection --------------
+//
+// Unlike TrafficCPASettings/AutoRecordSettings (their own persisted files
+// under the dedicated data partition, loaded/saved via
+// loadTrafficCPASettings/saveTrafficCPASettings), the six Epaper* fields
+// live directly on globalSettings, persisted the same way as DarkMode -
+// so these mirror configurationSectionFromGlobalSettings/
+// applyConfigurationSectionToGlobalSettings's locking pattern instead.
+
+func epaperSettingsSectionFromGlobalSettings() configbackup.EpaperSettingsSection {
+	globalSettingsMu.RLock()
+	defer globalSettingsMu.RUnlock()
+	return configbackup.EpaperSettingsSection{
+		Enabled:                globalSettings.EpaperEnabled,
+		Panel:                  globalSettings.EpaperPanel,
+		Rotation:               globalSettings.EpaperRotation,
+		RefreshIntervalSeconds: globalSettings.EpaperRefreshIntervalSeconds,
+		FullRefreshEvery:       globalSettings.EpaperFullRefreshEvery,
+		Page:                   globalSettings.EpaperPage,
+	}
+}
+
+func applyEpaperSettingsSectionToGlobalSettings(e configbackup.EpaperSettingsSection) {
+	globalSettingsMu.Lock()
+	defer globalSettingsMu.Unlock()
+	globalSettings.EpaperEnabled = e.Enabled
+	globalSettings.EpaperPanel = e.Panel
+	globalSettings.EpaperRotation = e.Rotation
+	globalSettings.EpaperRefreshIntervalSeconds = e.RefreshIntervalSeconds
+	globalSettings.EpaperFullRefreshEvery = e.FullRefreshEvery
+	globalSettings.EpaperPage = e.Page
+}
+
 // gatherConfigBackupCurrentState takes a coherent-enough snapshot of
 // every section this subsystem exports/restores. It never holds
 // profilesMu across the AlertSettings/globalSettings reads - only around
@@ -381,6 +414,7 @@ func gatherConfigBackupCurrentState() (configbackup.CurrentState, error) {
 		AlertSettings:       alertSettingsSectionFromCurrent(loadAlertSettings()),
 		AutoRecordSettings:  autoRecordSettingsSectionFromCurrent(loadAutoRecordSettings()),
 		TrafficCPASettings:  trafficCPASettingsSectionFromCurrent(loadTrafficCPASettings()),
+		EpaperSettings:      epaperSettingsSectionFromGlobalSettings(),
 	}, nil
 }
 
@@ -429,6 +463,7 @@ func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Docum
 		AlertSettings:              current.AlertSettings,
 		AutoRecordSettings:         current.AutoRecordSettings,
 		TrafficCPASettings:         current.TrafficCPASettings,
+		EpaperSettings:             current.EpaperSettings,
 	})
 }
 
@@ -793,6 +828,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 		originalByID[p.ID] = p
 	}
 	originalConfig := configurationSectionFromGlobalSettings()
+	originalEpaperSettings := epaperSettingsSectionFromGlobalSettings()
 	originalAlertSettings := loadAlertSettings()
 	originalAutoRecordSettings := loadAutoRecordSettings()
 	originalTrafficCPASettings := loadTrafficCPASettings()
@@ -820,6 +856,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 			}
 		}
 		applyConfigurationSectionToGlobalSettings(originalConfig)
+		applyEpaperSettingsSectionToGlobalSettings(originalEpaperSettings)
 		if active, aerr := store.Active(); aerr == nil {
 			applyProfileToGlobalSettingsLocked(active)
 		}
@@ -895,6 +932,8 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 
 	applyConfigurationSectionToGlobalSettings(doc.Configuration)
 	sectionsApplied = append(sectionsApplied, "configuration")
+	applyEpaperSettingsSectionToGlobalSettings(doc.EpaperSettings)
+	sectionsApplied = append(sectionsApplied, "epaperSettings")
 
 	if doc.ActiveCalibrationProfileID != "" && doc.ActiveCalibrationProfileID != originalActiveID {
 		target, err := store.Get(doc.ActiveCalibrationProfileID)

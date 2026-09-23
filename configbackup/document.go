@@ -259,6 +259,24 @@ type TrafficCPASettingsSection struct {
 	MinClosureRateKnots   float64 `json:"minClosureRateKnots"`
 }
 
+// EpaperSettingsSection mirrors the six Epaper* fields on globalSettings
+// (main/gen_gdl90.go), except SchemaVersion (this document has its own).
+// Every field here is durable configuration - there is no operational/
+// time-bound field to exclude, matching AutoRecordSettingsSection/
+// TrafficCPASettingsSection rather than AlertSettingsSection. This is
+// added as its own top-level Document field with its own checksum key,
+// never folded into ConfigurationSection, so that a backup exported
+// before this section existed still validates: see legacy.go's handling
+// of documents lacking the "epaperSettings" key.
+type EpaperSettingsSection struct {
+	Enabled                bool   `json:"enabled"`
+	Panel                  string `json:"panel"`
+	Rotation               int    `json:"rotation"`
+	RefreshIntervalSeconds int    `json:"refreshIntervalSeconds"`
+	FullRefreshEvery       int    `json:"fullRefreshEvery"`
+	Page                   string `json:"page"`
+}
+
 // Document is the complete, portable configuration backup.
 type Document struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -278,6 +296,7 @@ type Document struct {
 	AlertSettings              AlertSettingsSection      `json:"alertSettings"`
 	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
 	TrafficCPASettings         TrafficCPASettingsSection `json:"trafficCpaSettings"`
+	EpaperSettings             EpaperSettingsSection     `json:"epaperSettings"`
 
 	// SectionChecksums/ContentChecksum detect accidental corruption and
 	// incomplete modification (a truncated download, a flipped byte, a
@@ -306,6 +325,7 @@ type BuildInputs struct {
 	AlertSettings              AlertSettingsSection
 	AutoRecordSettings         AutoRecordSettingsSection
 	TrafficCPASettings         TrafficCPASettingsSection
+	EpaperSettings             EpaperSettingsSection
 }
 
 // sectionChecksum returns the hex SHA-256 of v's canonical JSON encoding.
@@ -352,6 +372,7 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		AlertSettings:              in.AlertSettings,
 		AutoRecordSettings:         in.AutoRecordSettings,
 		TrafficCPASettings:         in.TrafficCPASettings,
+		EpaperSettings:             in.EpaperSettings,
 	}
 
 	cfgSum, err := sectionChecksum(doc.Configuration)
@@ -374,12 +395,17 @@ func BuildDocument(in BuildInputs) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming traffic CPA settings: %w", err)
 	}
+	epaperSum, err := sectionChecksum(doc.EpaperSettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming e-paper display settings: %w", err)
+	}
 	doc.SectionChecksums = map[string]string{
 		"configuration":       cfgSum,
 		"calibrationProfiles": profSum,
 		"alertSettings":       alertSum,
 		"autoRecordSettings":  autoRecordSum,
 		"trafficCpaSettings":  trafficCPASum,
+		"epaperSettings":      epaperSum,
 	}
 
 	contentSum, err := contentChecksum(doc)
