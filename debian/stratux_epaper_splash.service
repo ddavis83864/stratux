@@ -13,9 +13,12 @@ Before=stratux_epaper.service
 # appear at power-on, not after that service's ExecStartPre (which can run
 # OTA installs). And deliberately NO Requires=/Wants=/BindsTo= in either
 # direction: the splash is cosmetic, so a failed or hung splash must never
-# block, fail, or delay stratux, stratux_epaper, or anything else. Ordering
-# alone means the operational renderer still starts after this unit
-# finishes, whether it finished successfully, failed, or timed out.
+# permanently block, fail, or stop stratux, stratux_epaper, or anything
+# else. It CAN briefly delay stratux_epaper, because that unit waits for
+# this job to finish; the delay is bounded (see TimeoutStartSec below).
+# Ordering alone means the operational renderer still starts once this
+# unit's job has resolved, whether it finished successfully, failed, or
+# timed out.
 
 [Service]
 Type=oneshot
@@ -37,8 +40,9 @@ ExecStart=/opt/stratux/bin/epaperd -splash-boot
 
 # Bounded, no retries. epaperd enforces its own 45 s deadline (a healthy
 # run is ~10-15 s; an absent display fails in ~10 s); this is only the
-# backstop if it ever hangs. Worst-case boot delay to the operational
-# e-paper renderer: TimeoutStartSec. It delays nothing else.
+# backstop if it ever hangs. Worst-case startup delay to the operational
+# e-paper renderer: TimeoutStartSec. Nothing else is ordered after this
+# unit, so nothing else waits on it.
 TimeoutStartSec=60
 TimeoutStopSec=10
 Restart=no

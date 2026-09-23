@@ -128,7 +128,10 @@ func TestSplashUnit_OrderedBeforeOperationalRendererAndNothingElse(t *testing.T)
 		t.Fatalf("Before=%v must include stratux_epaper.service: this is what guarantees the splash has released the panel before the operational renderer starts", u.words("Unit", "Before"))
 	}
 	// Minimum dependencies. Any of these would let a splash failure or
-	// hang block, fail, stop, or delay something else.
+	// hang permanently block, fail, or stop something else. (Before= alone
+	// still lets a hung splash delay stratux_epaper, but only up to the
+	// bounded TimeoutStartSec, which TestSplashUnit_StructureAndBoundedTimeouts
+	// pins.)
 	for _, key := range []string{"Requires", "Requisite", "BindsTo", "PartOf", "Wants", "Upholds", "Conflicts", "OnFailure", "OnSuccess", "PropagatesStopTo", "PropagatesReloadTo"} {
 		if v := u["Unit"][key]; len(v) != 0 {
 			t.Errorf("[Unit] %s=%v: the cosmetic splash must not be coupled to any other unit", key, v)
@@ -163,8 +166,9 @@ func TestOperationalUnit_UnchangedAndNotCoupledToSplash(t *testing.T) {
 		t.Errorf("Wants=%v, want [stratux.service]", got)
 	}
 	// It must not depend on the splash in any way, so a failed, hung, or
-	// absent splash can never stop it starting. (Ordering after the
-	// splash comes only from the splash unit's own Before=.)
+	// absent splash can never prevent it starting. (Ordering after the
+	// splash comes only from the splash unit's own Before=, which can
+	// delay it by at most the splash's bounded TimeoutStartSec.)
 	raw, _ := os.ReadFile(epaperUnitPath)
 	for _, line := range strings.Split(string(raw), "\n") {
 		if l := strings.TrimSpace(line); !strings.HasPrefix(l, "#") && strings.Contains(l, "splash") {

@@ -24,7 +24,10 @@ package main
 // unit is only ordered Before= the operational renderer (no Requires/
 // Wants/After), so any failure here - display absent, SPI/GPIO
 // unavailable, BUSY timeout, bad asset, nonzero exit, timeout - leaves
-// the operational renderer and all of Stratux to start normally.
+// the operational renderer and all of Stratux to start normally. The one
+// cost of a slow or hung splash is a bounded startup delay for the
+// operational renderer, which waits for this job to resolve (at most the
+// unit's TimeoutStartSec); nothing else waits on it.
 
 import (
 	"context"

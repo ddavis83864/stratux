@@ -389,8 +389,10 @@ There are no sleeps or polling.
 
 Deliberately absent (each is asserted by a test):
 - `Requires=`/`Wants=`/`BindsTo=`/`PartOf=`/`OnFailure=` in either direction,
-  so a failed or hung splash cannot block, fail, or stop `stratux_epaper`,
-  `stratux`, or anything else.
+  so a failed or hung splash cannot permanently block, fail, or stop
+  `stratux_epaper`, `stratux`, or anything else. It *can* delay
+  `stratux_epaper`, which waits for the splash job to resolve, but only by a
+  bounded amount (at most `TimeoutStartSec`, 60 s); nothing else waits on it.
 - `After=stratux.service` / network, so the logo appears at power-on rather
   than after `stratux.service`'s `ExecStartPre` (which can run OTA installs).
 - Any reference to the splash inside `stratux_epaper.service`.
