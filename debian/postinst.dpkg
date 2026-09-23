@@ -35,6 +35,11 @@ if  [ "$arch" == "aarch64" ]; then
             # never started by this script - it runs at boot, strictly
             # before stratux_epaper (see debian/stratux_epaper_splash.service).
             systemctl enable stratux_epaper_splash
+            # The orderly-power-off ARS splash: enabled here for the same
+            # reason (before the OTA early-exit). It is armed - started -
+            # below on the non-OTA path; an OTA install arms it via its
+            # own reboot. See debian/stratux_epaper_shutdown.service.
+            systemctl enable stratux_epaper_shutdown
     fi
 fi
 
@@ -64,6 +69,10 @@ systemctl start stratux
 if  [ "$arch" == "aarch64" ]; then
     if [ -f "/boot/firmware/config.txt" ]; then
             systemctl start stratux_fancontrol
+            # Arm the shutdown splash (its ExecStart is a no-op that
+            # touches no hardware): only an ACTIVE unit runs its ExecStop
+            # at the next power-off. Never draws anything by itself.
+            systemctl start stratux_epaper_shutdown
             systemctl start stratux_epaper
     fi
 fi
