@@ -85,6 +85,10 @@ hardware integration). User-facing how-tos live in the
   final wiring table, the separate fault-isolated `epaperd` service, change-driven/
   ghosting-bounded refresh policy, configuration and observability, installation procedure,
   and troubleshooting/recovery.
+- **[epaper-boot-splash.md](epaper-boot-splash.md)** — the approved ARS splash artwork for
+  the Waveshare 4.2" panel: the deterministic source-to-bitmap generator, the committed
+  production asset and its checksums, the automated validation, and the physical
+  acceptance gate that must pass before any automatic boot splash is enabled.
 
 ## Interfaces (for EFB / app / tool developers)
 

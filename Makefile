@@ -38,6 +38,19 @@ fancontrol: fancontrol_main/*.go common/*.go
 epaperd: epaper_main/*.go epaper/*.go common/*.go
 	go build $(BUILDINFO) -o epaperd -p 4 ./epaper_main/
 
+# Regenerate / verify the production e-paper splash bitmap from the
+# owner-approved artwork. Pure Go, deterministic, host-independent - see
+# docs/epaper-boot-splash.md. `make epaper-splash` rewrites
+# epaper/splash/assets/{ars-splash-400x300.bin,*.preview.png,CHECKSUMS.sha256};
+# `make epaper-splash-check` writes nothing and fails if they are stale.
+epaper-splash:
+	go run ./epaper/splash/cmd/splashgen
+
+epaper-splash-check:
+	go run ./epaper/splash/cmd/splashgen -check
+
+.PHONY: epaper-splash epaper-splash-check
+
 xdump1090:
 	cd dump1090 && make BLADERF=no
 
