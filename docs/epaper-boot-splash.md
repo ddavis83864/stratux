@@ -1,16 +1,15 @@
 # ARS e-paper splash: approved artwork, production asset, acceptance gate
 
-> **Status: `ARS_EPAPER_BOOT_SPLASH_INTEGRATED_COLD_BOOT_ACCEPTANCE_REQUIRED`.**
+> **Status: `ARS_EPAPER_BOOT_SPLASH_PERSISTENTLY_VALIDATED`.**
 >
 > - The **manual** splash render and the hand-off back to the operational
 >   display were physically validated by the owner on the real Stratux Pi and
 >   Waveshare 4.2" V2 panel on 2026-09-23 (see
 >   [Acceptance record](#acceptance-record)).
-> - **Automatic boot integration** is implemented and passes all
->   non-hardware validation (see [Automatic boot integration](#automatic-boot-integration)).
->   It has **not** been physically validated: the
->   [cold-boot acceptance gate](#cold-boot-acceptance-gate) is
->   **NOT PERFORMED**. Passing the manual test does not validate boot.
+> - **Automatic boot integration** was then deployed through the supported
+>   OTA mechanism, persisted, and passed a true power-off **cold boot** on the
+>   same hardware (see [Cold-boot acceptance record](#cold-boot-acceptance-record)).
+>   The cold-boot gate is **PASSED**.
 
 This covers only the Waveshare **4.2" V2** panel (400×300; see
 [waveshare-epaper-display.md](waveshare-epaper-display.md)). It is a
@@ -336,13 +335,14 @@ Items 8 (no stretching) and 11 (ghosting) were not separately reported; the
 owner's overall visual acceptance stands. The approved artwork is frozen:
 any change to it repeats this gate.
 
-This validates the **manual** path only. It does not validate boot
-integration; see the cold-boot gate in the boot-integration section.
+This validates the **manual** path only. Boot integration was validated
+separately; see the [cold-boot acceptance record](#cold-boot-acceptance-record).
 
 ## Automatic boot integration
 
-Software-complete; **physically unvalidated** (see the
-[cold-boot gate](#cold-boot-acceptance-gate)).
+Software-complete and **physically validated** on the real Stratux Pi after a
+supported OTA install and a true power-off cold boot (see the
+[cold-boot record](#cold-boot-acceptance-record)).
 
 ### Lifecycle
 
@@ -491,12 +491,15 @@ asset validation, never release hardware, start the splash from `postinst`,
 etc.) makes a test fail.
 
 What software cannot prove: real-systemd ordering on the device, panel
-timing, and how it looks. That is the cold-boot gate.
+timing, and how it looks. That was the cold-boot gate, now passed (see
+[the record](#cold-boot-acceptance-record)).
 
 ### Cold-boot acceptance gate
 
-**NOT PERFORMED.** The owner must run this on the actual Stratux Pi; do not
-call automatic boot validated until then.
+**PASSED** (see [Cold-boot acceptance record](#cold-boot-acceptance-record)).
+The procedure below is kept as the repeatable checklist. Repeat it only if a
+later change affects boot-splash behavior; the approved artwork is frozen and
+any change to it repeats this gate.
 
 **0. Install a real package build.** The change must arrive through the
 normal package path: build the ARM64 `.deb` (`make ddpkg`) and install it
@@ -551,35 +554,60 @@ stratux_epaper` does not replay the splash.
 
 | # | Check | Result |
 |---|---|---|
-| C1 | Package installed durably (step 0 checks pass after reboot) | |
-| C2 | Cold power-on: ARS splash appears automatically, no manual `epaperd` | |
-| C3 | Splash remains visible during Stratux initialization | |
-| C4 | Operational display replaces it automatically | |
-| C5 | `stratux_epaper` `active` | |
-| C6 | `status.json` RUNNING, `panelDetected` true, `consecutiveFailures` 0 | |
-| C7 | Splash unit `active (exited)`, 0/SUCCESS; no failed e-paper units | |
-| C8 | Journals show the splash finishing before `stratux_epaper` starts, no SPI/GPIO/BUSY errors | |
-| C9 | Wi-Fi, ADS-B, GPS, AHRS, web UI, GDL90/ForeFlight normal | |
+| C1 | Package installed durably (step 0 checks pass after reboot) | PASS (OTA-installed; splash unit persisted and enabled; `epaperd` exposes `-splash` and `-splash-boot`; `dpkg --audit` clean; root back in protected overlay mode) |
+| C2 | Cold power-on: ARS splash appears automatically, no manual `epaperd` | PASS (owner-observed; journal below) |
+| C3 | Splash remains visible during Stratux initialization | Not separately reported. The owner observed the splash appear correctly and then transition to the normal status screen |
+| C4 | Operational display replaces it automatically | PASS (owner-observed; `Started stratux_epaper.service` follows the splash) |
+| C5 | `stratux_epaper` `active` | PASS (enabled, `active (running)`) |
+| C6 | `status.json` RUNNING, `panelDetected` true, `consecutiveFailures` 0 | Not separately recorded for the cold boot (`stratux_epaper` `active (running)` only) |
+| C7 | Splash unit `active (exited)`, 0/SUCCESS; no failed e-paper units | PASS (enabled, `active (exited)`, `status=0/SUCCESS`; 0 failed units) |
+| C8 | Journals show the splash finishing before `stratux_epaper` starts, no SPI/GPIO/BUSY errors | PASS for ordering (`Finished` 05:04:12.221941 precedes `Started` 05:04:12.246934). The recorded splash journal shows no SPI/GPIO/BUSY errors |
+| C9 | Wi-Fi, ADS-B, GPS, AHRS, web UI, GDL90/ForeFlight normal | Not separately reported for this test. Core `stratux` was `active` and no unit had failed |
 
 ### Cold-boot acceptance record
 
 | Field | Value |
 |---|---|
-| Cold-boot acceptance | **NOT PERFORMED** |
-| Date / unit / build | |
-| Tester | |
-| Notes (time to splash, how long it stayed, anything unexpected) | |
+| Cold-boot acceptance | **PASSED** - `ARS_EPAPER_BOOT_SPLASH_PERSISTENTLY_VALIDATED` |
+| Unit | Real Stratux Raspberry Pi, Waveshare 4.2" V2, protected read-only overlay root |
+| Build | `026e69d1c7b69a1d79e386cc4f41bceb4817b01d` (running Build equalled the package's ExpectedCommit) |
+| Package | `stratux-2.0.0~rc2-arm64.deb`, SHA-256 `79aa6217091e19331becc379d70edd0fd0d75b5c665fa6aeb2e2c00f76f6021b`, installed via the deterministic OTA mechanism (`POST /updateUpload`) |
+| Post-OTA state | Root returned to protected overlay mode; no overlay-disable marker; `stratux` package `install ok installed`; `dpkg --audit` clean; splash unit persisted, enabled, `active (exited)`, ExecStart `0/SUCCESS`; `stratux_epaper` enabled and active; `stratux` active; 0 failed units |
+| Boot IDs | OTA boot `9ae523ac-cc4e-44d1-bdc5-af4003fb47f1`; cold boot `483d6227-6734-4ec2-bdbc-50b69148664c` (a genuine full power removal, distinct from the OTA boot) |
+| Tester | Owner (physical observation) |
+| Owner observation | The Pi rebooted normally after full power removal; the ARS splash appeared automatically and correctly, then transitioned to the normal Stratux status screen. Everything appeared as intended |
+| Not recorded | The calendar date of the cold boot (the boot ID and journal timestamps identify it); the panel content before power removal; C3, C6 and C9 individually (see the checklist above) |
+
+Cold-boot journal (`journalctl -b -o short-precise`, splash and operational units):
+
+```
+05:04:08.028179  Starting stratux_epaper_splash.service
+05:04:08.605276  initializing panel
+05:04:08.691528  clearing panel (full refresh)
+05:04:10.458883  drawing ARS splash (full refresh)
+05:04:12.216833  done: splash drawn, panel asleep
+05:04:12.218229  released SPI/GPIO; this process no longer owns the panel
+05:04:12.221941  Finished stratux_epaper_splash.service
+05:04:12.246934  Started stratux_epaper.service
+```
+
+This proves the validated ordering: splash starts -> panel init -> full clear
+-> ARS splash full refresh -> panel sleep -> SPI/GPIO released -> splash
+service finishes -> operational renderer starts. The splash took about 4.2 s
+from start to release.
 
 ### Dependencies, risks and open items
 
-- **Depends on PR #34** (`feature/waveshare-4in2-v2-support`, unmerged): this
-  branch is built on top of it and cannot be merged before it. The validated
-  Waveshare driver and the operational unit are unchanged.
+- **Depends on PR #34** (`feature/waveshare-4in2-v2-support`): this branch is
+  built on top of it and cannot be merged before it. PR #34 is the
+  integration PR for the e-paper foundation (it contains PR #30's work). The
+  validated Waveshare driver and the operational unit are unchanged.
 - **Splash lifetime is not fixed.** The logo stays until the operational
   renderer's first refresh, which follows `stratux.service` starting plus the
   renderer's first poll cycle. If the daemon were ever very fast, the logo
   could be brief. No minimum hold was added (a fixed sleep is not a
-  synchronization mechanism); revisit only if the cold-boot test shows it.
+  synchronization mechanism). The cold-boot test raised no problem: the owner
+  saw the splash appear correctly and then transition to the status screen.
 - **Takeover flash.** When the operational renderer starts it does its usual
   full-refresh `Clear()` before "Starting...", so the hand-off has a blank
   flash (unchanged, validated operational behavior).
@@ -591,6 +619,6 @@ stratux_epaper` does not replay the splash.
   harmless to everything else.
 - Only the 4.2" V2 at rotation 0/180 gets a splash; other enabled
   configurations skip it (logged).
-- **Not verified here:** an actual `make ddpkg` build/install and real-systemd
-  boot ordering on the device; those are covered by the cold-boot gate.
+- The package build/install and real-systemd boot ordering on the device were
+  verified by the OTA install and cold boot recorded above.
 
