@@ -30,6 +30,13 @@ if  [ "$arch" == "aarch64" ]; then
 		# draws nothing here: no power-off is queued, so
 		# `epaperd -splash-shutdown` exits 0 without touching the panel.
 		systemctl stop stratux_epaper_shutdown 2>/dev/null || true
+		# The SSH key restore: only on real removal (not an upgrade, whose postinst
+		# re-enables it) undo the enablement so no dangling symlink is left. This
+		# never touches /var/lib/stratux-data/ssh/authorized_keys, which is the
+		# administrator's persistent data and survives upgrade and removal.
+		if [ "${1:-}" = "remove" ]; then
+			systemctl disable stratux_ssh_authorized_keys 2>/dev/null || true
+		fi
 	fi
 fi
 # Example: Stop the stratux service before removing this version

@@ -1,0 +1,61 @@
+[Unit]
+Description=Stratux persistent SSH authorized_keys restore (optional; a no-op unless keys were provisioned on the data partition)
+
+# WHY: root is an overlay whose writable layer is RAM, so ~pi/.ssh/authorized_keys
+# is lost at every reboot. The administrator's public keys live on the dedicated
+# persistent data partition instead (docs/ssh-authorized-keys.md) and this
+# oneshot copies them back before sshd starts.
+#
+# ORDERING, and only ordering:
+#   Before=ssh.service   the keys are in place before sshd can accept a login.
+#   After=<data mount>   the data partition is mounted before we look at it.
+# The mount is `nofail` and is ordered only Before=stratux.service, so nothing
+# else guarantees it is up before ssh.service; this After= closes that gap. It is
+# a pure ordering edge: if the mount unit is absent or fails, systemd simply
+# proceeds and the Condition below skips this unit.
+#
+# No start rate limit: nothing restarts this unit automatically (Restart=no); it
+# is only started at boot, by the package, or by an administrator re-applying an
+# edited key file. systemd's default limit (5 starts in 10 s) would only ever turn
+# a quick series of harmless, idempotent manual restarts into a confusing "failed"
+# unit that the Stratux health page then reports.
+StartLimitIntervalSec=0
+
+# Deliberately NO Requires=/Wants=/BindsTo=/PartOf= in either direction, and
+# nothing orders sshd after our SUCCESS, only after our completion: a missing
+# partition, an unsafe or malformed key file, or a hung helper can never prevent
+# sshd from starting, so password login stays available for recovery. The worst
+# case delay to ssh.service is TimeoutStartSec.
+Before=ssh.service
+After=var-lib-stratux\x2ddata.mount
+
+# Only when /var/lib/stratux-data is really a mount point (not a same-named
+# directory in the RAM overlay), and only when the helper is installed.
+ConditionPathIsMountPoint=/var/lib/stratux-data
+ConditionFileIsExecutable=/opt/stratux/bin/stratux-ssh-authorized-keys.sh
+
+[Service]
+Type=oneshot
+
+# Stays "active (exited)" after a run so `systemctl status` shows it ran, and so
+# `systemctl restart stratux_ssh_authorized_keys` re-applies an edited key file
+# (adding OR revoking a key) without a reboot.
+RemainAfterExit=yes
+
+# No source file is a normal no-op (exit 0). A source that is unsafe or contains
+# malformed entries is rejected as a whole, the current keys are left in place,
+# and this exits non-zero so the failure is visible in `systemctl --failed` and
+# the journal (`journalctl -u stratux_ssh_authorized_keys`).
+ExecStart=/opt/stratux/bin/stratux-ssh-authorized-keys.sh
+
+# Bounded, no retries. The helper enforces its own 10 s validation budget and
+# 5 s lock wait, both well inside this backstop.
+TimeoutStartSec=20
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+
+# Like the e-paper units, this IS enabled by the package's postinst before its
+# STRATUX_OTA_INSTALL early-exit (so an OTA-delivered install enables it too) and,
+# on the non-OTA install path, also started (a no-op until a key file exists).

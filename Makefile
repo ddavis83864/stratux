@@ -116,6 +116,7 @@ optinstall: www ogn/ddb.json
 	cp debian/stratux-pre-start.sh $(STRATUX_HOME)/bin/stratux-pre-start.sh
 	chmod 744 $(STRATUX_HOME)/bin/stratux-pre-start.sh
 	cp -f debian/stratux-wifi.sh $(STRATUX_HOME)/bin/
+	cp -f debian/stratux-ssh-authorized-keys.sh $(STRATUX_HOME)/bin/
 	cp -f debian/sdr-tool.sh $(STRATUX_HOME)/bin/
 	chmod 755 $(STRATUX_HOME)/bin/*
 
@@ -178,6 +179,8 @@ dpkg: all prep_dpkg wwwdpkg ogn/ddb.json optinstall_dpkg
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_epaper_splash.service
 	cp debian/stratux_epaper_shutdown.service $(DEBPKG_BASE)/lib/systemd/system
 	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_epaper_shutdown.service
+	cp debian/stratux_ssh_authorized_keys.service $(DEBPKG_BASE)/lib/systemd/system
+	chmod 644 $(DEBPKG_BASE)/lib/systemd/system/stratux_ssh_authorized_keys.service
 	#ln -s $(DEBPKG_BASE)/lib/systemd/system/stratux.service $(DEBPKG_BASE)/etc/systemd/system/multi-user.target.wants/stratux.service
 	# Set up the versioning inside of the dpkg system. This puts the version number inside of the config file
 	sed -i 's/VERSION/$(VERSIONSTR)/g' $(DEBPKG_BASE)/DEBIAN/control
