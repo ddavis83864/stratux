@@ -193,8 +193,12 @@ dpkg: all prep_dpkg wwwdpkg ogn/ddb.json optinstall_dpkg
 	chmod 755 $(DEBPKG_BASE)/DEBIAN/prerm
 	# Create the default US settings for the config default
 	echo '{"UAT_Enabled": true,"OGN_Enabled": false,"DeveloperMode": false}' > $(DEBPKG_HOME)/cfg/stratux.conf.default
-	# Create the debian package
-	dpkg-deb -b $(DEBPKG_BASE)
+	# Create the debian package. --root-owner-group records every archive entry as
+	# root:root regardless of which uid/gid ran this build (CI runner, developer
+	# account, docker --user); without it the numeric builder uid leaks into the
+	# .deb and every installed file and directory ends up owned by an arbitrary,
+	# often non-existent, uid. See docs/package-ownership.md.
+	dpkg-deb --root-owner-group -b $(DEBPKG_BASE)
 	# Rename the file and move it to the base directory. Include the arch in the name
 	mv -f $(DEBPKG_BASE)/../stratux.deb ./stratux-$(VERSIONSTR)-$(ARCH).deb
 
