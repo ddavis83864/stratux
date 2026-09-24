@@ -137,9 +137,9 @@ stop `sshd`. Password login (the shipped default) remains available to recover.
   mechanism itself is unchanged.
 - `postinst` also sets the installed helper and unit to `root:root`. The package is built
   under a CI user id, and the helper runs as root at boot and decides who may log in.
-  (The `/opt/stratux/bin` directory itself is owned by `pi` on the current image; that is a
-  pre-existing property of the packaging, is not changed here, and is worth a separate
-  review.)
+  (The directories and the rest of the package used to inherit the builder's uid too; that is
+  now fixed for the whole package and migrated on upgrade, see
+  [package-ownership.md](package-ownership.md). This `chown` is kept as a redundant safeguard.)
 - **OTA and upgrade:** the persistent file is on the data partition, which OTA never
   touches, so keys survive. `prerm` only disables the unit on a real *removal*, never on
   an upgrade.
