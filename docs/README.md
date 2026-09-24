@@ -102,6 +102,10 @@ hardware integration). User-facing how-tos live in the
   boot-time restore service and its security checks, how to provision/apply/revoke a key without a reboot,
   behavior when the partition or the file is absent, OTA/upgrade/removal/reflash, recovery, and the (still
   outstanding) physical acceptance.
+- **[package-ownership.md](package-ownership.md)** — why everything the `.deb` installs must be `root:root`
+  whoever built it, the `--root-owner-group` archive fix, the narrow idempotent upgrade/OTA migration for
+  already-installed devices, the invariant (and its one allowlisted writable directory), and the
+  rollback/downgrade boundary.
 
 ## Interfaces (for EFB / app / tool developers)
 

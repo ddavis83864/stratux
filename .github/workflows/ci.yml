@@ -58,6 +58,14 @@ jobs:
       - name: make ddpkg (integration check only - not uploaded)
         run: make ddpkg
 
+      - name: Package ownership contract (static, archive invariant, install/upgrade/OTA/rollback lifecycle)
+        run: |
+          bash test/package_ownership_static_test.sh
+          deb="$(ls stratux-*.deb | head -1)"
+          echo "package under test: $deb"
+          bash test/package_ownership_archive_test.sh --deb "$deb"
+          bash test/package_ownership_lifecycle_test.sh "$deb"
+
   build-artifact:
     runs-on: ubuntu-24.04-arm
     steps:
@@ -97,6 +105,14 @@ jobs:
 
       - name: make ddpkg
         run: make ddpkg
+
+      - name: Package ownership contract (static, archive invariant, install/upgrade/OTA/rollback lifecycle)
+        run: |
+          bash test/package_ownership_static_test.sh
+          deb="$(ls stratux-*.deb | head -1)"
+          echo "package under test: $deb"
+          bash test/package_ownership_archive_test.sh --deb "$deb"
+          bash test/package_ownership_lifecycle_test.sh "$deb"
 
       - uses: actions/upload-artifact@v4
         with:
