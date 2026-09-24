@@ -1,12 +1,13 @@
 # ARS e-paper shutdown splash
 
-> **Status: software complete; physical acceptance PENDING.**
-> Everything here is verified by automated tests, by a real Debian 12 (systemd
-> 252) container lab, and by inspecting the built ARM64 package. **Nothing has
-> been run on the Stratux Pi or the physical panel.** The
-> [physical acceptance procedure](#physical-acceptance-procedure-prepared-not-run)
-> is prepared and has not been executed. Until the owner runs it, this feature
-> must not be described as hardware-validated.
+> **Status: physically validated on the real Stratux Pi** (owner-observed),
+> package `stratux-2.0.0~rc2-arm64.deb` built from commit
+> `616ed20ed9b95e9b2be92e1a2e00792b0abd8b89` and installed through the supported
+> OTA mechanism. Poweroff draws the ARS splash, the image survives power removal,
+> a reboot draws nothing, and the boot splash is unchanged; the shutdown/reboot
+> journals prove the panel-ownership ordering. See the
+> [acceptance record](#physical-acceptance-record). The acceptance was of the
+> code as packaged; this documentation was updated afterwards.
 
 On an **orderly power-off** (or halt) of the Raspberry Pi, the last image left
 on the Waveshare **4.2" V2** e-paper panel is the approved ARS splash instead of
@@ -310,10 +311,11 @@ at boot), then continues.
   but it is not a formally versioned API.
 - **Two queued shutdown kinds** (poweroff then reboot) skip the splash, because
   which takes effect is uncertain.
-- **Measured in a container, not on the Pi.** Ordering, mounts and `list-jobs`
-  were measured under real systemd 252, but with a stand-in `/boot/firmware`
-  tmpfs and no display; the real overlay root, real mounts, the panel timing and
-  how it looks are what the physical acceptance covers.
+- **Design measured first in a container, then confirmed on the Pi.** The
+  ordering, mount and `list-jobs` reasoning was measured under real systemd 252
+  in a container (stand-in `/boot/firmware`, no display), then confirmed on the
+  real device by the [acceptance record](#physical-acceptance-record). Only one
+  unit and one panel were tested; other Pi models and panel wirings are not.
 - **On some Pi models `poweroff` halts without cutting power.** The panel image
   is retained either way.
 - **Manual `systemctl disable` does not persist** on the protected overlay root
@@ -362,9 +364,10 @@ property was mutation-tested (dropping a `Before=`, `After=` instead of
 `DefaultDependencies=no`, reboot no longer winning, dropped ownership guard, ...
 each makes a test fail).
 
-## Physical acceptance procedure (prepared, NOT run)
+## Physical acceptance procedure
 
-Owner-run only. Nothing below has been executed. Install a real package build
+The repeatable checklist (it was run once; see the
+[record](#physical-acceptance-record)). Owner-run only. Install a real package build
 through the normal path first (see
 [step 0 of the boot-splash gate](epaper-boot-splash.md#cold-boot-acceptance-gate)):
 web-UI OTA upload, never a hand copy (which would vanish with the overlay).
@@ -377,14 +380,31 @@ systemctl is-active  stratux_epaper_shutdown          # active  (active (exited)
 grep -o '"EpaperEnabled": *[a-z]*' /boot/firmware/stratux.conf   # true
 ```
 
-**Capturing journal evidence.** The image's journal is volatile, so a shutdown's
-journal is lost at power-off. Either (a) turn on **Settings > Diagnostics >
-Persistent logging** for the test (it makes the filesystem writable and keeps
-logs across reboots; turn it back off afterwards), then read `journalctl -b -1`
-after the next boot; or (b) hold an SSH session open with `journalctl -f -o
-short-precise -u stratux_epaper -u stratux_epaper_shutdown -u
-stratux_epaper_splash` and note that it may be cut when networking stops. Use
-the same unit filter with `-b -1` for (a).
+**Capturing journal evidence.** The image's journal is volatile
+(`Storage=volatile`), so a shutdown's journal is lost at power-off, and a
+userspace follower (`journalctl -f` writing to a file) was found **unreliable
+during shutdown**: two attempts were cut off before the key lines. What worked
+was making journald itself write to the data partition, temporarily and in RAM
+only (no change under `/etc`, fstab, boot config or the repository):
+
+```sh
+D=/var/lib/stratux-data/acceptance/journal
+sudo mkdir -p $D /var/log/journal /run/systemd/journald.conf.d
+sudo mount --bind $D /var/log/journal
+printf '[Journal]\nStorage=persistent\n' | sudo tee /run/systemd/journald.conf.d/acceptance.conf
+sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald && sudo journalctl --flush
+# ...do the poweroff/reboot, boot again, then read the previous boot:
+sudo journalctl --directory=$(ls -d $D/*/) -b <boot-id> -o short-precise --no-pager
+```
+
+The drop-in lives in `/run` and the bind mount in the overlay's RAM, so both
+vanish at the next reboot (verify: `Storage=volatile` again, no bind mount);
+delete the evidence files afterwards only if you no longer need them. Note that
+the bind keeps `/var/lib/stratux-data` busy, so systemd logs a harmless
+`Failed unmounting ... target is busy` for it at shutdown. Also note the SSH
+key you add to `~/.ssh/authorized_keys` lives in the overlay's RAM layer and is
+lost at every reboot: re-add it after each one.
 
 **TEST A - boot regression.** Cold power-on. Expected: ARS boot splash, then the
 operational display. `systemctl status stratux_epaper_splash` is `active
@@ -429,3 +449,110 @@ EpaperEnabled is false` and leave the operational renderer's text screen as the
 final image. Anything unexpected (a splash on reboot, overlapping ownership,
 shutdown noticeably delayed, an ARS splash that is blank or garbled): stop and
 report before trusting the feature.
+
+## Physical acceptance record
+
+Owner-run on the real Stratux Raspberry Pi with the Waveshare 4.2" V2 panel
+(`EpaperEnabled` true, `waveshare-4.2in-v2`, rotation 0), protected overlay root.
+Physical observations are the owner's; the journals are the evidence for
+ordering. The Pi's wall clock is untrusted (no GPS fix, unsynchronized), so
+boots are identified by boot ID and events by their relative times.
+
+| Field | Value |
+|---|---|
+| Package | `stratux-2.0.0~rc2-arm64.deb`, SHA-256 `996c5f31e14533e44675c502662b95d23f3949541e988dd1799c1d5f3693d8d0`, built by CI on the PR head |
+| Embedded commit | `616ed20ed9b95e9b2be92e1a2e00792b0abd8b89` (running `Build` equalled it after the OTA) |
+| Pre-OTA build | `026e69d1c7b69a1d79e386cc4f41bceb4817b01d` (the validated boot-splash build), boot `483d6227-6734-4ec2-bdbc-50b69148664c` |
+| Install | supported OTA (`POST /updateUpload`); state `idle` -> `staged` -> `disable_requested` -> (device rebooted, API down during bare-ext4 install) -> `idle`; no manual intervention |
+| Post-OTA state | overlay active, no disable marker, `dpkg --audit` clean, 0 failed units, all three e-paper units and `stratux` enabled and active, shutdown unit `active (exited)` with its `Before=` set, installed unit files and `epaperd` byte-identical to the audited package |
+| Result | **PASSED** (all of A-E; see below for how E's evidence was completed) |
+
+| Test | Observation | Journal evidence |
+|---|---|---|
+| **A** boot regression | Owner: after the cold boot, the retained ARS image, then the boot-splash refresh, then the operational display (the first post-OTA boot was not watched; the cold boot of test C is the observation) | boot `2942a838-e621-4256-8216-ae8d7c0f9c5a`: shutdown unit armed in ~74 ms, boot splash `initializing panel` -> `clearing` -> `drawing ARS splash` -> `done: splash drawn, panel asleep` -> `released SPI/GPIO` -> `Finished` (about 4.2 s), then `Started stratux_epaper.service` |
+| **B** orderly poweroff | Owner: ARS splash appeared automatically, correct orientation, complete, no clipping or competing renderers; the image remained after power was removed; owner estimated under about 15 s overall; the intermediate text screen was seen and judged fine/useful | see test E |
+| **C** cold boot | Owner: image intact while unpowered; then retained ARS image, boot-splash sequence, operational display. Boot ID changed `0b6e8d69-...` -> `2942a838-...` | as test A |
+| **D** reboot | Owner: no extra ARS refresh before the reboot (observed twice: the reboot and its evidence re-run); boot splash then operational display | see test E |
+| **E** journal / ownership | complete journals, below | below |
+
+**Poweroff journal (test E, from the evidence re-run; boot `1741a13eca694c1f935908d1cd9290b6`):**
+
+```
+11:09.061  systemd-logind: The system will power off now!
+11:09.162  Stopping stratux_epaper.service            (operational renderer told to stop)
+11:10.965  Stopped  stratux_epaper.service            (exited => SPI/GPIO released; ~1.8 s incl. its text screen)
+11:10.968  Stopped  stratux_epaper_splash.service
+11:11.001  Stopping stratux_epaper_shutdown.service   (ExecStop starts)
+11:11.069  epaperd: shutdown splash: power-off in progress (poweroff.target); drawing the ARS splash
+11:11.072  epaperd: initializing panel...
+11:11.157  epaperd: clearing panel (full refresh)...
+11:12.915  epaperd: drawing ARS splash (full refresh)...
+11:14.669  epaperd: done: splash drawn, panel asleep
+11:14.670  epaperd: released SPI/GPIO; this process no longer owns the panel
+11:14.673  Stopped  stratux_epaper_shutdown.service   (shutdown continues)
+11:14.760  Unmounting boot-firmware.mount             (only after the shutdown unit stopped)
+11:14.828  Reached target poweroff.target
+11:15.175  systemd-journald: Journal stopped
+```
+
+Ownership is strictly sequential: the operational renderer was `Stopped` 0.1 s
+before the shutdown renderer began, and there is no overlap. The renderer's own
+draw took about 3.6 s; the whole poweroff took about 6.1 s from the request to
+the end of the journal.
+
+**Reboot journal (test E, from the evidence re-run; boot `a6c7ce25d80a4773b3c3fcdd2dbd118d`):**
+
+```
+10:35.923  systemd-logind: The system will reboot now!
+10:36.038  Stopping stratux_epaper.service
+10:37.819  Stopped  stratux_epaper.service
+10:37.838  Stopping stratux_epaper_shutdown.service   (ExecStop runs)
+10:37.872  epaperd: shutdown splash skipped: the system is rebooting (reboot.target); the boot splash follows
+10:37.876  Stopped  stratux_epaper_shutdown.service
+10:40.702  Unmounting boot-firmware.mount             (after the shutdown unit stopped)
+10:40.792  Reached target reboot.target -> Shutting down
+```
+
+There are no drawing lines: the reboot classification won and no shutdown refresh
+was made, matching the owner's observation.
+
+**Evidence handling.** The first poweroff (test B) and first reboot (test D) were
+captured by a userspace journal follower that died before the key lines
+(recorded honestly rather than relied on); the journal proof above comes from one
+additional reboot and one additional poweroff run with journald temporarily
+persisting to the data partition, both authorized by the owner and behaving
+identically to the first runs. The temporary configuration was verified gone
+after each reboot. Evidence retained under `/var/lib/stratux-data/acceptance/`:
+these files (SHA-256):
+
+```
+863d381950f0e2e12d8fab1744a64c54449dd1e9403cd15c10151ddf9c3203e3  journal/<machine-id>/system.journal
+d630e7a38feff00c7e98877bd19da7409fa98e06b25a0ca2877a9931fefadb4e  journal/<machine-id>/user-1000.journal
+1b1e545d1fd9f2ca62eed895b7e60498d32b33c9593beaf74ab60de9d70fc7bd  testB-poweroff-journal.log   (incomplete: follower died early)
+5c0ad122df85978a67705a4ea70dc4109bc191536819e3150e031b69ce824d44  testD-reboot-journal.log     (incomplete: follower died early)
+```
+
+**Findings from the real device.**
+
+- `/boot/firmware` is a standard fstab mount (`RequiredBy=local-fs.target`,
+  `Before=umount.target local-fs.target`), so its unmount is ordered after the
+  shutdown unit's stop, exactly as measured in the lab; on both the poweroff and
+  the reboot it was unmounted after the shutdown unit stopped.
+- `/var/lib/stratux-data` is a `nofail` mount ordered only `Before=stratux.service`
+  and `umount.target`, so systemd tries to unmount it as soon as `stratux` stops,
+  independently of the shutdown unit. The shutdown splash never uses it.
+- Observed refresh sequence at poweroff: status display, the operational
+  renderer's "Stratux is shut down. Safe to remove power." full refresh (about
+  1.8 s to stop), then the shutdown splash `Clear` and full refresh (about 3.6 s):
+  three full refreshes in total. The owner saw the text screen and found it
+  acceptable and useful. Whether a future change should suppress or integrate it
+  is a separate owner decision and was **not** changed here.
+
+**Post-acceptance health (final boot `b0d54bd4-0f18-4242-8722-d2bb056a699a`).**
+`Build` 616ed20e; OTA `idle`; overlay active, no disable marker; `dpkg --audit`
+clean; 0 failed units; `stratux`, `stratux_epaper`, `stratux_epaper_splash`,
+`stratux_epaper_shutdown`, `stratux_fancontrol` enabled and active; e-paper
+`READY`/`RUNNING`, panel detected, 0 consecutive failures, 0 BUSY timeouts;
+AHRS, baro, 1090 ES, UAT, GDL90, fan and storage `READY`; power `ok`
+(`throttled=0x0`). The only degradations were environmental (indoors: GPS "no
+satellite solution yet", so time unsynchronized).
