@@ -1,0 +1,93 @@
+#!/bin/bash
+echo "Post install script for stratux is running.."
+systemctl daemon-reload
+
+echo "Enabling stratux"
+systemctl enable stratux
+
+# Raspberry Pi's have the config.txt so this is one way to determine if its a raspberry pi
+arch=$(uname -m)
+
+# Durably ENABLE (never start) every Pi-specific optional unit here,
+# unconditionally, before the STRATUX_OTA_INSTALL early-exit below - a
+# real hardware-validation finding: enabling stratux_epaper only in the
+# later, OTA-skipped block meant an OTA-delivered install of this
+# newly-added service never actually created its durable enablement
+# symlink at all, leaving it permanently disabled/inactive on any device
+# that received it via OTA rather than a fresh image build. `systemctl
+# enable` alone (no --now) only creates/updates a unit-file symlink; it
+# never starts anything and never invokes any unit's own ExecStartPre, so
+# unlike start/restart (see the STRATUX_OTA_INSTALL comment below) it
+# carries no recursion hazard and is safe to run even while dpkg's lock
+# is held during an OTA install - exactly the same reasoning that already
+# lets `systemctl enable stratux` run unconditionally above. This is safe
+# on every device, including ones with no e-paper display attached:
+# epaperd idles with zero GPIO/SPI access whenever EpaperEnabled is false
+# in settings (the durable, owner-controlled switch - see
+# epaper_main/main.go's early !cfg.Enabled check) - only that setting
+# decides whether it ever touches hardware, never whether the unit runs.
+if  [ "$arch" == "aarch64" ]; then
+    if [ -f "/boot/firmware/config.txt" ]; then
+            systemctl enable stratux_fancontrol
+            systemctl enable stratux_epaper
+            # The once-per-boot ARS splash: enabled here for the same
+            # reason as stratux_epaper (before the OTA early-exit), but
+            # never started by this script - it runs at boot, strictly
+            # before stratux_epaper (see debian/stratux_epaper_splash.service).
+            systemctl enable stratux_epaper_splash
+            # The orderly-power-off ARS splash: enabled here for the same
+            # reason (before the OTA early-exit). It is armed - started -
+            # below on the non-OTA path; an OTA install arms it via its
+            # own reboot. See debian/stratux_epaper_shutdown.service.
+            systemctl enable stratux_epaper_shutdown
+            # Persistent SSH authorized_keys restore (docs/ssh-authorized-keys.md):
+            # enabled here for the same reason as the units above (before the OTA
+            # early-exit, so an OTA-delivered install enables it too). It is a
+            # no-op until an administrator provisions a key file on the data
+            # partition. The helper runs as root at boot and decides who may log
+            # in, so make sure the installed helper and unit are root-owned
+            # regardless of the uid the package was built under (the containing
+            # /opt/stratux/bin directory's ownership is a pre-existing, separate
+            # matter this script does not change).
+            chown root:root /opt/stratux/bin/stratux-ssh-authorized-keys.sh /lib/systemd/system/stratux_ssh_authorized_keys.service 2>/dev/null || true
+            chmod 755 /opt/stratux/bin/stratux-ssh-authorized-keys.sh 2>/dev/null || true
+            systemctl enable stratux_ssh_authorized_keys
+    fi
+fi
+
+# STRATUX_OTA_INSTALL is set by the OTA install mechanism
+# (debian/stratux-pre-start.sh) when it runs dpkg -i itself. That script
+# always reboots once dpkg -i returns (success, retry, or rollback), so
+# nothing here needs to be (re)started - and it must not be: this dpkg -i
+# is invoked from stratux.service's own ExecStartPre, and systemctl
+# start/restart here would recurse into that same unit's ExecStartPre
+# while this dpkg -i still holds dpkg's lock, corrupting the install.
+# Found on real hardware; see docs/ota.md. Any newly-enabled unit above
+# still starts normally on the OTA mechanism's own subsequent reboot,
+# via systemd's ordinary boot sequence - no explicit start is needed here
+# for that path.
+if [ -n "${STRATUX_OTA_INSTALL:-}" ]; then
+    exit 0
+fi
+
+echo "Enabling udev"
+systemctl restart udev
+
+echo "Starting stratux"
+systemctl start stratux
+
+# Non-OTA path (fresh image build, or a manual dpkg -i): start
+# immediately rather than waiting for a reboot that isn't coming.
+if  [ "$arch" == "aarch64" ]; then
+    if [ -f "/boot/firmware/config.txt" ]; then
+            systemctl start stratux_fancontrol
+            # Apply any provisioned SSH key file now (no-op when there is none).
+            systemctl start stratux_ssh_authorized_keys
+            # Arm the shutdown splash (its ExecStart is a no-op that
+            # touches no hardware): only an ACTIVE unit runs its ExecStop
+            # at the next power-off. Never draws anything by itself.
+            systemctl start stratux_epaper_shutdown
+            systemctl start stratux_epaper
+    fi
+fi
+exit 0
