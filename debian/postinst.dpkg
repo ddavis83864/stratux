@@ -1,5 +1,45 @@
 #!/bin/bash
 echo "Post install script for stratux is running.."
+
+# Ownership migration for EXISTING installs (docs/package-ownership.md).
+#
+# Packages built before the archive was normalized (dpkg-deb --root-owner-group)
+# recorded the numeric uid of whoever ran the build, and dpkg never re-owns a
+# directory that already exists nor an existing conffile - so an installed
+# device can carry /opt/stratux, /opt/stratux/bin, stratux.service, ... owned by
+# an unprivileged uid even though root executes everything in them at boot. A
+# fresh install is already correct from the archive; this repairs upgrades and
+# OTA installs, and is a no-op once every path is root-owned.
+#
+# Deliberately narrow: it visits ONLY paths dpkg itself lists for this package
+# (never a recursive walk, never anything the administrator or the running
+# system created), only under /opt/stratux, the shipped units and the shipped
+# udev rules, never follows a symlink, never changes a mode, and never fails the
+# install. The contents of /opt/stratux/mapdata are user-uploaded data by design
+# (that directory is intentionally world-writable) and are left alone; only the
+# directory itself is normalized, exactly as a fresh install would create it.
+# It runs before the STRATUX_OTA_INSTALL early exit below, because that exit is
+# taken on the one path (OTA, on the bare root filesystem) whose changes persist.
+stratux_normalize_ownership() {
+    local list=/var/lib/dpkg/info/stratux.list f
+    [ -r "$list" ] || return 0
+    while IFS= read -r f; do
+        case "$f" in
+            */../*|*/..|*/./*|*/.) continue ;;
+            /opt/stratux/mapdata/*) continue ;;
+            /opt/stratux|/opt/stratux/*) [ "$(readlink -f -- "$f" 2>/dev/null)" = "$f" ] || continue ;;
+            /lib/systemd/system/*.service|/etc/udev/rules.d/*.rules) ;;
+            *) continue ;;
+        esac
+        [ -L "$f" ] && continue
+        [ -e "$f" ] || continue
+        [ "$(stat -c '%u:%g' -- "$f" 2>/dev/null)" = "0:0" ] && continue
+        chown -h root:root -- "$f" 2>/dev/null || echo "WARNING: could not set root ownership on $f" >&2
+    done < "$list"
+    return 0
+}
+stratux_normalize_ownership || true
+
 systemctl daemon-reload
 
 echo "Enabling stratux"
