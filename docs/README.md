@@ -97,6 +97,12 @@ hardware integration). User-facing how-tos live in the
   stops, exclusive panel ownership, failure policy, and the prepared (not yet run)
   physical acceptance procedure.
 
+- **[ssh-authorized-keys.md](ssh-authorized-keys.md)** — why `~/.ssh/authorized_keys` is lost at every reboot
+  (the RAM-backed overlay), and the persistent-key feature: the authoritative file on the data partition, the
+  boot-time restore service and its security checks, how to provision/apply/revoke a key without a reboot,
+  behavior when the partition or the file is absent, OTA/upgrade/removal/reflash, recovery, and the (still
+  outstanding) physical acceptance.
+
 ## Interfaces (for EFB / app / tool developers)
 
 - **[integration/README.md](integration/README.md)** — the transport map (GDL90, FLARM/NMEA,
