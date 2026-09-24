@@ -25,6 +25,11 @@ if  [ "$arch" == "aarch64" ]; then
 		# exited, which is the normal case).
 		systemctl stop stratux_epaper_splash 2>/dev/null || true
 		systemctl stop stratux_epaper 2>/dev/null || true
+		# The shutdown splash last, so nothing stale is left active once
+		# the package is removed. Stopping it runs its ExecStop, which
+		# draws nothing here: no power-off is queued, so
+		# `epaperd -splash-shutdown` exits 0 without touching the panel.
+		systemctl stop stratux_epaper_shutdown 2>/dev/null || true
 	fi
 fi
 # Example: Stop the stratux service before removing this version

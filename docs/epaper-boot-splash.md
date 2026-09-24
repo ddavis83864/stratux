@@ -11,6 +11,9 @@
 >   same hardware (see [Cold-boot acceptance record](#cold-boot-acceptance-record)).
 >   The cold-boot gate is **PASSED**.
 
+The orderly-**power-off** counterpart (the same artwork left on the panel at
+shutdown) is a separate feature: [epaper-shutdown-splash.md](epaper-shutdown-splash.md).
+
 This covers only the Waveshare **4.2" V2** panel (400×300; see
 [waveshare-epaper-display.md](waveshare-epaper-display.md)). It is a
 supplemental branding image, not flight information.
@@ -518,7 +521,10 @@ grep -o '"EpaperEnabled": *[a-z]*' /boot/firmware/stratux.conf   # true
 **1. Power off completely.** Use Stratux's normal shutdown, wait for the
 panel to show the shutdown screen, then physically remove power for ~10 s.
 (The shutdown screen persists on the bistable panel, so the splash replacing
-it is unambiguous.)
+it is unambiguous. This describes the gate as it was run, before the shutdown
+splash existed; on a build that includes
+[the shutdown splash](epaper-shutdown-splash.md) the panel instead ends on the
+ARS image after a power-off, so use TEST B/C there.)
 
 **2. Power on** and do **not** run `epaperd` or touch any service. Note the
 time from applying power.

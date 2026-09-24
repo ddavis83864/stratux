@@ -1,0 +1,90 @@
+[Unit]
+Description=Stratux e-paper shutdown splash (cosmetic; only on an orderly power-off, only when EpaperEnabled)
+
+# THE ONLY ORDERING, and it is written for the STOP direction.
+#
+# This unit does its work in ExecStop, and systemd stops units in the
+# reverse of their start order: because this unit is Before= both
+# stratux_epaper.service and stratux_epaper_splash.service, at shutdown
+# it is stopped AFTER both of them have completely stopped - i.e. after
+# the operational renderer has handled SIGTERM, put the panel to sleep,
+# released SPI/GPIO and exited, and after any still-running boot splash
+# has done the same. That is what guarantees the shutdown renderer never
+# owns the panel at the same time as either of them; no sleep or polling
+# is involved. Both Before= lines are needed: naming only
+# stratux_epaper.service does NOT order this unit against the boot splash
+# (measured on Debian 12 / systemd 252: a power-off requested while the
+# boot splash was still drawing overlapped its panel ownership).
+#
+# At start-up the same two lines just mean this unit is "started" (a
+# no-op, see ExecStart) before those two; it adds no delay to either.
+#
+# Deliberately NO After= (it would reverse the stop order above) and NO
+# Requires=/Wants=/BindsTo=/PartOf=/Conflicts= in either direction: the
+# splash is cosmetic, so it must never permanently block, fail, or stop
+# stratux, stratux_epaper, the boot splash, or the shutdown itself.
+#
+# DefaultDependencies stays at its default (yes) on purpose. That gives
+# this unit the ordinary After=sysinit.target basic.target, so its stop
+# runs BEFORE local filesystems (/boot/firmware, which holds
+# stratux.conf) are unmounted, and Conflicts=/Before=shutdown.target, so
+# it is stopped as part of every shutdown transaction. A unit that is
+# instead STARTED by poweroff.target cannot have that guarantee - a start
+# job is always ordered after related stop jobs, never before them - and
+# was measured losing /boot/firmware mid-run. See
+# docs/epaper-shutdown-splash.md.
+Before=stratux_epaper.service stratux_epaper_splash.service
+
+[Service]
+Type=oneshot
+
+# Active from boot until shutdown: "active" is what makes systemd run
+# ExecStop when the system goes down. It also means a stratux_epaper
+# restart (manual, settings change, OTA) or a package upgrade never runs
+# this unit at all - only stopping THIS unit does.
+RemainAfterExit=yes
+
+# Arming step only: touches no hardware and cannot fail in a way that
+# matters (a failure here is not a dependency of anything).
+ExecStart=/bin/true
+
+# Same binary as stratux_epaper.service and the boot splash, so the three
+# can never be from mismatched builds; the splash bitmap is embedded in
+# it, there is no separate asset file to install or lose.
+#
+# ExecStop runs on EVERY stop of this unit - power-off, halt, reboot,
+# kexec, `systemctl stop/restart`, isolating another target, the package's
+# prerm - and systemd offers an ExecStop no way to tell which. So
+# -splash-shutdown asks systemd's job queue: it draws ONLY if a
+# poweroff.target or halt.target start job is queued (and no
+# reboot.target/kexec.target one). Every other stop, and any failure to
+# find out, is a clean exit 0 that touches no hardware. It also applies
+# the boot splash's EpaperEnabled/EpaperPanel/EpaperRotation gate, read
+# from /boot/firmware/stratux.conf, so EpaperEnabled=false draws nothing.
+ExecStop=/opt/stratux/bin/epaperd -splash-shutdown
+
+# Bounded, no retries. epaperd enforces its own 45 s deadline (a healthy
+# run is ~10-15 s; an absent display fails in ~10 s); TimeoutStopSec is
+# only the backstop if it ever hangs, after which systemd kills it and the
+# shutdown continues. Worst-case added shutdown time: TimeoutStopSec.
+TimeoutStartSec=10
+TimeoutStopSec=60
+Restart=no
+
+# stdout/stderr go to the journal (a handful of lines per shutdown):
+#   journalctl -b -1 -u stratux_epaper_shutdown
+
+[Install]
+WantedBy=multi-user.target
+
+# Like stratux_epaper.service and the boot splash, this unit IS enabled
+# unconditionally by the package's postinst - before its
+# STRATUX_OTA_INSTALL early-exit, so an OTA-delivered install enables it
+# too - and, unlike the boot splash, is also STARTED by the non-OTA
+# install path (arming it is a no-op, so the hazards that keep the boot
+# splash from being started do not apply). On the OTA path it starts on
+# the OTA mechanism's own reboot, via the ordinary boot sequence.
+# Running it on every device is safe: with EpaperEnabled false (the
+# shipped default), no config file, or an unsupported panel/rotation, it
+# logs why and exits 0 without touching any GPIO/SPI. Only EpaperEnabled
+# decides; there is no second switch.

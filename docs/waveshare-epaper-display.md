@@ -577,14 +577,24 @@ understood.
 > delay it by at most 60 s (the unit's `TimeoutStartSec`). See
 > [epaper-boot-splash.md](epaper-boot-splash.md).
 
+> **Shutdown splash (4.2" V2 only, `EpaperEnabled` true).** On an orderly
+> power-off or halt (never a reboot), a separate unit,
+> `stratux_epaper_shutdown.service`, draws the approved ARS splash *after* this
+> service has stopped and released the panel, so the ARS image - not the text
+> screen below - is what remains on the panel once the Pi is off. See
+> [epaper-shutdown-splash.md](epaper-shutdown-splash.md).
+
 - On `epaperd`'s own startup, before the first real content sample
   completes, the panel shows a fixed "Starting..." screen
   (`epaper.StartupLines`) - it is never left blank during startup.
 - On a controlled stop (`SIGTERM`/`SIGINT`, including a full system
   shutdown), the panel is updated with a fixed "Stratux is shut down. Safe
   to remove power." screen (`epaper.ShutdownLines`) *before* the
-  controller is put to sleep and `PWR` de-asserted - never after, so the
-  shutdown message is the last thing left on the panel.
+  controller is put to sleep and `PWR` de-asserted - never after, so this
+  service itself always leaves the shutdown message as its last output. (On a
+  power-off with the 4.2" V2 and `EpaperEnabled` true, the shutdown splash unit
+  then replaces it with the ARS splash; on a reboot, or with any other
+  panel/setting, this message is what stays.)
 - The `stratux_epaper` systemd unit is **enabled and started
   automatically** by the package's post-install script, exactly like
   `stratux_fancontrol`. A manual, post-boot `systemctl enable` was found

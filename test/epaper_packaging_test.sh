@@ -121,6 +121,46 @@ check "the Makefile packages stratux_epaper_splash.service into lib/systemd/syst
 check "stratux_epaper.service (validated operational unit) does not mention the splash" \
 	"$(grep -v '^\s*#' "$SERVICE" | grep -qi splash && echo 0 || echo 1)"
 
+# --- ARS shutdown splash unit (stratux_epaper_shutdown) --------------------
+# Durably ENABLED like the other e-paper units (before the OTA early-exit),
+# but - unlike the boot splash - also STARTED by the non-OTA install path:
+# only an ACTIVE unit runs its ExecStop at power-off, and starting it is a
+# no-op that touches no hardware. Never started on the OTA path (the OTA
+# mechanism's own reboot arms it). Stopped by prerm, last.
+SHUT_SERVICE="debian/stratux_epaper_shutdown.service"
+sh_enable_line=$(grep -n '^\s*systemctl enable stratux_epaper_shutdown\s*$' "$POSTINST" | head -1 | cut -d: -f1)
+sh_start_line=$(grep -n '^\s*systemctl start stratux_epaper_shutdown\s*$' "$POSTINST" | head -1 | cut -d: -f1)
+if [ -n "$sh_enable_line" ] && [ -n "$sh_start_line" ] && [ -n "$ota_check_line" ]; then
+	check "systemctl enable stratux_epaper_shutdown runs BEFORE the STRATUX_OTA_INSTALL early-exit (an OTA-delivered install still durably enables it)" \
+		"$([ "$sh_enable_line" -lt "$ota_check_line" ] && echo 1 || echo 0)"
+	check "systemctl start stratux_epaper_shutdown runs AFTER the STRATUX_OTA_INSTALL early-exit (never during an OTA install)" \
+		"$([ "$sh_start_line" -gt "$ota_check_line" ] && echo 1 || echo 0)"
+	check "the shutdown splash is armed (started) before the operational renderer is started" \
+		"$([ "$sh_start_line" -lt "$start_line" ] && echo 1 || echo 0)"
+else
+	echo "FAIL: could not locate the stratux_epaper_shutdown enable/start lines"
+	fail=1
+fi
+check "postinst enables the shutdown splash inside the same Raspberry Pi/aarch64 guard as stratux_epaper" \
+	"$(awk '/if +\[ "\$arch" == "aarch64" \]; then/{a=1} a&&/systemctl enable stratux_epaper_shutdown/{f=1} /^fi$/{a=0} END{print f?1:0}' "$POSTINST")"
+check "prerm stops stratux_epaper_shutdown" \
+	"$(grep -q 'systemctl stop stratux_epaper_shutdown' "$PRERM" && echo 1 || echo 0)"
+sh_stop=$(grep -n 'systemctl stop stratux_epaper_shutdown' "$PRERM" | head -1 | cut -d: -f1)
+check "prerm stops the shutdown splash AFTER the operational renderer" \
+	"$([ -n "$sh_stop" ] && [ -n "$ep_stop" ] && [ "$sh_stop" -gt "$ep_stop" ] && echo 1 || echo 0)"
+check "stratux_epaper_shutdown.service unit file is present for packaging" \
+	"$([ -f "$SHUT_SERVICE" ] && echo 1 || echo 0)"
+check "stratux_epaper_shutdown.service has WantedBy=multi-user.target and no shutdown-target wiring" \
+	"$(grep -q '^WantedBy=multi-user.target$' "$SHUT_SERVICE" && ! grep -v '^\s*#' "$SHUT_SERVICE" | grep -Eq '(poweroff|halt|reboot|kexec|shutdown)\.target' && echo 1 || echo 0)"
+check "stratux_epaper_shutdown.service is ordered Before= both renderers and has no After=" \
+	"$(grep -q '^Before=stratux_epaper.service stratux_epaper_splash.service$' "$SHUT_SERVICE" && ! grep -q '^After=' "$SHUT_SERVICE" && echo 1 || echo 0)"
+check "stratux_epaper_shutdown.service is Type=oneshot, RemainAfterExit=yes, does its work in ExecStop" \
+	"$(grep -q '^Type=oneshot$' "$SHUT_SERVICE" && grep -q '^RemainAfterExit=yes$' "$SHUT_SERVICE" && grep -q '^ExecStop=/opt/stratux/bin/epaperd -splash-shutdown$' "$SHUT_SERVICE" && echo 1 || echo 0)"
+check "the Makefile packages stratux_epaper_shutdown.service into lib/systemd/system" \
+	"$(grep -q 'cp debian/stratux_epaper_shutdown.service \$(DEBPKG_BASE)/lib/systemd/system' Makefile && echo 1 || echo 0)"
+check "the validated boot and operational units do not mention the shutdown splash" \
+	"$(grep -v '^\s*#' "$SPLASH_SERVICE" "$SERVICE" | grep -qi shutdown && echo 0 || echo 1)"
+
 # Real-systemd parse of the new unit, when systemd-analyze is available:
 # verifies every directive is recognized and ordering resolves. Skipped
 # (not failed) on hosts without it.
@@ -128,16 +168,18 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 	tmp=$(mktemp -d)
 	mkdir -p "$tmp/etc/systemd/system" "$tmp/opt/stratux/bin" "$tmp/usr/lib/systemd/system"
 	cp -a /usr/lib/systemd/system/. "$tmp/usr/lib/systemd/system/" 2>/dev/null
-	cp debian/stratux_epaper.service debian/stratux_epaper_splash.service "$tmp/etc/systemd/system/"
+	cp debian/stratux_epaper.service debian/stratux_epaper_splash.service debian/stratux_epaper_shutdown.service "$tmp/etc/systemd/system/"
+	mkdir -p "$tmp/bin" "$tmp/usr/bin"
+	printf '#!/bin/sh\nexit 0\n' > "$tmp/bin/true"; chmod +x "$tmp/bin/true"; cp "$tmp/bin/true" "$tmp/usr/bin/true"
 	printf '#!/bin/sh\nexit 0\n' > "$tmp/opt/stratux/bin/epaperd"; chmod +x "$tmp/opt/stratux/bin/epaperd"
 	cp "$tmp/opt/stratux/bin/epaperd" "$tmp/opt/stratux/bin/stratuxrun"
 	cp debian/stratux.service "$tmp/etc/systemd/system/"
-	out=$(systemd-analyze verify --root="$tmp" stratux_epaper_splash.service stratux_epaper.service 2>&1)
+	out=$(systemd-analyze verify --root="$tmp" stratux_epaper_shutdown.service stratux_epaper_splash.service stratux_epaper.service 2>&1)
 	rc=$?
 	# stratux.service is pulled in by stratux_epaper's Wants=; its killall
 	# ExecStopPost is absent from the scratch root, which is not this unit's problem.
 	out=$(printf '%s\n' "$out" | grep -v 'killall')
-	check "systemd-analyze verify accepts stratux_epaper_splash.service and stratux_epaper.service (no unknown directives, ordering resolves)" \
+	check "systemd-analyze verify accepts stratux_epaper_shutdown.service, stratux_epaper_splash.service and stratux_epaper.service (no unknown directives, ordering resolves)" \
 		"$([ -z "$out" ] && echo 1 || echo 0)"
 	[ -n "$out" ] && printf '%s\n' "$out"
 	rm -rf "$tmp"
@@ -173,12 +215,17 @@ check "postinst (normal install) enables the splash" \
 	"$(grep -qx 'systemctl enable stratux_epaper_splash' "$LOGDIR/post_norm.log" && echo 1 || echo 0)"
 check "postinst (normal install) still starts stratux_epaper, but never the splash" \
 	"$(grep -qx 'systemctl start stratux_epaper' "$LOGDIR/post_norm.log" && ! grep -q 'start stratux_epaper_splash' "$LOGDIR/post_norm.log" && echo 1 || echo 0)"
-check "postinst enable order is unchanged for the existing units (fancontrol, then epaper, then splash)" \
-	"$(grep '^systemctl enable stratux_' "$LOGDIR/post_norm.log" | tr '\n' ' ' | grep -q '^systemctl enable stratux_fancontrol systemctl enable stratux_epaper systemctl enable stratux_epaper_splash $' && echo 1 || echo 0)"
+check "postinst enable order is unchanged for the existing units (fancontrol, then epaper, then splash), with the shutdown splash appended" \
+	"$(grep '^systemctl enable stratux_' "$LOGDIR/post_norm.log" | tr '\n' ' ' | grep -q '^systemctl enable stratux_fancontrol systemctl enable stratux_epaper systemctl enable stratux_epaper_splash systemctl enable stratux_epaper_shutdown $' && echo 1 || echo 0)"
+
+check "postinst (normal install) arms the shutdown splash exactly once, before starting stratux_epaper" \
+	"$(grep -n 'systemctl start stratux_epaper' "$LOGDIR/post_norm.log" | sed 's/^[0-9]*://' | tr '\n' '|' | grep -q '^systemctl start stratux_epaper_shutdown|systemctl start stratux_epaper|$' && echo 1 || echo 0)"
+check "postinst (OTA install) enables the shutdown splash and starts NOTHING (its OTA reboot arms it)" \
+	"$(grep -qx 'systemctl enable stratux_epaper_shutdown' "$LOGDIR/post_ota.log" && ! grep -Eq 'systemctl (start|restart)' "$LOGDIR/post_ota.log" && echo 1 || echo 0)"
 
 run_script "$PRERM" "$LOGDIR/prerm.log" "STRATUX_UNUSED=1"
-check "prerm (normal removal/upgrade) stops splash then operational renderer, in that order" \
-	"$(grep -n 'stop stratux_epaper' "$LOGDIR/prerm.log" | sed 's/^[0-9]*://' | tr '\n' '|' | grep -q '^systemctl stop stratux_epaper_splash|systemctl stop stratux_epaper|$' && echo 1 || echo 0)"
+check "prerm (normal removal/upgrade) stops splash, then operational renderer, then the shutdown splash, in that order" \
+	"$(grep -n 'stop stratux_epaper' "$LOGDIR/prerm.log" | sed 's/^[0-9]*://' | tr '\n' '|' | grep -q '^systemctl stop stratux_epaper_splash|systemctl stop stratux_epaper|systemctl stop stratux_epaper_shutdown|$' && echo 1 || echo 0)"
 run_script "$PRERM" "$LOGDIR/prerm_ota.log" "STRATUX_OTA_INSTALL=1"
 check "prerm (OTA install) touches no units" \
 	"$([ ! -s "$LOGDIR/prerm_ota.log" ] && echo 1 || echo 0)"
