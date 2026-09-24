@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/stratux-banner.png" alt="Stratux — built for better flight awareness. Open source, receive-only, ForeFlight compatible." width="800">
+  <img src="docs/img/stratux-ars-epaper-banner.png" alt="Stratux — built for better flight awareness. Open source, receive-only, ForeFlight compatible. Illustration of a Stratux receiver with two antennas and a 4.2-inch e-paper display showing the ARS logo." width="800">
 </p>
 
 [![CI](https://github.com/ddavis83864/stratux/actions/workflows/ci.yml/badge.svg)](https://github.com/ddavis83864/stratux/actions/workflows/ci.yml)
