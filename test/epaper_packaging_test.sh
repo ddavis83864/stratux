@@ -215,8 +215,8 @@ check "postinst (normal install) enables the splash" \
 	"$(grep -qx 'systemctl enable stratux_epaper_splash' "$LOGDIR/post_norm.log" && echo 1 || echo 0)"
 check "postinst (normal install) still starts stratux_epaper, but never the splash" \
 	"$(grep -qx 'systemctl start stratux_epaper' "$LOGDIR/post_norm.log" && ! grep -q 'start stratux_epaper_splash' "$LOGDIR/post_norm.log" && echo 1 || echo 0)"
-check "postinst enable order is unchanged for the existing units (fancontrol, then epaper, then splash), with the shutdown splash appended" \
-	"$(grep '^systemctl enable stratux_' "$LOGDIR/post_norm.log" | tr '\n' ' ' | grep -q '^systemctl enable stratux_fancontrol systemctl enable stratux_epaper systemctl enable stratux_epaper_splash systemctl enable stratux_epaper_shutdown $' && echo 1 || echo 0)"
+check "postinst enable order is unchanged for the existing units (fancontrol, then epaper, then splash, then the shutdown splash), with the SSH key restore appended" \
+	"$(grep '^systemctl enable stratux_' "$LOGDIR/post_norm.log" | tr '\n' ' ' | grep -q '^systemctl enable stratux_fancontrol systemctl enable stratux_epaper systemctl enable stratux_epaper_splash systemctl enable stratux_epaper_shutdown systemctl enable stratux_ssh_authorized_keys $' && echo 1 || echo 0)"
 
 check "postinst (normal install) arms the shutdown splash exactly once, before starting stratux_epaper" \
 	"$(grep -n 'systemctl start stratux_epaper' "$LOGDIR/post_norm.log" | sed 's/^[0-9]*://' | tr '\n' '|' | grep -q '^systemctl start stratux_epaper_shutdown|systemctl start stratux_epaper|$' && echo 1 || echo 0)"
