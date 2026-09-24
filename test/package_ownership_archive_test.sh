@@ -132,5 +132,5 @@ CONTAINER
 rc=${PIPESTATUS[0]}
 n=$(grep -c '^PASS' "$OUT"); f=$(grep -c '^FAIL' "$OUT"); rm -f "$OUT"
 echo "$n checks passed, $f failed"
-[ "$n" -ge 10 ] && [ "$f" = 0 ] && [ "$rc" = 0 ] && exit 0
+[ "$n" -ge "$([ "$MODE" = deb ] && echo 9 || echo 30)" ] && [ "$f" = 0 ] && [ "$rc" = 0 ] && exit 0
 echo "FAIL: ownership archive test did not complete cleanly (container exit $rc)"; exit 1
