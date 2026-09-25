@@ -35,7 +35,7 @@ func BenchmarkFISBReserveAndEnqueue(b *testing.B) {
 				fisbCacheStore, fisbCachePending = origStore, origPending
 				fisbCacheMu.Unlock()
 			})
-			settings := FISBCacheSettings{Enabled: true, MaxCacheBytes: 256 << 20, MaxEntries: 100000}
+			settings := FISBCacheSettings{Enabled: true, MaxCacheBytes: 256 << 20, MaxEntries: FISBCacheMaxEntriesLimit}
 			_ = storagelifecycle.PressureNormal
 			keys := make([]fisbcache.Key, 64)
 			for i := range keys {

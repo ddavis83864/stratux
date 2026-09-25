@@ -39,6 +39,7 @@ TESTS[guard]="$SETUP; go test -count=1 -run 'DataPartitionNotMounted|InitDir' ./
 TESTS[domain]="go test -count=1 ./fisbcache/"
 TESTS[e2e]="$SETUP; go test -count=1 -run 'FISBEndToEnd|FISBRealCapture|ReplayIntoGDL90' ./main/"
 TESTS[fresh]="set -e; go test -count=1 ./fisbcache/; go test -vet=off -count=1 ./uatparse/; $SETUP; go test -count=1 -run 'FISBEndToEnd|FISBRealCapture|EffectiveAgeSurvives' ./main/"
+TESTS[limit]="set -e; go test -count=1 ./configbackup/; $SETUP; go test -count=1 -run 'MaxEntries|MaxEntriesLimit|DashboardMaxEntries|PersistedValueAbove|FISBCacheSettings|HandleSetFISBCacheSettings' ./main/"
 TESTS[backup]="go test -count=1 ./configbackup/"
 
 mutate() { python3 - "$@" <<'PY'
@@ -106,6 +107,16 @@ M fresh-window-6h fresh fisbcache/time.go 'maxPastSkew = 48 * time.Hour' 'maxPas
 M fresh-lag-uncapped fresh fisbcache/entry.go 'if lag > maxSourceLag {' 'if false {' "an absurd persisted source lag makes the age unbounded"
 M fresh-arrival-check-removed fresh main/fisbcacherun.go 'entry.ReceivedAtMonotonic) == fisbcache.FreshnessExpired {' 'entry.ReceivedAtMonotonic) == fisbcache.FreshnessUnsupported {' "an already-expired product is cached (and churns) on every rebroadcast"
 M fresh-api-reception-age fresh main/fisbcacheapi.go 'AgeSeconds:          effective.Seconds(),' 'AgeSeconds:          e.ReceptionAge(now).Seconds(),' "the API's ageSeconds reports reception age only"
+echo
+echo "=== cache-size limit (10,000) mutations ==="
+M limit-restored-100000 limit main/fisbcachesettings.go 'const FISBCacheMaxEntriesLimit = 10000' 'const FISBCacheMaxEntriesLimit = 100000' "the maximum is accidentally restored to 100,000"
+M limit-accepts-10001 limit main/fisbcachesettings.go 'if s.MaxEntries > FISBCacheMaxEntriesLimit {' 'if s.MaxEntries > FISBCacheMaxEntriesLimit+1 {' "off-by-one: 10,001 is accepted"
+M limit-rejects-10000 limit main/fisbcachesettings.go 'if s.MaxEntries > FISBCacheMaxEntriesLimit {' 'if s.MaxEntries >= FISBCacheMaxEntriesLimit {' "off-by-one: 10,000 is rejected"
+M limit-backup-bypass limit configbackup/validate.go 'if f.MaxEntries <= 0 || f.MaxEntries > FISBCacheMaxEntries {' 'if f.MaxEntries <= 0 {' "Configuration Backup restore bypasses the entry limit"
+M limit-backup-constant-drift limit configbackup/validate.go 'const FISBCacheMaxEntries = 10000' 'const FISBCacheMaxEntries = 100000' "the backup validator's limit drifts from the settings limit"
+M limit-api-bypass limit main/fisbcacheapi.go $'if err := s.Validate(); err != nil {\n\t\twriteJSON(w, http.StatusBadRequest' $'if err := error(nil); err != nil {\n\t\twriteJSON(w, http.StatusBadRequest' "the settings API skips its own validation (the value would reach the save path)"
+M limit-dashboard-100000 limit web/plates/fisbcache.html 'min="1" max="10000"/>' 'min="1" max="100000"/>' "the dashboard input allows 100,000"
+M limit-default-changed limit main/fisbcachesettings.go 'MaxEntries:         2000,' 'MaxEntries:         10000,' "the default cache size changes with the maximum"
 echo
 [ "$overall" = 0 ] && echo "ALL FIS-B MUTATIONS CAUGHT" || echo "FIS-B MUTATION TEST FAILED"
 exit $overall

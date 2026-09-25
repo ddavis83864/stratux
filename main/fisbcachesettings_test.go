@@ -69,6 +69,7 @@ func TestFISBCacheSettings_ValidateRejectsOutOfBoundValues(t *testing.T) {
 		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 0; return s }(),
 		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = -1; return s }(),
 		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 1000000; return s }(),
+		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 100000; return s }(),
 	}
 	for i, s := range cases {
 		if err := s.Validate(); err == nil {
@@ -79,7 +80,7 @@ func TestFISBCacheSettings_ValidateRejectsOutOfBoundValues(t *testing.T) {
 
 // TestFISBCacheSettings_ValidateAcceptsExactBoundaryValues proves the
 // bounds in Validate() are correctly inclusive/exclusive at their exact
-// edges (1 and 256 MiB / 100000 pass; 0 and 256 MiB+1 / 100001 do not,
+// edges (1 and 256 MiB / 10000 pass; 0 and 256 MiB+1 / 10001 do not,
 // covered separately above) - a boundary condition is exactly where an
 // off-by-one is most likely to hide.
 func TestFISBCacheSettings_ValidateAcceptsExactBoundaryValues(t *testing.T) {
@@ -91,7 +92,7 @@ func TestFISBCacheSettings_ValidateAcceptsExactBoundaryValues(t *testing.T) {
 			return s
 		}(),
 		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 1; return s }(),
-		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 100000; return s }(),
+		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 10000; return s }(),
 	}
 	for i, s := range cases {
 		if err := s.Validate(); err != nil {
@@ -109,7 +110,7 @@ func TestFISBCacheSettings_ValidateRejectsJustOverBoundary(t *testing.T) {
 			s.MaxCacheBytes = 256*1024*1024 + 1
 			return s
 		}(),
-		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 100001; return s }(),
+		func() FISBCacheSettings { s := DefaultFISBCacheSettings(); s.MaxEntries = 10001; return s }(),
 	}
 	for i, s := range cases {
 		if err := s.Validate(); err == nil {

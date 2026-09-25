@@ -153,3 +153,68 @@ func TestFISBCacheSoak_PersistedFilesTrackTheBoundedStore(t *testing.T) {
 		t.Fatalf("%d cache files on disk but only %d committed entries - flash would fill with stale weather", len(files), fisbCacheStore.Len())
 	}
 }
+
+// At the new hard maximum (10,000 entries) the cache is bounded, admission completes, the
+// inventory/status API stays usable with a full cache, and nothing leaks.
+func TestFISBCacheCeiling_TenThousandEntriesBoundedAndUsable(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	withTestStorageManagerReportingPressure(t, storagelifecycle.PressureNormal)
+	withTrustedTimeForTest(t)
+	store := fisbcache.NewStore()
+	for i := 0; i < FISBCacheMaxEntriesLimit-10; i++ {
+		store.Admit(fisbcache.Entry{Key: fisbcache.TextKey("METAR", fmt.Sprintf("K%05d", i)), ReceivedAtMonotonic: float64(i) / 1000, SizeBytes: 100})
+	}
+	fisbCacheMu.Lock()
+	fisbCacheStore = store
+	fisbCacheSettingsCache = FISBCacheSettings{Enabled: true, MaxCacheBytes: 64 << 20, MaxEntries: FISBCacheMaxEntriesLimit}
+	fisbCachePending = newFISBPendingQueue(fisbCachePendingCapacity)
+	fisbCacheCleanupSignal = make(chan struct{}, 1)
+	fisbCacheShuttingDown = false
+	fisbCacheMu.Unlock()
+	startFISBWorkersForTest(t)
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	baseGoroutines := runtime.NumGoroutine()
+	var m0 runtime.MemStats
+	runtime.ReadMemStats(&m0)
+
+	// 200 brand-new stations (pushing past the ceiling) and 200 refreshes of existing ones.
+	start := time.Now()
+	nowUTC := start.UTC()
+	ft := fisbcache.FISBTime{Hour: uint32(nowUTC.Hour()), Minute: uint32(nowUTC.Minute())} // a product time of "now"
+	for i := 0; i < 200; i++ {
+		fisbCaptureText("METAR", fmt.Sprintf("N%05d", i), "METAR body 091853Z AUTO 00000KT 10SM CLR 15/10 A3000", ft)
+		fisbCaptureText("METAR", fmt.Sprintf("K%05d", i), "METAR body 091853Z AUTO 00000KT 10SM CLR 15/10 A3000", ft)
+	}
+	waitForFISBWorkerIdle(t, 60*time.Second)
+	time.Sleep(500 * time.Millisecond) // async cleanup
+	elapsed := time.Since(start)
+
+	if n := fisbCacheStore.Len(); n > FISBCacheMaxEntriesLimit {
+		t.Fatalf("the store holds %d entries, above the hard maximum %d", n, FISBCacheMaxEntriesLimit)
+	}
+	if q, f, _, _ := fisbCachePending.stats(); q != 0 || f != 0 {
+		t.Fatalf("reservation queue did not drain: %d/%d", q, f)
+	}
+	st := fisbCacheStatusSnapshot()
+	if st.TotalEntries > FISBCacheMaxEntriesLimit || st.MaxEntries != FISBCacheMaxEntriesLimit {
+		t.Fatalf("status = %+v", st)
+	}
+	inv := fisbInventoryForTest(t)
+	if st.CapacityRejected == 0 && st.TotalEntries < FISBCacheMaxEntriesLimit {
+		t.Fatalf("expected the ceiling to be reached or capacity rejections recorded: %+v", st)
+	}
+	if len(inv) != st.TotalEntries {
+		t.Fatalf("inventory has %d rows, status says %d", len(inv), st.TotalEntries)
+	}
+	if g := runtime.NumGoroutine(); g > baseGoroutines+2 {
+		t.Fatalf("goroutines grew from %d to %d", baseGoroutines, g)
+	}
+	runtime.GC()
+	var m1 runtime.MemStats
+	runtime.ReadMemStats(&m1)
+	if grown := int64(m1.HeapAlloc) - int64(m0.HeapAlloc); grown > 32<<20 {
+		t.Fatalf("live heap grew by %d MiB", grown>>20)
+	}
+	t.Logf("at the ceiling: %d entries, 400 captures in %v, goroutines %d->%d, %d inventory rows", st.TotalEntries, elapsed, baseGoroutines, runtime.NumGoroutine(), len(inv))
+}
