@@ -1,6 +1,10 @@
 package storagelifecycle
 
-import "github.com/stratux/stratux/readiness"
+import (
+	"sync"
+
+	"github.com/stratux/stratux/readiness"
+)
 
 // PressureState is this package's storage-pressure classification. It
 // deliberately reuses readiness.StorageThresholds' already-validated
@@ -99,9 +103,19 @@ func NamespaceQuotaPressure(usedBytes int64, quota Quota) PressureState {
 // - the same pattern as power.Monitor (see that package's doc comment for
 // the full rationale), reused here for consistency across the codebase
 // rather than inventing a different hysteresis mechanism for storage.
+//
+// Safe for concurrent use: Manager.Status() is documented as callable
+// from any goroutine (including concurrently with itself, e.g. the
+// periodic storage-lifecycle scan loop, the FIS-B cache's own status
+// snapshot and retention loop, and autorecord's storage-decision check
+// can all call it at once), and Observe/Current are the one piece of
+// mutable state Status() touches outside its own already-locked
+// inventory snapshot - so this type must protect its own fields itself
+// rather than relying on a caller-held lock.
 type Monitor struct {
 	RequiredConsecutive int
 
+	mu        sync.Mutex
 	current   PressureState
 	candidate PressureState
 	streak    int
@@ -119,6 +133,8 @@ func NewMonitor(requiredConsecutive int) *Monitor {
 // Observe evaluates one new raw sample and returns the Monitor's current
 // (debounced) PressureState.
 func (m *Monitor) Observe(raw PressureState) PressureState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if raw == m.candidate {
 		m.streak++
 	} else {
@@ -133,4 +149,8 @@ func (m *Monitor) Observe(raw PressureState) PressureState {
 
 // Current returns the Monitor's last-reported (debounced) state without
 // taking a new sample.
-func (m *Monitor) Current() PressureState { return m.current }
+func (m *Monitor) Current() PressureState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.current
+}

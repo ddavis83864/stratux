@@ -89,10 +89,12 @@ func Fingerprint(current CurrentState) (string, error) {
 		CalibrationProfiles profilesSectionPayload    `json:"calibrationProfiles"`
 		AlertSettings       AlertSettingsSection      `json:"alertSettings"`
 		AutoRecordSettings  AutoRecordSettingsSection `json:"autoRecordSettings"`
+		FISBCacheSettings   FISBCacheSettingsSection  `json:"fisbCacheSettings"`
 	}{
 		Configuration:       current.Configuration,
 		CalibrationProfiles: profilesSectionPayload{Profiles: profiles, ActiveID: current.ActiveProfileID},
 		AlertSettings:       current.AlertSettings,
 		AutoRecordSettings:  current.AutoRecordSettings,
+		FISBCacheSettings:   current.FISBCacheSettings,
 	})
 }

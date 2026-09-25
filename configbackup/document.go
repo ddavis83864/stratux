@@ -277,6 +277,25 @@ type EpaperSettingsSection struct {
 	Page                   string `json:"page"`
 }
 
+// FISBCacheSettingsSection mirrors main.FISBCacheSettings' own persisted
+// fields, except SchemaVersion (this document has its own). Like
+// AutoRecordSettingsSection, every field here is durable configuration -
+// there is no operational/time-bound field to exclude. A restore never
+// touches the cache's own stored entries (this section is settings only,
+// never cache contents), and ReplayEnabled is carried through unchanged
+// even though this build's own settings API always rejects true for it -
+// see main.FISBCacheSettings.Validate's doc comment - so a backup taken
+// on a future build that DOES support replay is not silently altered by
+// an older build's restore path; Validate below still rejects
+// ReplayEnabled:true exactly as the live settings API does.
+type FISBCacheSettingsSection struct {
+	Enabled            bool  `json:"enabled"`
+	PersistenceEnabled bool  `json:"persistenceEnabled"`
+	ReplayEnabled      bool  `json:"replayEnabled"`
+	MaxCacheBytes      int64 `json:"maxCacheBytes"`
+	MaxEntries         int   `json:"maxEntries"`
+}
+
 // Document is the complete, portable configuration backup.
 type Document struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -297,6 +316,7 @@ type Document struct {
 	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
 	TrafficCPASettings         TrafficCPASettingsSection `json:"trafficCpaSettings"`
 	EpaperSettings             EpaperSettingsSection     `json:"epaperSettings"`
+	FISBCacheSettings          FISBCacheSettingsSection  `json:"fisbCacheSettings"`
 
 	// SectionChecksums/ContentChecksum detect accidental corruption and
 	// incomplete modification (a truncated download, a flipped byte, a
@@ -326,6 +346,7 @@ type BuildInputs struct {
 	AutoRecordSettings         AutoRecordSettingsSection
 	TrafficCPASettings         TrafficCPASettingsSection
 	EpaperSettings             EpaperSettingsSection
+	FISBCacheSettings          FISBCacheSettingsSection
 }
 
 // sectionChecksum returns the hex SHA-256 of v's canonical JSON encoding.
@@ -373,6 +394,7 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		AutoRecordSettings:         in.AutoRecordSettings,
 		TrafficCPASettings:         in.TrafficCPASettings,
 		EpaperSettings:             in.EpaperSettings,
+		FISBCacheSettings:          in.FISBCacheSettings,
 	}
 
 	cfgSum, err := sectionChecksum(doc.Configuration)
@@ -399,6 +421,10 @@ func BuildDocument(in BuildInputs) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming e-paper display settings: %w", err)
 	}
+	fisbCacheSum, err := sectionChecksum(doc.FISBCacheSettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming fisb weather cache settings: %w", err)
+	}
 	doc.SectionChecksums = map[string]string{
 		"configuration":       cfgSum,
 		"calibrationProfiles": profSum,
@@ -406,6 +432,7 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		"autoRecordSettings":  autoRecordSum,
 		"trafficCpaSettings":  trafficCPASum,
 		"epaperSettings":      epaperSum,
+		"fisbCacheSettings":   fisbCacheSum,
 	}
 
 	contentSum, err := contentChecksum(doc)

@@ -40,6 +40,7 @@ type CurrentState struct {
 	AutoRecordSettings  AutoRecordSettingsSection
 	TrafficCPASettings  TrafficCPASettingsSection
 	EpaperSettings      EpaperSettingsSection
+	FISBCacheSettings   FISBCacheSettingsSection
 }
 
 // Preview is Validate's companion: an accurate, human-readable account of
@@ -60,6 +61,7 @@ type Preview struct {
 	AutoRecordSettingsChanges []FieldChange `json:"autoRecordSettingsChanges,omitempty"`
 	TrafficCPASettingsChanges []FieldChange `json:"trafficCpaSettingsChanges,omitempty"`
 	EpaperSettingsChanges     []FieldChange `json:"epaperSettingsChanges,omitempty"`
+	FISBCacheSettingsChanges  []FieldChange `json:"fisbCacheSettingsChanges,omitempty"`
 
 	AddedProfiles     []ProfileSummary `json:"addedProfiles,omitempty"`
 	UpdatedProfiles   []ProfileSummary `json:"updatedProfiles,omitempty"`
@@ -130,6 +132,7 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 	preview.AutoRecordSettingsChanges = diffJSONFields(current.AutoRecordSettings, doc.AutoRecordSettings)
 	preview.TrafficCPASettingsChanges = diffJSONFields(current.TrafficCPASettings, doc.TrafficCPASettings)
 	preview.EpaperSettingsChanges = diffJSONFields(current.EpaperSettings, doc.EpaperSettings)
+	preview.FISBCacheSettingsChanges = diffJSONFields(current.FISBCacheSettings, doc.FISBCacheSettings)
 
 	for _, c := range preview.ConfigurationChanges {
 		if fieldRequiresRestart(c.Field) {
@@ -196,6 +199,7 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 		len(preview.AutoRecordSettingsChanges) > 0 ||
 		len(preview.TrafficCPASettingsChanges) > 0 ||
 		len(preview.EpaperSettingsChanges) > 0 ||
+		len(preview.FISBCacheSettingsChanges) > 0 ||
 		len(preview.AddedProfiles) > 0 ||
 		len(preview.UpdatedProfiles) > 0 ||
 		preview.ActiveProfileChange != nil

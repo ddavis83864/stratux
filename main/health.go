@@ -263,7 +263,9 @@ func updateHealth() {
 	autoRecord := buildAutoRecordHealth()
 	epaperHealth := buildEpaperHealth(now)
 
-	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan, storageLifecycle, autoRecord, epaperHealth)
+	fisbCache := buildFISBCacheHealth()
+
+	report := readiness.BuildHealthReport(now, uat, es, gps, gdl90, system, storage, overlay, timeHealth, timeTrust.State(), ahrs, baro, fan, storageLifecycle, autoRecord, epaperHealth, fisbCache)
 
 	globalHealthMutex.Lock()
 	globalHealth = report
