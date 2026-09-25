@@ -193,6 +193,24 @@ func fisbCacheHandleShutdown() {
 	fisbCacheMu.Unlock()
 }
 
+// fisbCacheInitDir creates the cache directory - but only behind the same
+// persistent-mount guard every other persistence namespace applies: never
+// create it inside the RAM overlay when the data partition is not (yet)
+// genuinely mounted. A failure is logged and reported through the recovery-
+// error flag (never ignored, never fatal).
+func fisbCacheInitDir() {
+	err := ensurePersistentDataMounted()
+	if err == nil {
+		err = os.MkdirAll(fisbCacheDir, 0o755)
+	}
+	if err != nil {
+		log.Printf("fisbcache: could not create cache directory: %s\n", err)
+		fisbCacheMu.Lock()
+		fisbCacheRecoveryError = true
+		fisbCacheMu.Unlock()
+	}
+}
+
 // initFISBCache loads settings, constructs the in-memory Store, and
 // starts this feature's own capture-worker and retention-loop goroutines
 // - must run after initStorageLifecycle (fisbCacheNamespace is already
@@ -211,20 +229,7 @@ func initFISBCache() {
 	settingsSnapshot := fisbCacheSettingsCache
 	fisbCacheMu.Unlock()
 
-	// Same persistent-mount guard as every other persistence namespace: never
-	// create the cache directory inside the RAM overlay when the data
-	// partition is not (yet) genuinely mounted.
-	mkdirErr := ensurePersistentDataMounted()
-	if mkdirErr == nil {
-		mkdirErr = os.MkdirAll(fisbCacheDir, 0o755)
-	}
-	if mkdirErr != nil {
-		err := mkdirErr
-		log.Printf("fisbcache: could not create cache directory: %s\n", err)
-		fisbCacheMu.Lock()
-		fisbCacheRecoveryError = true
-		fisbCacheMu.Unlock()
-	}
+	fisbCacheInitDir()
 
 	go fisbCacheCaptureWorker()
 	go fisbCacheStartupRecovery()

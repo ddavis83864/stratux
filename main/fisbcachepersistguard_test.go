@@ -94,14 +94,21 @@ func TestFISBCachePersist_ResumesOnceDataPartitionIsMounted(t *testing.T) {
 	}
 }
 
-func TestInitFISBCache_DoesNotCreateCacheDirWhenDataPartitionNotMounted(t *testing.T) {
-	withTestFISBCacheSettingsPath(t)
+func TestFISBCacheInitDir_DoesNotCreateCacheDirWhenDataPartitionNotMounted(t *testing.T) {
 	origDir := fisbCacheDir
 	fisbCacheDir = filepath.Join(t.TempDir(), "fisb-weather-cache")
-	t.Cleanup(func() { fisbCacheDir = origDir })
+	fisbCacheMu.Lock()
+	origErr := fisbCacheRecoveryError
+	fisbCacheRecoveryError = false
+	fisbCacheMu.Unlock()
+	t.Cleanup(func() {
+		fisbCacheDir = origDir
+		fisbCacheMu.Lock()
+		fisbCacheRecoveryError = origErr
+		fisbCacheMu.Unlock()
+	})
 	withUnmountedPersistentData(t)
-	ensureStratuxClockForTest()
-	initFISBCache()
+	fisbCacheInitDir()
 	if _, err := os.Stat(fisbCacheDir); !os.IsNotExist(err) {
 		t.Fatalf("the cache directory must not be created without a mounted data partition, stat err = %v", err)
 	}
@@ -110,5 +117,15 @@ func TestInitFISBCache_DoesNotCreateCacheDirWhenDataPartitionNotMounted(t *testi
 	fisbCacheMu.Unlock()
 	if !failed {
 		t.Fatal("the unmounted partition must be reported (recovery error flag), not silently ignored")
+	}
+}
+
+func TestFISBCacheInitDir_CreatesTheDirectoryWhenMounted(t *testing.T) {
+	origDir := fisbCacheDir
+	fisbCacheDir = filepath.Join(t.TempDir(), "fisb-weather-cache")
+	t.Cleanup(func() { fisbCacheDir = origDir })
+	fisbCacheInitDir()
+	if st, err := os.Stat(fisbCacheDir); err != nil || !st.IsDir() {
+		t.Fatalf("expected the cache directory to be created, err = %v", err)
 	}
 }
