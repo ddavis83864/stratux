@@ -1430,3 +1430,33 @@ Performed 2026-09-25 on the bench unit (external Stratux UATRadio for 978 MHz, R
 Evidence: `/var/lib/stratux-data/acceptance/fisb-rolling-weather/` on the device (60 files, manifest SHA-256
 `31a20051d0da0916d7b1087cdc649b0f743bf0d0fd06ca29a0677edf62aa7940`) with a byte-identical host copy. The Pi-side test binaries
 (arm64 builds of this commit, a mount-guard probe and an API-dump harness) ran from RAM and are hashed there; they are not part of the package.
+
+## Cache-size limit remediation: targeted physical verification
+
+After the first physical campaign the owner bounded the setting to **10,000 entries** ("Maximum cache size," above) without touching the
+capture path, the freshness rules or GDL90. The resulting artifact - PR CI run 36105605109, head `b26686c7`,
+`stratux-2.0.0~rc2-arm64.deb`, 86,407,232 bytes, SHA-256 `f86a76949bde08ab4ba1b68aeb6a6fd9ed0192f7f8483ded849a41557098cfb2`,
+`vcs.modified=false`, all 182 data and 6 control entries `0/0` - supersedes the `94c4fc48` candidate. It was OTA-installed on the bench Pi
+(two OTA reboots, `94c4fc48` -> `b26686c7`, `dpkg --audit` and `--verify` clean, staged copy hashes to the authorized SHA-256).
+
+Verified on the device:
+
+- **Boundary through the API:** `9999` and `10000` accepted; `10001`, `100000`, `1000000`, `0`, `-1`, `2147483648`, an overflowing number, a string
+  and a fraction rejected with HTTP 400 ("maxEntries must not exceed 10000" / "must be positive" / a JSON decode error); after every rejection
+  the active setting and the persisted file (hash) were unchanged and no temp file was left; `replayEnabled: true` still HTTP 400.
+- **Upgrade behavior:** a persisted `maxEntries: 50000` (allowed by the previous build), with the cache enabled, was loaded after a daemon restart as
+  the disabled defaults (2,000 entries), the file left untouched, GDL90 unaffected.
+- **Configuration Backup:** documents with 9,999 and 10,000 validate (seven sections), 10,001 and 100,000 are rejected with
+  "must be between 1 and 10000"; all four legacy shapes still validate and default the FIS-B section to disabled / 2,000. (Nothing applied.)
+- **Dashboard:** the page serves the input limited to 10,000 and renders; enable/disable/re-enable works and the default (disabled, 2,000) is restored.
+- **Cost at the ceiling on the Pi** (arm64 build of the same commit, three runs, CPU at 900 MHz, live daemon running): 100 entries 137-195 us,
+  500 entries 0.81-1.43 ms, 2,000 entries 3.8-4.0 ms, 10,000 entries 20-32 ms per accepted capture, allocating 27 KB / 197 KB / 762 KB / 3.0 MB -
+  unchanged from the first campaign. The ceiling test (10,000 entries, 400 mixed captures on the real worker) stayed bounded with flat goroutines
+  and a usable API; the 16,000-capture load test again showed flat goroutines and a heap change under 0.5 MiB. Active under-voltage bits appeared
+  during the benchmark runs and the clock dropped to 360 MHz for a moment; recorded only.
+- **Regressions:** ownership (174 paths `root:root`, invariant 0 violations), SSH login and restore helper, e-paper (0 BUSY timeouts), 1090 ES,
+  978 UAT via the external radio, GPS 3D, AHRS, barometer, GDL90 (same message mix, no uplink), Wi-Fi, 0 failed units, overlay and OTA `idle`.
+
+Still pending, unchanged: live FIS-B reception (none observed during this session either), the ForeFlight session and the reconnect-with-populated-cache test.
+Evidence: `/var/lib/stratux-data/acceptance/fisb-cache-limit/` on the device (33 files, manifest SHA-256
+`01e10e094b8f88025734cf75a5218d6497c87339f7656d3f32d526c64c8542be`), with the earlier campaign's evidence untouched.
