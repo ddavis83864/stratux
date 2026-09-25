@@ -335,6 +335,10 @@ func validateEpaperSettings(e EpaperSettingsSection, res *ValidationResult) {
 	}
 }
 
+// FISBCacheMaxEntries mirrors main.FISBCacheMaxEntriesLimit (this package cannot
+// import main); main's tests fail if the two ever differ.
+const FISBCacheMaxEntries = 10000
+
 // validateFISBCacheSettings mirrors main.FISBCacheSettings.Validate's own
 // bounds - this package cannot import main (leaf-dependency direction),
 // so the rules are independently re-checked here against the same
@@ -361,8 +365,8 @@ func validateFISBCacheSettings(f FISBCacheSettingsSection, res *ValidationResult
 	if f.MaxCacheBytes <= 0 || f.MaxCacheBytes > 256*1024*1024 {
 		res.addErrorf("%s: fisbCacheSettings.maxCacheBytes must be between 1 and 268435456 bytes", ErrInvalidField)
 	}
-	if f.MaxEntries <= 0 || f.MaxEntries > 100000 {
-		res.addErrorf("%s: fisbCacheSettings.maxEntries must be between 1 and 100000", ErrInvalidField)
+	if f.MaxEntries <= 0 || f.MaxEntries > FISBCacheMaxEntries {
+		res.addErrorf("%s: fisbCacheSettings.maxEntries must be between 1 and %d", ErrInvalidField, FISBCacheMaxEntries)
 	}
 }
 

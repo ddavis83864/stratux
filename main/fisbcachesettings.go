@@ -48,6 +48,15 @@ type FISBCacheSettings struct {
 	MaxEntries    int   `json:"maxEntries"`
 }
 
+// FISBCacheMaxEntriesLimit is the hard maximum for FISBCacheSettings.MaxEntries.
+// Every accepted capture copies the store snapshot (cost linear in the entry
+// count), and the largest size measured on the target Raspberry Pi is 10,000
+// entries (about 20-35 ms per capture); a larger cache is outside the validated
+// production envelope. It is restated - it cannot be imported - as
+// configbackup.FISBCacheMaxEntries for Configuration Backup validation, and a
+// test keeps the two equal. The default (2000) is unchanged.
+const FISBCacheMaxEntriesLimit = 10000
+
 // DefaultFISBCacheSettings returns the safe, disabled-by-default
 // settings - the only values ever used before an owner explicitly
 // configures this feature, and the fallback for a missing, corrupt, or
@@ -82,8 +91,8 @@ func (s FISBCacheSettings) Validate() error {
 	if s.MaxEntries <= 0 {
 		return fmt.Errorf("fisbcache: maxEntries must be positive")
 	}
-	if s.MaxEntries > 100000 {
-		return fmt.Errorf("fisbcache: maxEntries must not exceed 100000")
+	if s.MaxEntries > FISBCacheMaxEntriesLimit {
+		return fmt.Errorf("fisbcache: maxEntries must not exceed %d", FISBCacheMaxEntriesLimit)
 	}
 	return nil
 }
