@@ -368,13 +368,14 @@ func TestEnabledWithZeroThresholdsStillRejected(t *testing.T) {
 }
 
 // ====================================================================
-// preFISBCache historical shape (commit 5b8509fc through 83a20a8c) -
-// has autoRecordSettings, missing fisbCacheSettings. See this file's own
-// doc comment and testdata/README.md for how the fixture was generated.
+// preFISBCache historical shape (master through commit 8af40b10, i.e.
+// after epaperSettings) - has autoRecordSettings, trafficCpaSettings and
+// epaperSettings, missing fisbCacheSettings. See this file's own doc
+// comment and testdata/README.md for how the fixture was generated.
 // ====================================================================
 
 // loadLegacyPreFISBCacheFixture reads the authentic pre-fisbCacheSettings
-// backup - literally run from commit 83a20a8c's own
+// backup - literally run from commit 8af40b10's own
 // configbackup.BuildDocument, never hand-simulated.
 func loadLegacyPreFISBCacheFixture(t *testing.T) (doc Document, raw []byte) {
 	t.Helper()
@@ -555,5 +556,78 @@ func TestFISBCacheEnabledWithZeroLimitsStillRejected(t *testing.T) {
 	}
 	if res := Validate(doc, mustMarshalLen(t, doc)); res.OK() {
 		t.Fatal("expected Enabled:true with all-zero cache limits to still be rejected")
+	}
+}
+
+// TestEveryHistoricalShapeNormalizesToTheDisabledFISBCacheDefault proves
+// the whole legacy chain (pre-autorecord, pre-trafficcpa, pre-epaper,
+// pre-fisbcache) ends with the documented FIS-B cache default, that each
+// fixture matches exactly ONE recognizer, and that none of them enables
+// the cache - the integration property no single-fixture test states.
+func TestEveryHistoricalShapeNormalizesToTheDisabledFISBCacheDefault(t *testing.T) {
+	fixtures := map[string]func(Document) bool{
+		"legacy-pre-autorecord-backup.json": verifyLegacyPreAutoRecordChecksum,
+		"legacy-pre-trafficcpa-backup.json": verifyLegacyPreTrafficCPAChecksum,
+		"legacy-pre-epaper-backup.json":     verifyLegacyPreEpaperChecksum,
+		"legacy-pre-fisbcache-backup.json":  verifyLegacyPreFISBCacheChecksum,
+	}
+	recognizers := map[string]func(Document) bool{
+		"autorecord": verifyLegacyPreAutoRecordChecksum,
+		"trafficcpa": verifyLegacyPreTrafficCPAChecksum,
+		"epaper":     verifyLegacyPreEpaperChecksum,
+		"fisbcache":  verifyLegacyPreFISBCacheChecksum,
+	}
+	for name, want := range fixtures {
+		raw, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var doc Document
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !want(doc) {
+			t.Errorf("%s: its own recognizer rejected it", name)
+		}
+		matches := 0
+		for _, r := range recognizers {
+			if r(doc) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			t.Errorf("%s: matched %d recognizers, want exactly 1", name, matches)
+		}
+		if res := Validate(doc, len(raw)); !res.OK() {
+			t.Errorf("%s: Validate: %v", name, res.Errors)
+			continue
+		}
+		n := NormalizeDocument(doc)
+		if n.FISBCacheSettings != legacyDefaultFISBCacheSettings || n.FISBCacheSettings.Enabled {
+			t.Errorf("%s: normalized FISBCacheSettings = %+v, want the disabled legacy default", name, n.FISBCacheSettings)
+		}
+	}
+}
+
+// TestCurrentDocumentIsNotMistakenForAnyLegacyShape: a document built by
+// the current code carries all seven section checksums and must never be
+// claimed by a legacy recognizer.
+func TestCurrentDocumentIsNotMistakenForAnyLegacyShape(t *testing.T) {
+	doc, err := BuildDocument(testBuildInputs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, r := range map[string]func(Document) bool{
+		"autorecord": verifyLegacyPreAutoRecordChecksum,
+		"trafficcpa": verifyLegacyPreTrafficCPAChecksum,
+		"epaper":     verifyLegacyPreEpaperChecksum,
+		"fisbcache":  verifyLegacyPreFISBCacheChecksum,
+	} {
+		if r(doc) {
+			t.Errorf("a current-format document was claimed by the %s legacy recognizer", name)
+		}
+	}
+	if len(doc.SectionChecksums) != 7 {
+		t.Errorf("current document has %d section checksums, want 7", len(doc.SectionChecksums))
 	}
 }

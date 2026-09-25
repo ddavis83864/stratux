@@ -151,11 +151,22 @@ func (m *Manager) Scan() (inv Inventory, performed bool) {
 // Status returns Manager's current snapshot without scanning. Safe to
 // call from any goroutine, including while a Scan is in progress
 // elsewhere (it reads whatever the last completed scan produced).
+//
+// Holds m.mu for the whole call, not just the initial inventory read:
+// m.monitor.Observe (below) mutates Monitor's own unexported,
+// unsynchronized fields (candidate/streak/current - see
+// accounting.go's own Monitor type), so two concurrent Status() calls
+// racing on it is a real, race-detector-confirmed defect, not a
+// theoretical one - found running this release candidate's own full
+// test suite under -race. Everything else in this function is a pure,
+// non-blocking read/compute (registry/policy lookups on cfg, never on
+// m itself), so holding the lock for the whole body introduces no
+// blocking or reentrancy risk.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	inv := m.inventory
 	has := m.hasInventory
-	m.mu.Unlock()
 
 	st := Status{HasInventory: has}
 	if !has {

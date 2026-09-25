@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "createdAtUTC": "2026-09-07T12:00:00Z",
   "sourceVersion": "2.0-pre5",
-  "sourceCommit": "83a20a8caab0fbf90c2d3bebab1d92fa76d409ca",
+  "sourceCommit": "deadbeef",
   "minimumCompatibleVersion": 2,
   "configuration": {
     "darkMode": false,
@@ -39,8 +39,8 @@
   },
   "calibrationProfiles": [
     {
-      "id": "profile-fedcba9876543210",
-      "name": "Legacy Backup Aircraft",
+      "id": "profile-1316db66ab7a7767",
+      "name": "Legacy Backup Aircraft (pre-fisbcache)",
       "imuMapping": [
         -1,
         0
@@ -70,7 +70,7 @@
       "lastCalibratedAt": null
     }
   ],
-  "activeCalibrationProfileId": "profile-fedcba9876543210",
+  "activeCalibrationProfileId": "profile-1316db66ab7a7767",
   "alertSettings": {
     "masterEnabled": true,
     "visualTrafficNoticesEnabled": false,
@@ -101,11 +101,27 @@
     "restartCooldownSeconds": 300,
     "minimumRecordingDurationSeconds": 0
   },
+  "trafficCpaSettings": {
+    "escalationEnabled": false,
+    "horizonSeconds": 0,
+    "minRelativeSpeedKnots": 0,
+    "minClosureRateKnots": 0
+  },
+  "epaperSettings": {
+    "enabled": false,
+    "panel": "",
+    "rotation": 0,
+    "refreshIntervalSeconds": 0,
+    "fullRefreshEvery": 0,
+    "page": ""
+  },
   "sectionChecksums": {
     "alertSettings": "f916efe5af6f89ce378ff12d74a24e61c12554cff1343645ec23ac1f20092785",
     "autoRecordSettings": "e59a6adf822d450b6fae3161af7eae03747164b3e8541958fde69f058aa378b4",
-    "calibrationProfiles": "b5f9f43f12b46732999811c36946470c5ab9a2b688394133d72f9e575f34084f",
-    "configuration": "1a643a799aa1838a1fd11984972f3d3865c709f70b37976cf94d0aa8212750a7"
+    "calibrationProfiles": "2d2daef046c95fd70cdb3fc31104414dab6c17bbecb8ab17a74b2e1951c847e2",
+    "configuration": "1a643a799aa1838a1fd11984972f3d3865c709f70b37976cf94d0aa8212750a7",
+    "epaperSettings": "36d4409dfa2f916c144795b3c614821683baa948f581615bf3476cc9d97914e6",
+    "trafficCpaSettings": "5a53858c7a963159a4c494dcd7ae05f9fc3de9af1d1c00c6bfc103f788394c40"
   },
-  "contentChecksum": "b7802a354ae891360a021581a195e77970b7adf48a43ff4951de4f0e4127cd38"
+  "contentChecksum": "36ad296b7100b22c4bf26ebf71c573d40c59ef0515850609f3c4be9e02179f44"
 }

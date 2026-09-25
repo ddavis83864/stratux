@@ -81,6 +81,27 @@ type Config struct {
 
 	// MaxEventHistory bounds the recent-event list returned by Snapshot.
 	MaxEventHistory int
+
+	// CPAEscalationEnabled gates whether a valid, sufficiently reliable
+	// closure-rate/CPA trend estimate (trafficcpa.Result, carried on
+	// TrafficObservation.CPA) may ever raise a target's tier above what
+	// distance/altitude alone already produced - see classifyTier's own
+	// doc comment. False (the default) never changes existing behavior
+	// at all: passive CPA calculation/display elsewhere is unaffected by
+	// this flag, which only gates ESCALATION. This can never lower or
+	// suppress a tier distance/altitude alone would already produce -
+	// see docs/traffic-cpa-alerting.md's "Alert escalation policy"
+	// section for the full, one-tier-at-a-time design and its proof.
+	CPAEscalationEnabled bool
+
+	// CPAMinClosureRateKnots is the minimum horizontal closure rate an
+	// otherwise-valid CPA estimate must show before it may escalate a
+	// tier - a POLICY minimum, deliberately independent of (and
+	// typically higher than) trafficcpa.Config's own
+	// MinRelativeSpeedKnots numerical-stability floor: an estimate that
+	// is merely computable should not by itself be enough to escalate a
+	// real alert tier.
+	CPAMinClosureRateKnots float64
 }
 
 // DefaultConfig returns the project's documented conservative defaults -
@@ -116,6 +137,14 @@ func DefaultConfig() Config {
 		SuppressGroundTraffic: false,
 
 		MaxEventHistory: 200,
+
+		// Disabled by default until real-hardware validation - see
+		// docs/traffic-cpa-alerting.md's "Hardware-validation checklist".
+		CPAEscalationEnabled: false,
+		// Above trafficcpa.DefaultConfig().MinRelativeSpeedKnots (20kt) -
+		// deliberately a higher, policy-level bar than that package's own
+		// bare numerical-stability floor.
+		CPAMinClosureRateKnots: 30,
 	}
 }
 
@@ -145,6 +174,7 @@ func (c Config) Validate() error {
 		{"AudioCooldownNoticeSeconds", c.AudioCooldownNoticeSeconds},
 		{"AudioCooldownCautionSeconds", c.AudioCooldownCautionSeconds},
 		{"GlobalMinAudioSpacingSeconds", c.GlobalMinAudioSpacingSeconds},
+		{"CPAMinClosureRateKnots", c.CPAMinClosureRateKnots},
 	}
 	for _, chk := range checks {
 		if math.IsNaN(chk.v) || math.IsInf(chk.v, 0) {

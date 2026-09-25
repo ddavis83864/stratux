@@ -148,6 +148,24 @@ type DiagnosticBundle struct {
 	// above. State/counts only - never a raw weather payload, station
 	// identifier, or exact coordinate.
 	FISBCacheSummary interface{} `json:"FISBCacheSummary,omitempty"`
+
+	// TrafficCPASummary is a bounded, sanitized summary of the closure-
+	// rate/closest-point-of-approach traffic-alerting enhancement's
+	// current state (see the trafficcpa package) at generation time,
+	// opaque to this package for the same import-direction reason as the
+	// summaries above. Counters, current settings, and rejection-reason
+	// tallies only - never a raw target list, a track history, or any
+	// coordinate.
+	TrafficCPASummary interface{} `json:"TrafficCPASummary,omitempty"`
+
+	// WifiAdminSummary is a bounded, sanitized summary of the Wi-Fi
+	// administration-hardening feature's current state (see the
+	// wifiadmin package) at generation time, opaque to this package for
+	// the same import-direction reason as the summaries above. Never a
+	// passphrase, a token, or a raw configuration file - only transaction
+	// stage, last result, and the current configuration in its own
+	// already-redacted (wifiadmin.Redacted) form.
+	WifiAdminSummary interface{} `json:"WifiAdminSummary,omitempty"`
 }
 
 // CalibrationProfileSummary is one profile's diagnostic-relevant fields -
@@ -175,7 +193,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, fisbCacheSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, trafficCPASummary interface{}, wifiAdminSummary interface{}, fisbCacheSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -196,6 +214,8 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		PowerSummary:               powerSummary,
 		StorageLifecycleSummary:    storageLifecycleSummary,
 		AutoRecordSummary:          autoRecordSummary,
+		TrafficCPASummary:          trafficCPASummary,
+		WifiAdminSummary:           wifiAdminSummary,
 		FISBCacheSummary:           fisbCacheSummary,
 	}
 }
@@ -207,6 +227,32 @@ const (
 	diagnosticFilePrefix = "diagnostic-"
 	diagnosticFileSuffix = ".json"
 )
+
+// ensureDiagnosticsPersistentDir is called by WriteDiagnosticBundle
+// immediately before every write, to refuse persisting a bundle into the
+// RAM-backed overlay directory that exists at dir even when the real
+// dedicated data partition backing it failed to mount - see
+// EnsurePersistentDir's own doc comment (storage.go, same package) and
+// docs/persistent-data-partition.md's namespace audit.
+//
+// Defaults to a no-op (always safe to write) so this package's own
+// tests, which write to a plain t.TempDir() never intended to be its
+// own dedicated mount, are unaffected - the same reasoning as
+// calprofile/recording/power's own SetPersistenceGuard seams (see
+// main.ensurePersistentDataMounted's doc comment for the real-world
+// test breakage that reasoning is based on). SetDiagnosticsPersistenceGuard
+// lets main's own startup wiring override this to the real check exactly
+// once; unlike those other three packages this lives in the readiness
+// package itself (WriteDiagnosticBundle's own home), so it needs no
+// cross-package injection to reach EnsurePersistentDir - only to learn
+// the actual root path (main.PersistentDataPath) to check, which this
+// leaf package deliberately does not hardcode.
+var ensureDiagnosticsPersistentDir = func() error { return nil }
+
+// SetDiagnosticsPersistenceGuard overrides the check WriteDiagnosticBundle
+// runs before every write. See ensureDiagnosticsPersistentDir's own doc
+// comment.
+func SetDiagnosticsPersistenceGuard(f func() error) { ensureDiagnosticsPersistentDir = f }
 
 // WriteDiagnosticBundle marshals bundle to a timestamped JSON file in dir
 // and prunes older bundle files beyond maxRetain. It returns the path
@@ -224,6 +270,9 @@ const (
 // timestamps are not sufficient once generation can be triggered on
 // demand rather than only from a slow periodic timer.
 func WriteDiagnosticBundle(dir string, bundle DiagnosticBundle, maxRetain int) (string, error) {
+	if err := ensureDiagnosticsPersistentDir(); err != nil {
+		return "", fmt.Errorf("could not persist diagnostic bundle: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("could not create diagnostics directory: %w", err)
 	}

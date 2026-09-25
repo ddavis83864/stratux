@@ -328,6 +328,60 @@ re-entering the `installing` stage when dpkg already reports the target version 
 short-circuits without invoking `dpkg -i` again; and a backup missing its metadata member degrades
 to a logged warning without blocking the file-level restore.
 
+## StageFailed's bounded recovery retry (`ota/decide.go`, `main/ota.go`, `POST /resetOTA`)
+
+Real hardware exposed a defect distinct from every other issue in this document: `overlayctl
+lock` (the last step of `requestOverlayDisable()`'s narrow remount-rw/write/sync/relock-ro
+sequence) failed with `exit status 32: mount point is busy`, and `StageFailed`'s pre-fix `Decide`
+case unconditionally retried the entire sequence - unlock, write the marker, `sync`, attempt
+lock again - on every `healthUpdateLoop` tick, forever, with no attempt cap (unlike
+`StageInstalling`, bounded by `MaxInstallAttempts`). Each retry's `Decide` reason was also written
+straight back into `State.LastError`, and that reason was itself formatted from the *previous*
+`LastError` (`"update previously marked failed: %s"`), so the string nested one more wrapper every
+five seconds - observed in the field as a `LastError` well over a thousand repetitions of
+`"update previously marked failed: "` deep. Neither the toggling `/overlay/robase` mount nor the
+unbounded string growth would have self-resolved short of a reboot, and nothing prevented the
+identical loop from resuming immediately after a `stratux.service` restart, since the persisted
+`Stage` was still `"failed"` and the daemon's very first health tick re-enters the same
+unconditional retry.
+
+The fix adds a second, independent bound alongside `MaxInstallAttempts`, deliberately not sharing
+its counter or policy (see `ota.State.Recovery`'s doc comment for why: retrying an overlay-relock
+is a different operation, with a different failure mode, than retrying a `dpkg -i`):
+
+- **`MaxRecoveryAttempts`** (5) caps how many times `StageFailed` will retry
+  `requestOverlayDisable()` before `Decide` returns `ActionRecoveryExhausted` instead of
+  `ActionRollback`.
+- **`RecoveryBackoff`** doubles the wait between attempts (5s, 10s, 20s, 40s, 80s, capped at the
+  2-minute `recoveryBackoffMax`) rather than retrying on every five-second health tick - about
+  4m35s of total patience across the full budget before giving up, versus the prior unbounded
+  every-5-seconds-forever behavior.
+- **`StageRecoveryExhausted`** is a new terminal `Stage` (`Stage.Terminal()` now reports true for
+  it): once reached, `Decide` takes no further automatic action - no more `overlayctl` calls, no
+  more reboot attempts - and the state stays exactly where it was left for an operator to inspect.
+- **`State.LastError` now stays fixed** at the original failure for the whole `StageFailed`
+  episode; `State.Recovery.LastError` separately tracks only the most recent secondary error from
+  a retry. This is what actually stops the nesting - the original defect was not the retry itself,
+  but retrying *and* overwriting the historical record of why with each attempt's own Decide
+  reason.
+- **`POST /resetOTA`** is the first supported way to leave `StageFailed`/`StageRecoveryExhausted`
+  without hand-editing or removing `state.json` on the device - which, before this endpoint
+  existed, was the only way to recover from a stuck failed state at all. Guarded: only
+  `StageFailed`/`StageRecoveryExhausted` may be reset (an update genuinely mid-flight is refused
+  with 409); `StageIdle`/`StageComplete`/`StageRolledBack` report "nothing to reset" rather than
+  erroring, so a repeated or racing call is a safe no-op; a concurrently active recording or
+  configuration restore also blocks it (mirroring the existing OTA/restore/recording
+  mutual-exclusion checks in `main/powerapi.go` and `main/configbackupapi.go`). The pre-reset
+  `state.json` is copied - not moved - to a timestamped `state.json.reset-<UTC timestamp>` file
+  under the same OTA directory before being cleared, so every reset leaves an automatic diagnostic
+  trail rather than depending on an operator remembering to back it up by hand. A reset never
+  touches the staged-package or pre-install-backup directories - only the state pointer to them.
+
+This does not change what happens on the bare-ext4 side (`debian/stratux-pre-start.sh`'s own
+`Stage == "failed"` handling, unaffected) - it only bounds how long the overlay-side daemon will
+keep re-attempting the disable/reboot handoff before giving up and asking for an operator, instead
+of doing so indefinitely.
+
 ## Known limitations
 
 - The shell side re-derives (in bash) the same stage logic `ota.Decide` encodes in Go, and the

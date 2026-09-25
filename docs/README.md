@@ -11,6 +11,20 @@ hardware integration). User-facing how-tos live in the
   patterns, fusion and output, the web UI. Read this first.
 - **[building.md](building.md)** — build targets, CI/release workflows, repo organization, and
   the OTA update process.
+- **[release-process.md](release-process.md)** — versioning scheme, the tag/build/publish
+  pipeline, and the release-candidate-to-stable promotion plan.
+  **[releases/](releases/)** holds each tagged release's own notes and validation evidence.
+- **[upgrade-guide.md](upgrade-guide.md)**, **[clean-install-guide.md](clean-install-guide.md)**,
+  **[rollback-recovery.md](rollback-recovery.md)**,
+  **[artifact-verification.md](artifact-verification.md)** — the practical how-to guides for
+  installing, upgrading, verifying, and recovering a release.
+- **[hardware-compatibility.md](hardware-compatibility.md)** — release-scoped hardware
+  requirement summary (full detail in [hardware/README.md](hardware/README.md)).
+- **[known-limitations.md](known-limitations.md)** — release-engineering limitations, supplementing
+  the [README's aviation disclaimer](../README.md#safety-certification-and-operational-disclaimer).
+- **[ota-version-ordering-audit.md](ota-version-ordering-audit.md)** — current OTA
+  version-ordering/downgrade/reinstall behavior (as-is, not enforced today) and a bounded
+  recommendation for if/when enforcement is added.
 - **[dev-setup.md](dev-setup.md)** — setting up a development environment (remote on a Pi, or
   local Linux).
 - **[readiness-and-time-trust.md](readiness-and-time-trust.md)** — the unified component health
@@ -28,16 +42,29 @@ hardware integration). User-facing how-tos live in the
 - **[preflight-readiness.md](preflight-readiness.md)** — the simplified, supplemental preflight
   checklist built on top of the readiness health model: state definitions, the blocking-vs-
   caution decision policy, startup grace periods, and the manual-acknowledgement workflow.
+- **[real-flight-acceptance-checklist.md](real-flight-acceptance-checklist.md)** — a short,
+  owner-executed checklist and evidence template for accepting a specific build in an actual
+  flight, built on top of (not a replacement for) the preflight page above.
 - **[recording.md](recording.md)** — the on-demand recording subsystem and the durable,
   versioned session-level Preflight metadata captured once at recording start.
 - **[alerting.md](alerting.md)** — conservative, supplemental traffic-proximity and
   system-health notices: threshold policy, hysteresis, duplicate suppression, health
   transitions, settings, and browser-audio limitations. Not collision avoidance.
+- **[traffic-cpa-alerting.md](traffic-cpa-alerting.md)** — an additive, off-by-default
+  closure-rate/closest-point-of-approach trend input to the alerting subsystem above:
+  the coordinate/relative-motion model, TCPA/CPA equations, freshness and confidence
+  rules, and the exact policy that lets it only ever raise an existing alert one tier
+  early, never lower or suppress one. Not collision avoidance, TCAS, or ACAS.
 - **[configuration-backup-restore.md](configuration-backup-restore.md)** — backing up and
   restoring supported application configuration (radio enablement, alert settings,
   calibration profiles): export allowlist, checksums, the validate/preview/confirm/apply
   flow, transactional rollback, and what is deliberately excluded (credentials,
   recordings, diagnostics, OS configuration).
+- **[wifi-administration-hardening.md](wifi-administration-hardening.md)** — strict
+  server-side validation and a safe preview/apply/reconnect-confirm/automatic-rollback
+  workflow layered on top of the existing Wi-Fi settings surface: threat model, exact
+  validation rules, confirmation-token reuse, crash recovery, and why Wi-Fi remains
+  excluded from Configuration Backup by existing, unchanged policy.
 - **[power-shutdown-resilience.md](power-shutdown-resilience.md)** — power/thermal-health
   reporting built on the Raspberry Pi's own `get_throttled` signal, the honest capability
   limits on typical USB-power-bank hardware (no battery percentage, no automatic shutdown),
@@ -53,6 +80,32 @@ hardware integration). User-facing how-tos live in the
   disabled-by-default detection state machine that can start/stop the existing manual
   recording subsystem on the operator's behalf from conservative, GNSS-derived movement
   thresholds.
+- **[waveshare-epaper-display.md](waveshare-epaper-display.md)** — the optional,
+  disabled-by-default Waveshare 3.7" e-paper status display: the GPIO ownership audit and
+  final wiring table, the separate fault-isolated `epaperd` service, change-driven/
+  ghosting-bounded refresh policy, configuration and observability, installation procedure,
+  and troubleshooting/recovery.
+- **[epaper-boot-splash.md](epaper-boot-splash.md)** — the approved ARS splash artwork for
+  the Waveshare 4.2" panel: the deterministic source-to-bitmap generator, the committed
+  production asset and its checksums, the automated validation, the manual render
+  acceptance record, the automatic boot-splash unit (ordering, `EpaperEnabled` behavior,
+  failure policy, timeouts), and the cold-boot acceptance gate.
+- **[epaper-shutdown-splash.md](epaper-shutdown-splash.md)** — the orderly-power-off ARS splash for
+  the same panel: the separate `stratux_epaper_shutdown.service` unit, why its `ExecStop`
+  ordering is correct in both the start-up and shutdown directions (with the measured
+  systemd 252 evidence), how power-off is told apart from reboot and ordinary service
+  stops, exclusive panel ownership, failure policy, and the prepared (not yet run)
+  physical acceptance procedure.
+
+- **[ssh-authorized-keys.md](ssh-authorized-keys.md)** — why `~/.ssh/authorized_keys` is lost at every reboot
+  (the RAM-backed overlay), and the persistent-key feature: the authoritative file on the data partition, the
+  boot-time restore service and its security checks, how to provision/apply/revoke a key without a reboot,
+  behavior when the partition or the file is absent, OTA/upgrade/removal/reflash, recovery, and the (still
+  outstanding) physical acceptance.
+- **[package-ownership.md](package-ownership.md)** — why everything the `.deb` installs must be `root:root`
+  whoever built it, the `--root-owner-group` archive fix, the narrow idempotent upgrade/OTA migration for
+  already-installed devices, the invariant (and its one allowlisted writable directory), and the
+  rollback/downgrade boundary.
 
 ## Interfaces (for EFB / app / tool developers)
 

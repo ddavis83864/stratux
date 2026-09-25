@@ -38,6 +38,8 @@ type CurrentState struct {
 	ActiveProfileID     string
 	AlertSettings       AlertSettingsSection
 	AutoRecordSettings  AutoRecordSettingsSection
+	TrafficCPASettings  TrafficCPASettingsSection
+	EpaperSettings      EpaperSettingsSection
 	FISBCacheSettings   FISBCacheSettingsSection
 }
 
@@ -57,6 +59,8 @@ type Preview struct {
 	ConfigurationChanges      []FieldChange `json:"configurationChanges,omitempty"`
 	AlertSettingsChanges      []FieldChange `json:"alertSettingsChanges,omitempty"`
 	AutoRecordSettingsChanges []FieldChange `json:"autoRecordSettingsChanges,omitempty"`
+	TrafficCPASettingsChanges []FieldChange `json:"trafficCpaSettingsChanges,omitempty"`
+	EpaperSettingsChanges     []FieldChange `json:"epaperSettingsChanges,omitempty"`
 	FISBCacheSettingsChanges  []FieldChange `json:"fisbCacheSettingsChanges,omitempty"`
 
 	AddedProfiles     []ProfileSummary `json:"addedProfiles,omitempty"`
@@ -126,6 +130,8 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 	preview.ConfigurationChanges = diffJSONFields(current.Configuration, doc.Configuration)
 	preview.AlertSettingsChanges = diffJSONFields(current.AlertSettings, doc.AlertSettings)
 	preview.AutoRecordSettingsChanges = diffJSONFields(current.AutoRecordSettings, doc.AutoRecordSettings)
+	preview.TrafficCPASettingsChanges = diffJSONFields(current.TrafficCPASettings, doc.TrafficCPASettings)
+	preview.EpaperSettingsChanges = diffJSONFields(current.EpaperSettings, doc.EpaperSettings)
 	preview.FISBCacheSettingsChanges = diffJSONFields(current.FISBCacheSettings, doc.FISBCacheSettings)
 
 	for _, c := range preview.ConfigurationChanges {
@@ -191,6 +197,8 @@ func ComputePreview(doc Document, current CurrentState) Preview {
 	preview.HasChanges = len(preview.ConfigurationChanges) > 0 ||
 		len(preview.AlertSettingsChanges) > 0 ||
 		len(preview.AutoRecordSettingsChanges) > 0 ||
+		len(preview.TrafficCPASettingsChanges) > 0 ||
+		len(preview.EpaperSettingsChanges) > 0 ||
 		len(preview.FISBCacheSettingsChanges) > 0 ||
 		len(preview.AddedProfiles) > 0 ||
 		len(preview.UpdatedProfiles) > 0 ||

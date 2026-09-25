@@ -34,6 +34,42 @@ func TestSaveAndLoadState_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadState_RecoveryFieldsSurviveRoundTrip(t *testing.T) {
+	// A daemon restart (the exact scenario the retry loop occurred under)
+	// must find the same recovery bookkeeping it wrote before exiting -
+	// otherwise a restart would silently reset the recovery budget and
+	// the bound this hotfix adds would not actually persist across
+	// restarts as required.
+	dir := t.TempDir()
+	now := time.Date(2026, 9, 11, 21, 35, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.LastError = "overlayctl lock: exit status 32: mount point is busy"
+	s.Recovery = Recovery{
+		Attempts:      3,
+		LastError:     "overlayctl lock: exit status 32: mount point is busy",
+		NextAttemptAt: now.Add(40 * time.Second),
+	}
+	if err := SaveState(dir, s, now); err != nil {
+		t.Fatalf("SaveState error: %v", err)
+	}
+	got, err := LoadState(dir)
+	if err != nil {
+		t.Fatalf("LoadState error: %v", err)
+	}
+	if got.Stage != StageFailed {
+		t.Fatalf("expected StageFailed, got %q", got.Stage)
+	}
+	if got.Recovery.Attempts != 3 {
+		t.Errorf("Recovery.Attempts did not survive round-trip: got %d, want 3", got.Recovery.Attempts)
+	}
+	if got.LastError != s.LastError {
+		t.Errorf("LastError did not survive round-trip: got %q, want %q", got.LastError, s.LastError)
+	}
+	if !got.Recovery.NextAttemptAt.Equal(s.Recovery.NextAttemptAt) {
+		t.Errorf("Recovery.NextAttemptAt did not survive round-trip: got %s, want %s", got.Recovery.NextAttemptAt, s.Recovery.NextAttemptAt)
+	}
+}
+
 func TestSaveState_IsAtomic(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
@@ -91,7 +127,8 @@ func TestClearState_MissingFileIsNotAnError(t *testing.T) {
 
 func TestStage_ValidAndTerminal(t *testing.T) {
 	valid := []Stage{StageIdle, StageStaged, StageDisableRequested, StageInstalling,
-		StageInstalled, StageVerifying, StageComplete, StageFailed, StageRolledBack}
+		StageInstalled, StageVerifying, StageComplete, StageFailed, StageRolledBack,
+		StageRecoveryExhausted}
 	for _, s := range valid {
 		if !s.Valid() {
 			t.Errorf("%q should be valid", s)
@@ -100,11 +137,11 @@ func TestStage_ValidAndTerminal(t *testing.T) {
 	if Stage("nonsense").Valid() {
 		t.Error("an unrecognized stage string must not be valid")
 	}
-	if !StageComplete.Terminal() || !StageRolledBack.Terminal() {
-		t.Error("complete and rolled_back should be terminal")
+	if !StageComplete.Terminal() || !StageRolledBack.Terminal() || !StageRecoveryExhausted.Terminal() {
+		t.Error("complete, rolled_back, and recovery_exhausted should be terminal")
 	}
-	if StageStaged.Terminal() || StageInstalling.Terminal() {
-		t.Error("in-progress stages must not be terminal")
+	if StageStaged.Terminal() || StageInstalling.Terminal() || StageFailed.Terminal() {
+		t.Error("in-progress stages, and failed itself (still retrying), must not be terminal")
 	}
 }
 

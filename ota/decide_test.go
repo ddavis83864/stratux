@@ -1,6 +1,11 @@
 package ota
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
 
 func baseState(stage Stage) State {
 	return State{
@@ -22,7 +27,7 @@ func TestDecide_Idle(t *testing.T) {
 }
 
 func TestDecide_TerminalStagesDecideNone(t *testing.T) {
-	for _, stage := range []Stage{StageComplete, StageRolledBack} {
+	for _, stage := range []Stage{StageComplete, StageRolledBack, StageRecoveryExhausted} {
 		if d := Decide(baseState(stage), RealSignals{}); d.Action != ActionNone {
 			t.Errorf("%s should decide ActionNone, got %s", stage, d.Action)
 		}
@@ -185,13 +190,207 @@ func TestDecide_Verifying_Failure(t *testing.T) {
 	}
 }
 
-// --- Failed stage always leads to rollback ---
+// --- Failed stage: bounded recovery retry (regression coverage for the
+// exact "overlayctl lock: exit status 32: mount point is busy" incident,
+// where StageFailed retried every five seconds forever - see
+// MaxRecoveryAttempts, RecoveryBackoff, and StageRecoveryExhausted) ---
 
-func TestDecide_Failed_AlwaysRollsBack(t *testing.T) {
+func TestDecide_Failed_FirstAttemptRollsBackImmediately(t *testing.T) {
+	// A fresh failure (zero-value Recovery) must retry right away, not
+	// wait out a backoff that was never set.
 	d := Decide(baseState(StageFailed), RealSignals{})
 	if d.Action != ActionRollback {
-		t.Errorf("a previously-failed update should decide ActionRollback, got %s", d.Action)
+		t.Errorf("a fresh failure should decide ActionRollback immediately, got %s: %s", d.Action, d.Reason)
 	}
+}
+
+func TestDecide_Failed_BackoffBlocksRetryBeforeItElapses(t *testing.T) {
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.Recovery.Attempts = 1
+	s.Recovery.NextAttemptAt = now.Add(10 * time.Second)
+
+	d := Decide(s, RealSignals{Now: now})
+	if d.Action != ActionNone {
+		t.Errorf("a retry attempted before its backoff elapses should decide ActionNone, got %s: %s", d.Action, d.Reason)
+	}
+}
+
+func TestDecide_Failed_RetriesOnceBackoffElapses(t *testing.T) {
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.Recovery.Attempts = 1
+	s.Recovery.NextAttemptAt = now.Add(-1 * time.Second) // already in the past
+
+	d := Decide(s, RealSignals{Now: now})
+	if d.Action != ActionRollback {
+		t.Errorf("a retry attempted after its backoff elapses should decide ActionRollback, got %s: %s", d.Action, d.Reason)
+	}
+}
+
+func TestDecide_Failed_ExhaustsAfterMaxRecoveryAttempts(t *testing.T) {
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.Recovery.Attempts = MaxRecoveryAttempts
+	s.LastError = "overlayctl lock: exit status 32: mount point is busy"
+	s.Recovery.LastError = "overlayctl lock: exit status 32: mount point is busy"
+
+	d := Decide(s, RealSignals{Now: now})
+	if d.Action != ActionRecoveryExhausted {
+		t.Errorf("reaching MaxRecoveryAttempts should decide ActionRecoveryExhausted, got %s: %s", d.Action, d.Reason)
+	}
+	if !containsAll(d.Reason, "5 attempts", "mount point is busy") {
+		t.Errorf("exhaustion reason should name the attempt count and the original failure, got: %s", d.Reason)
+	}
+}
+
+func TestDecide_Failed_ExhaustionTakesPriorityOverPendingBackoff(t *testing.T) {
+	// If Attempts already reached the cap, it must not matter whether a
+	// backoff timer also happens to still be pending - exhaustion wins,
+	// so the caller definitely stops retrying rather than waiting once
+	// more only to exhaust on the following tick.
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.Recovery.Attempts = MaxRecoveryAttempts
+	s.Recovery.NextAttemptAt = now.Add(time.Minute)
+
+	d := Decide(s, RealSignals{Now: now})
+	if d.Action != ActionRecoveryExhausted {
+		t.Errorf("exhaustion should be decided even with a backoff timer still pending, got %s", d.Action)
+	}
+}
+
+func TestDecide_Failed_ThousandsOfTicksAfterExhaustionPerformNoFurtherWork(t *testing.T) {
+	// Regression for the exact defect: once exhausted, arbitrarily many
+	// subsequent health ticks (any Stage/Now combination) must keep
+	// deciding ActionNone from StageRecoveryExhausted - never another
+	// ActionRollback, and the reported reason must stay informative
+	// rather than reverting to a generic "no update in progress".
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.Recovery.Attempts = MaxRecoveryAttempts
+	s.LastError = "overlayctl lock: exit status 32: mount point is busy"
+	d := Decide(s, RealSignals{Now: now})
+	if d.Action != ActionRecoveryExhausted {
+		t.Fatalf("setup: expected exhaustion, got %s", d.Action)
+	}
+
+	exhausted := baseState(StageRecoveryExhausted)
+	exhausted.LastError = s.LastError
+	exhausted.Recovery = s.Recovery
+	for i := 0; i < 5000; i++ {
+		tick := now.Add(time.Duration(i) * 5 * time.Second)
+		d := Decide(exhausted, RealSignals{Now: tick})
+		if d.Action != ActionNone {
+			t.Fatalf("tick %d: exhausted state performed further work: %s (%s)", i, d.Action, d.Reason)
+		}
+		if !containsAll(d.Reason, "operator", "resetOTA") {
+			t.Fatalf("tick %d: exhausted reason lost operator-action guidance: %s", i, d.Reason)
+		}
+	}
+}
+
+func TestDecide_Failed_OriginalErrorPreservedAcrossRetries(t *testing.T) {
+	// The historical defect: each retry's Decide reason was written back
+	// into State.LastError, nesting "update previously marked failed: "
+	// once per five-second tick forever. LastError must now stay fixed
+	// at the original cause for the whole episode - only Recovery
+	// changes between attempts.
+	s := baseState(StageFailed)
+	s.LastError = "overlayctl lock: exit status 32: mount point is busy"
+	original := s.LastError
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+
+	for attempt := 0; attempt < MaxRecoveryAttempts; attempt++ {
+		d := Decide(s, RealSignals{Now: now})
+		if d.Action != ActionRollback {
+			t.Fatalf("attempt %d: expected ActionRollback, got %s (%s)", attempt, d.Action, d.Reason)
+		}
+		// Simulate the daemon recording that this attempt's own
+		// requestOverlayDisable call failed again with the same busy
+		// error - this must never touch s.LastError.
+		s = s.RecordRecoveryFailure(errors.New("overlayctl lock: exit status 32: mount point is busy"), now)
+		if s.LastError != original {
+			t.Fatalf("attempt %d: original LastError was overwritten: got %q, want %q", attempt, s.LastError, original)
+		}
+		now = s.Recovery.NextAttemptAt // advance past this attempt's backoff before the next one
+	}
+	if len(s.LastError) > 200 {
+		t.Fatalf("LastError grew unbounded (%d bytes) - the nesting defect has recurred", len(s.LastError))
+	}
+}
+
+// --- RecoveryBackoff: doubling schedule and cap ---
+
+func TestRecoveryBackoff_DoublesThenCaps(t *testing.T) {
+	cases := []struct {
+		attempts int
+		want     time.Duration
+	}{
+		{0, 5 * time.Second},
+		{1, 10 * time.Second},
+		{2, 20 * time.Second},
+		{3, 40 * time.Second},
+		{4, 80 * time.Second},
+		{5, 2 * time.Minute}, // capped
+		{100, 2 * time.Minute},
+	}
+	for _, c := range cases {
+		if got := RecoveryBackoff(c.attempts); got != c.want {
+			t.Errorf("RecoveryBackoff(%d) = %s, want %s", c.attempts, got, c.want)
+		}
+	}
+}
+
+// --- EnterFailed / RecordRecoveryFailure: pure bookkeeping helpers ---
+
+func TestEnterFailed_StartsFreshRecoveryBudget(t *testing.T) {
+	s := baseState(StageInstalling)
+	s.Recovery = Recovery{Attempts: 3, LastError: "stale"} // pretend a prior episode left this dirty
+
+	s = s.EnterFailed("dpkg left the package broken")
+	if s.Stage != StageFailed {
+		t.Errorf("EnterFailed must set Stage to StageFailed, got %s", s.Stage)
+	}
+	if s.LastError != "dpkg left the package broken" {
+		t.Errorf("EnterFailed must record the reason as LastError, got %q", s.LastError)
+	}
+	if s.Recovery != (Recovery{}) {
+		t.Errorf("EnterFailed must reset Recovery to zero value, got %+v", s.Recovery)
+	}
+}
+
+func TestRecordRecoveryFailure_IncrementsAttemptsAndSetsBackoffWithoutTouchingLastError(t *testing.T) {
+	now := time.Date(2026, 9, 11, 21, 0, 0, 0, time.UTC)
+	s := baseState(StageFailed)
+	s.LastError = "original cause"
+
+	s = s.RecordRecoveryFailure(errors.New("overlayctl lock: busy"), now)
+	if s.Recovery.Attempts != 1 {
+		t.Errorf("expected Recovery.Attempts == 1, got %d", s.Recovery.Attempts)
+	}
+	if s.Recovery.LastError != "overlayctl lock: busy" {
+		t.Errorf("expected Recovery.LastError to record the new error, got %q", s.Recovery.LastError)
+	}
+	if s.LastError != "original cause" {
+		t.Errorf("RecordRecoveryFailure must never modify the original LastError, got %q", s.LastError)
+	}
+	wantNext := now.Add(RecoveryBackoff(0))
+	if !s.Recovery.NextAttemptAt.Equal(wantNext) {
+		t.Errorf("expected NextAttemptAt = %s, got %s", wantNext, s.Recovery.NextAttemptAt)
+	}
+}
+
+// containsAll reports whether s contains every one of substrs, for
+// loosely asserting on human-readable Reason strings without pinning
+// their exact wording.
+func containsAll(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // --- Unrecognized stage ---

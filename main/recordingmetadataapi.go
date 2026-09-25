@@ -67,6 +67,7 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession, autoCtx
 	}
 	alertSchema, alertMaster, alertVisual, alertAudioArmed, alertSystem, alertMuted, alertCounts := alertingSnapshotForRecording()
 	cfgBackupSchema, cfgBackupFingerprint, cfgBackupRestored := configBackupSnapshotForRecording()
+	cpaSchema, cpaEscalationEnabled, cpaHorizonSeconds, cpaMinClosureRateKnots := trafficCPASnapshotForRecording()
 	powerSeverity, powerUndervoltageNow, powerThrottledNow, previousSessionEndedCleanly, previousSessionAvailable := powerSnapshotForRecording()
 	initiationMode := "manual"
 	if autoCtx == nil {
@@ -118,6 +119,10 @@ func buildSessionSnapshot(r preflight.Report, session *recordingSession, autoCtx
 		CalibrationProfileKind:              session.CalibrationProfileKind,
 		CalibrationValid:                    session.CalibrationValid,
 		CalibrationProfileAvailable:         session.CalibrationProfileAvailable,
+		TrafficCPASchemaVersion:             cpaSchema,
+		TrafficCPAEscalationEnabled:         cpaEscalationEnabled,
+		TrafficCPAHorizonSeconds:            cpaHorizonSeconds,
+		TrafficCPAMinClosureRateKnots:       cpaMinClosureRateKnots,
 	}
 }
 

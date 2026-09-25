@@ -325,6 +325,62 @@ func applyAutoRecordSettingsSection(base autorecord.Settings, section configback
 	return base
 }
 
+// --- TrafficCPASettings <-> configbackup.TrafficCPASettingsSection -----
+
+func trafficCPASettingsSectionFromCurrent(s TrafficCPASettings) configbackup.TrafficCPASettingsSection {
+	return configbackup.TrafficCPASettingsSection{
+		EscalationEnabled:     s.EscalationEnabled,
+		HorizonSeconds:        s.HorizonSeconds,
+		MinRelativeSpeedKnots: s.MinRelativeSpeedKnots,
+		MinClosureRateKnots:   s.MinClosureRateKnots,
+	}
+}
+
+// applyTrafficCPASettingsSection returns base (the CURRENT settings - so
+// SchemaVersion is preserved exactly as-is) with every field overwritten
+// from section. No operational/time-bound field to exclude, exactly like
+// applyAutoRecordSettingsSection.
+func applyTrafficCPASettingsSection(base TrafficCPASettings, section configbackup.TrafficCPASettingsSection) TrafficCPASettings {
+	base.EscalationEnabled = section.EscalationEnabled
+	base.HorizonSeconds = section.HorizonSeconds
+	base.MinRelativeSpeedKnots = section.MinRelativeSpeedKnots
+	base.MinClosureRateKnots = section.MinClosureRateKnots
+	return base
+}
+
+// --- Epaper* fields <-> configbackup.EpaperSettingsSection --------------
+//
+// Unlike TrafficCPASettings/AutoRecordSettings (their own persisted files
+// under the dedicated data partition, loaded/saved via
+// loadTrafficCPASettings/saveTrafficCPASettings), the six Epaper* fields
+// live directly on globalSettings, persisted the same way as DarkMode -
+// so these mirror configurationSectionFromGlobalSettings/
+// applyConfigurationSectionToGlobalSettings's locking pattern instead.
+
+func epaperSettingsSectionFromGlobalSettings() configbackup.EpaperSettingsSection {
+	globalSettingsMu.RLock()
+	defer globalSettingsMu.RUnlock()
+	return configbackup.EpaperSettingsSection{
+		Enabled:                globalSettings.EpaperEnabled,
+		Panel:                  globalSettings.EpaperPanel,
+		Rotation:               globalSettings.EpaperRotation,
+		RefreshIntervalSeconds: globalSettings.EpaperRefreshIntervalSeconds,
+		FullRefreshEvery:       globalSettings.EpaperFullRefreshEvery,
+		Page:                   globalSettings.EpaperPage,
+	}
+}
+
+func applyEpaperSettingsSectionToGlobalSettings(e configbackup.EpaperSettingsSection) {
+	globalSettingsMu.Lock()
+	defer globalSettingsMu.Unlock()
+	globalSettings.EpaperEnabled = e.Enabled
+	globalSettings.EpaperPanel = e.Panel
+	globalSettings.EpaperRotation = e.Rotation
+	globalSettings.EpaperRefreshIntervalSeconds = e.RefreshIntervalSeconds
+	globalSettings.EpaperFullRefreshEvery = e.FullRefreshEvery
+	globalSettings.EpaperPage = e.Page
+}
+
 // --- FISBCacheSettings <-> configbackup.FISBCacheSettingsSection -------
 
 func fisbCacheSettingsSectionFromCurrent(s FISBCacheSettings) configbackup.FISBCacheSettingsSection {
@@ -386,6 +442,8 @@ func gatherConfigBackupCurrentState() (configbackup.CurrentState, error) {
 		ActiveProfileID:     activeID,
 		AlertSettings:       alertSettingsSectionFromCurrent(loadAlertSettings()),
 		AutoRecordSettings:  autoRecordSettingsSectionFromCurrent(loadAutoRecordSettings()),
+		TrafficCPASettings:  trafficCPASettingsSectionFromCurrent(loadTrafficCPASettings()),
+		EpaperSettings:      epaperSettingsSectionFromGlobalSettings(),
 		FISBCacheSettings:   fisbCacheSettingsSectionFromCurrent(loadFISBCacheSettings()),
 	}, nil
 }
@@ -434,6 +492,8 @@ func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Docum
 		ActiveCalibrationProfileID: current.ActiveProfileID,
 		AlertSettings:              current.AlertSettings,
 		AutoRecordSettings:         current.AutoRecordSettings,
+		TrafficCPASettings:         current.TrafficCPASettings,
+		EpaperSettings:             current.EpaperSettings,
 		FISBCacheSettings:          current.FISBCacheSettings,
 	})
 }
@@ -799,8 +859,10 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 		originalByID[p.ID] = p
 	}
 	originalConfig := configurationSectionFromGlobalSettings()
+	originalEpaperSettings := epaperSettingsSectionFromGlobalSettings()
 	originalAlertSettings := loadAlertSettings()
 	originalAutoRecordSettings := loadAutoRecordSettings()
+	originalTrafficCPASettings := loadTrafficCPASettings()
 	originalFISBCacheSettings := loadFISBCacheSettings()
 
 	rollback := func() bool {
@@ -826,6 +888,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 			}
 		}
 		applyConfigurationSectionToGlobalSettings(originalConfig)
+		applyEpaperSettingsSectionToGlobalSettings(originalEpaperSettings)
 		if active, aerr := store.Active(); aerr == nil {
 			applyProfileToGlobalSettingsLocked(active)
 		}
@@ -838,6 +901,14 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 		if err := saveAutoRecordSettings(originalAutoRecordSettings); err != nil {
 			clean = false
 			log.Printf("configbackup: rollback could not restore automatic-recording settings: %s\n", err)
+		}
+		if err := saveTrafficCPASettings(originalTrafficCPASettings); err != nil {
+			clean = false
+			log.Printf("configbackup: rollback could not restore traffic CPA settings: %s\n", err)
+		} else {
+			trafficCPAMu.Lock()
+			trafficCPASettingsCache = originalTrafficCPASettings
+			trafficCPAMu.Unlock()
 		}
 		if err := saveFISBCacheSettings(originalFISBCacheSettings); err != nil {
 			clean = false
@@ -872,6 +943,20 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	autoRecordMu.Unlock()
 	sectionsApplied = append(sectionsApplied, "autoRecordSettings")
 
+	// Traffic CPA settings - same atomic-write pattern. Applying this
+	// never itself enables CPA-based escalation from a backup that never
+	// had it (EscalationEnabled is restored exactly as the document
+	// says, and validateTrafficCPASettings/legacyDefaultTrafficCPASettings
+	// both keep it false for any document that never had this section).
+	newTrafficCPASettings := applyTrafficCPASettingsSection(originalTrafficCPASettings, doc.TrafficCPASettings)
+	if err := saveTrafficCPASettings(newTrafficCPASettings); err != nil {
+		clean := rollback()
+		return sectionsApplied, true, !clean, fmt.Errorf("applying traffic CPA settings: %w", err)
+	}
+	trafficCPAMu.Lock()
+	trafficCPASettingsCache = newTrafficCPASettings
+	trafficCPAMu.Unlock()
+	sectionsApplied = append(sectionsApplied, "trafficCpaSettings")
 	// Rolling FIS-B Weather Cache settings - same atomic-write pattern.
 	// Applying this never touches the cache's own stored entries, only
 	// the going-forward configuration (see applyFISBCacheSettingsSection).
@@ -899,6 +984,8 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 
 	applyConfigurationSectionToGlobalSettings(doc.Configuration)
 	sectionsApplied = append(sectionsApplied, "configuration")
+	applyEpaperSettingsSectionToGlobalSettings(doc.EpaperSettings)
+	sectionsApplied = append(sectionsApplied, "epaperSettings")
 
 	if doc.ActiveCalibrationProfileID != "" && doc.ActiveCalibrationProfileID != originalActiveID {
 		target, err := store.Get(doc.ActiveCalibrationProfileID)

@@ -1,6 +1,7 @@
 appControllers.controller('AlertsCtrl', function ($scope, $http, $interval, alertAudioService) {
 	$scope.Alerts = { active: [], recentHistory: [], counters: {}, muted: false, trackedTargetCount: 0, disclaimer: '' };
 	$scope.Settings = null;
+	$scope.CPASettings = null;
 	$scope.AudioState = 'unavailable'; // 'unavailable' | 'armed' | 'suspended'
 	$scope.Message = '';
 	$scope.MuteMinutes = 30;
@@ -43,6 +44,22 @@ appControllers.controller('AlertsCtrl', function ($scope, $http, $interval, aler
 			$scope.Settings = response.data;
 		});
 	}
+
+	function refreshCPASettings() {
+		$http.get(URL_TRAFFIC_CPA_SETTINGS_GET).then(function (response) {
+			$scope.CPASettings = response.data;
+		});
+	}
+
+	$scope.saveCPASettings = function () {
+		$http.post(URL_TRAFFIC_CPA_SETTINGS_SET, $scope.CPASettings).then(function (response) {
+			$scope.CPASettings = response.data.settings;
+			$scope.Message = 'Closure-rate/CPA settings saved.';
+		}, function (response) {
+			var err = (response.data && response.data.error) ? response.data.error : 'unknown error';
+			$scope.Message = 'Failed to save closure-rate/CPA settings: ' + err;
+		});
+	};
 
 	// enableSound is the one place an AudioContext may be created - only
 	// ever from this direct button click (a real user gesture), never
@@ -108,6 +125,7 @@ appControllers.controller('AlertsCtrl', function ($scope, $http, $interval, aler
 	};
 
 	refreshSettings();
+	refreshCPASettings();
 	refresh();
 	var interval = $interval(refresh, 3000);
 	$scope.$on('$destroy', function () {

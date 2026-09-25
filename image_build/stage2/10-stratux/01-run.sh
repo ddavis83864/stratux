@@ -140,7 +140,7 @@ install files/modules.txt ${ROOTFS_DIR}/etc/modules
 install files/config.txt ${ROOTFS_DIR}/boot/firmware/
 
 # rootfs overlay stuff
-install files/overlayctl files/init-overlay ${ROOTFS_DIR}/sbin/
+install files/overlayctl files/init-overlay files/provision-data-partition files/finalize-data-partition-provisioning ${ROOTFS_DIR}/sbin/
 
 on_chroot << EOF
     overlayctl install

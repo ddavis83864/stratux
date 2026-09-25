@@ -255,90 +255,25 @@
             <div class="panel panel-default">
                 <div class="panel-heading">WiFi Settings</div>
                 <div class="panel-body">
-                    <form name="WiFiSettings">
-                        <div class="form-group reset-flow">
-                            <label class="control-label col-xs-5">WiFi Mode</label>
-                            <select class="custom-select" ng-model="WiFiMode"
-                                ng-change="WiFiSecurityEnabled=(WiFiSecurityEnabled || WiFiMode=='1')">
-                                <option value="0" ng-selected="WiFiMode=='0'">AccessPoint</option>
-                                <option value="1" ng-selected="WiFiMode=='1'">WiFi-Direct</option>
-                                <option value="2" ng-selected="WiFiMode=='2'">AP+Client</option>
-                            </select>
-                        </div>
-                        <div class="form-group reset-flow">
-                            <label class="control-label col-xs-5">WiFi Country</label>
-                            <select class="custom-select" ng-model="WiFiCountry"
-                                    ng-options="country.key as country.value for country in sortedCountries">
-                                <option value="" label="Unspecified">Unspecified</option>
-                            </select>
-                        </div>
-                        <div class="form-group reset-flow">
-                            <label class="control-label col-xs-5">WiFi SSID</label>
-                            <input class="col-xs-7" type="text" ssid-input ng-model="WiFiSSID"
-                                placeholder="WiFi Network Name" />
-                        </div>
-                        <div class="form-group reset-flow" ng-show="(WiFiMode=='0' || WiFiMode=='2')">
-                            <label class="control-label col-xs-5">Network Security</label>
-                            <div class="col-xs-5">
-                                <ui-switch ng-model="WiFiSecurityEnabled" settings-change></ui-switch>
-                            </div>
-                        </div>
-                        <div class="form-group reset-flow">
-                            <label class="control-label col-xs-5">WiFi Passphrase</label>
-                            <input class="col-xs-7" type="text" wpa-input ng-model="WiFiPassphrase"
-                                ng-disabled="!WiFiSecurityEnabled" ng-class="{grayout: !WiFiSecurityEnabled}"
-                                ng-required="WiFiSecurityEnabled" placeholder="WiFi Passphrase" />
-                        </div>
-                        <div class="form-group reset-flow" ng-show="WiFiMode=='1'">
-                            <label class="control-label col-xs-5">WiFi-Direct Pin</label>
-                            <input class="col-xs-7" type="text" pin-input ng-model="WiFiDirectPin"
-                                placeholder="WiFi-Direct PIN" ng-required="WiFiMode=='1'" />
-                        </div>
-                        <div class="form-group reset-flow" ng-show="WiFiMode=='0'">
-                            <label class="control-label col-xs-5">WiFi Channel</label>
-                            <select id="WiFiChannel" class="input-small col-sm-2 form-control-sm" ng-model="WiFiChannel"
-                                ng-options="x for x in Channels"></select>
-                        </div>
-                        <div class="form-group reset-flow">
-                            <label class="control-label col-xs-5">Stratux IP Address</label>
-                            <input class="col-xs-7" type="text" ip-addr-input ng-model="WiFiIPAddress"
-                                placeholder="192.168.10.1" />
-                        </div>
-                        <div class="form-group reset-flow" ng-show="WiFiMode=='2'">
-                            <label class="control-label col-xs-5">Internet Passthrough</label>
-                            <div class="col-xs-5">
-                                <ui-switch ng-model="WiFiInternetPassThroughEnabled" settings-change></ui-switch>
-                            </div>
-                        </div>
-
-                        <div class="form-group reset-flow" ng-show="WiFiMode=='2'">
-                            <button class="btn btn-info btn-block" ng-click="addWiFiClientNetwork()">Add
-                                WiFi Client Network</button>
-                        </div>
-
-                        <hr>
-
-                        <div ng-show="WiFiMode=='2'" ng-repeat="Network in WiFiClientNetworks">
-                            <div class="form-group reset-flow">
-                                <label class="control-label col-xs-5">WiFi Client SSID</label>
-                                <input class="col-xs-7" type="text" ssid-input ng-model="Network.SSID" />
-                            </div>
-                            <div class="form-group reset-flow">
-                                <label class="control-label col-xs-5">WiFi Client Passphrase</label>
-                                <input class="col-xs-7" type="text" wpa-input ng-model="Network.Password" />
-                            </div>
-                            <div class="form-group reset-flow">
-                                <button class="btn btn-info btn-block" ng-click="removeWiFiClientNetwork(Network)">Remove
-                                    WiFi Client Network</button>
-                            </div>
-                            <hr>
-                        </div>
-
-                        <div class="form-group reset-flow">
-                            <button class="btn btn-primary btn-block" ng-click="updateWiFi()">Submit WiFi
-                                Changes</button>
-                        </div>
-                    </form>
+                    <!--
+                    Wi-Fi configuration moved to the dedicated Wi-Fi Admin
+                    page (#/wifiadmin) - see
+                    docs/wifi-administration-hardening.md. This page's own
+                    old form used to post straight to /setSettings, which
+                    applied an immediate, disruptive network-interface
+                    change with no preview, no reconnection confirmation,
+                    and no automatic rollback if the change ever locked an
+                    owner out - real-hardware validation found this could
+                    also silently desynchronize wifiadmin's own persisted
+                    configuration from the device's actual live state. The
+                    backend now rejects every WiFi* field here outright
+                    (see settingsvalidate.go); this notice replaces the
+                    old form rather than leaving a dead end.
+                    -->
+                    <p>WiFi configuration has moved to its own page, which adds a
+                        preview step, a reconnection-confirmation check, and automatic
+                        rollback if a change ever leaves this device unreachable.</p>
+                    <a class="btn btn-primary btn-block" href="#/wifiadmin">Go to Wi-Fi Admin</a>
                 </div>
             </div>
         </div>
@@ -692,76 +627,7 @@
             </div>
         </div>
     </div>
-    <!-- WiFi Success Modal -->
-    <div class="modal" ui-if="modalSuccessWiFi" ui-state="modalSuccessWiFi" id="WiFiSuccessModal">
-        <div class="modal-overlay "></div>
-        <div class="vertical-alignment-helper center-block">
-            <div class="modal-dialog vertical-align-center">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <button class="close" ui-turn-off="modalSuccessWiFi"></button>
-                        <h4 class="modal-title">Your WiFi settings were successfully changed.</h4>
-                    </div>
-                    <div class="modal-body">
-                        <p>WiFi Mode: <b>{{wifiModeStr()}}</b></p>
-                        <p>WiFi Country: <b>{{WiFiCountry || "Unspecified"}}</b></p>
-                        <p>WiFi SSID: <b>{{WiFiSSID}}</b></p>
-                        <p>WiFi Security: <b>{{WiFiSecurityEnabled}}</b></p>
-                        <p>WiFi Passphrase: <b>{{WiFiPassphrase}}</b></p>
-                        <p ng-if="WiFiMode==1">WiFi-Direct PIN: <b>{{WiFiDirectPin}}</b></p>
-                        <p>WiFi Channel: <b>{{WiFiChannel}}</b></p>
-                        <p>Stratux IP: <b>{{WiFiIPAddress}}</b></p>
-                        <p>Your Stratux's WiFi services are now restarting to apply the new settings. This could
-                            take up to 30 seconds.<br />
-                            You might have to reconnect to your new WiFi SSID. </p>
-                    </div>
-                    <div class="modal-footer">
-                        <a ui-turn-off="modalSuccessWiFi" class="btn btn-primary btn-default">Close</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <!-- WiFi Error Modal -->
-    <div class="modal" ui-if="modalErrorWiFi" ui-state="modalErrorWiFi">
-        <div class="modal-overlay "></div>
-        <div class="vertical-alignment-helper center-block">
-            <div class="modal-dialog vertical-align-center">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <button class="close" ui-turn-off="modalErrorWiFi"></button>
-                        <h4 class="modal-title">Errors in your WiFi Settings</h4>
-                    </div>
-                    <div class="modal-body">
-                        <div>{{WiFiErrors.WiFiSSID}}</div>
-                        <div>{{WiFiErrors.WiFiPassphrase}}</div>
-                    </div>
-                    <div class="modal-footer">
-                        <a ui-turn-off="modalErrorWiFi" ng-click="resetSettings()" class="btn btn-default">Close</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <!-- WiFi Canceled Modal -->
-    <div class="modal" ui-if="modalCancelWiFi" ui-state="modalCancelWiFi">
-        <div class="modal-overlay "></div>
-        <div class="vertical-alignment-helper center-block">
-            <div class="modal-dialog vertical-align-center">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <button class="close" ui-turn-off="modalCancelWiFi"></button>
-                        <h4 class="modal-title">WiFi Settings: Canceled</h4>
-                    </div>
-                    <div class="modal-body">
-                        <p>WiFi Settings Canceled.</p>
-                    </div>
-                    <div class="modal-footer">
-                        <a ui-turn-off="modalCancelWiFi" ng-click="resetSettings()"
-                            class="btn btn-default btn-primary">OK</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- The WiFi Success/Error/Canceled modals that used to live here were
+         removed along with the old WiFi Settings form above (both drove
+         each other exclusively) - see that form's own removal comment. -->
 </div>

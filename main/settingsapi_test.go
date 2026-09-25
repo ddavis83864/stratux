@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -346,14 +347,78 @@ func TestHandleSettingsSetRequest_NoSensitiveDataInErrorOrLog(t *testing.T) {
 	if strings.Contains(rr.Body.String(), "12345") {
 		t.Fatalf("error response must not echo the submitted value, got %q", rr.Body.String())
 	}
-	// Also confirm a value that does type-check is never echoed back
-	// anywhere in a success response - handleSettingsSetRequest always
-	// responds with the full globalSettings document, and WiFiPassphrase
-	// is a real field on it, so this is a genuine exposure surface to
-	// watch, not a hypothetical one.
+	// A real-typed value is now rejected outright too (see
+	// TestHandleSettingsSetRequest_LegacyWiFiKeysRejected) - WiFiPassphrase
+	// can no longer reach the success path this test used to also check
+	// here, which independently closes the echo-back exposure this
+	// comment used to only warn about.
 	rr2 := doSettingsPost(t, fmt.Sprintf(`{"WiFiPassphrase": %q}`, secret))
-	if rr2.Code == http.StatusOK && strings.Contains(rr2.Body.String(), secret) {
-		t.Logf("note: a successful WiFiPassphrase update echoes the new passphrase back in the response body, matching /getSettings's existing behavior for this field - not a regression introduced by this change, but recorded here for visibility.")
+	if rr2.Code < 400 || rr2.Code >= 500 {
+		t.Fatalf("expected 4xx for a real-typed WiFiPassphrase (this field is no longer settable via /setSettings), got %d", rr2.Code)
+	}
+	if strings.Contains(rr2.Body.String(), secret) {
+		t.Fatalf("error response must not echo the submitted value, got %q", rr2.Body.String())
+	}
+}
+
+// TestHandleSettingsSetRequest_LegacyWiFiKeysRejected is the regression
+// test for the safety defect found during PR #20's own hardware
+// validation: every WiFi* field handleSettingsSetRequest used to accept
+// applied an immediate, disruptive ifdown/ifup wlan0 cycle
+// (applyNetworkSettings, triggered unconditionally at the end of this
+// handler whenever any WiFi field actually changed) with none of the
+// Wi-Fi Administration Hardening feature's safety guarantees - no
+// preview, no path-validated reconnection confirmation, no automatic
+// rollback if the change ever left the device unreachable - and silently
+// desynchronized wifiadmin's own persisted last-known-good from the
+// device's actual live configuration (surfaced as a stale WiFiSSID in a
+// generated diagnostics bundle). Every one of these keys must now be
+// rejected outright, with globalSettings left completely untouched -
+// see validateSettingsValue's own doc comment for the full account.
+func TestHandleSettingsSetRequest_LegacyWiFiKeysRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"WiFiCountry", `{"WiFiCountry": "US"}`},
+		{"WiFiSSID", `{"WiFiSSID": "new-ssid"}`},
+		{"WiFiChannel", `{"WiFiChannel": 6}`},
+		{"WiFiSecurityEnabled", `{"WiFiSecurityEnabled": true}`},
+		{"WiFiPassphrase", `{"WiFiPassphrase": "somepassphrase"}`},
+		{"WiFiIPAddress", `{"WiFiIPAddress": "192.168.20.1"}`},
+		{"WiFiMode", `{"WiFiMode": 2}`},
+		{"WiFiDirectPin", `{"WiFiDirectPin": "12345678"}`},
+		{"WiFiClientNetworks", `{"WiFiClientNetworks": [{"SSID": "home", "Password": "hunter2"}]}`},
+		{"WiFiInternetPassThroughEnabled", `{"WiFiInternetPassThroughEnabled": true}`},
+		// The exact multi-key object web/plates/js/settings.js's old WiFi
+		// form used to build (the largest legitimate request this
+		// handler ever accepted) - proves the whole request is rejected,
+		// not just whichever key happens to be validated first.
+		{"full legacy WiFi-modal shape", `{
+			"WiFiCountry": "US",
+			"WiFiSSID": "stratux",
+			"WiFiSecurityEnabled": false,
+			"WiFiPassphrase": "",
+			"WiFiChannel": 1,
+			"WiFiIPAddress": "192.168.10.1",
+			"WiFiMode": 0,
+			"WiFiDirectPin": "12345678",
+			"WiFiClientNetworks": [],
+			"WiFiInternetPassThroughEnabled": false
+		}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSettingsAPITestEnv(t)
+			before := globalSettings
+			rr := doSettingsPost(t, tc.body)
+			if rr.Code < 400 || rr.Code >= 500 {
+				t.Fatalf("expected 4xx, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !reflect.DeepEqual(globalSettings, before) {
+				t.Fatalf("globalSettings was mutated by a rejected request:\nbefore=%+v\nafter=%+v", before, globalSettings)
+			}
+		})
 	}
 }
 
@@ -379,32 +444,12 @@ func TestHandleSettingsSetRequest_ConfigBackupStillWorksAfterValidPatch(t *testi
 	}
 }
 
-func TestHandleSettingsSetRequest_ExistingDashboardWiFiPatchStillWorks(t *testing.T) {
-	withSettingsAPITestEnv(t)
-	// Mirrors the exact multi-key object web/plates/js/settings.js builds
-	// for its WiFi configuration modal (the largest legitimate real
-	// request this handler sees) - proves the compatibility this hotfix
-	// must preserve.
-	body := `{
-		"WiFiCountry": "US",
-		"WiFiSSID": "stratux",
-		"WiFiSecurityEnabled": false,
-		"WiFiPassphrase": "",
-		"WiFiChannel": 1,
-		"WiFiIPAddress": "192.168.10.1",
-		"WiFiMode": 0,
-		"WiFiDirectPin": "12345678",
-		"WiFiClientNetworks": [],
-		"WiFiInternetPassThroughEnabled": false
-	}`
-	rr := doSettingsPost(t, body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for the real WiFi-modal request shape, got %d: %s", rr.Code, rr.Body.String())
-	}
-	if globalSettings.WiFiSSID != "stratux" {
-		t.Fatalf("WiFiSSID was not applied")
-	}
-}
+// TestHandleSettingsSetRequest_ExistingDashboardWiFiPatchStillWorks was
+// replaced by TestHandleSettingsSetRequest_LegacyWiFiKeysRejected's own
+// "full legacy WiFi-modal shape" case, which asserts the opposite of
+// this test's old name: that exact request shape must now be rejected,
+// not silently kept working - see validateSettingsValue's own doc
+// comment for why.
 
 func TestHandleSettingsSetRequest_IMUMappingRoundTripFixed(t *testing.T) {
 	withSettingsAPITestEnv(t)
@@ -446,27 +491,30 @@ func TestHandleSettingsSetRequest_IMUMappingMalformedRejected(t *testing.T) {
 func TestHandleSettingsSetRequest_WiFiClientNetworksValidAndInvalidShapes(t *testing.T) {
 	withSettingsAPITestEnv(t)
 
-	rr := doSettingsPost(t, `{"WiFiClientNetworks": [{"SSID": "home", "Password": "hunter2"}]}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for a valid WiFiClientNetworks entry, got %d: %s", rr.Code, rr.Body.String())
+	// WiFiClientNetworks is now rejected outright at the HTTP layer
+	// before ever reaching decodeWiFiClientNetworks (see
+	// TestHandleSettingsSetRequest_LegacyWiFiKeysRejected) - exercise the
+	// decode function directly instead, so its own shape-validation logic
+	// (still real, still compiled, still the one internal validator this
+	// package has for this shape) keeps meaningful test coverage.
+	networks, err := decodeWiFiClientNetworks([]interface{}{
+		map[string]interface{}{"SSID": "home", "Password": "hunter2"},
+	})
+	if err != nil {
+		t.Fatalf("valid entry: unexpected error: %v", err)
 	}
-	if len(globalSettings.WiFiClientNetworks) != 1 || globalSettings.WiFiClientNetworks[0].SSID != "home" {
-		t.Fatalf("WiFiClientNetworks was not applied correctly, got %+v", globalSettings.WiFiClientNetworks)
+	if len(networks) != 1 || networks[0].SSID != "home" || networks[0].Password != "hunter2" {
+		t.Fatalf("valid entry decoded incorrectly, got %+v", networks)
 	}
 
-	for _, body := range []string{
-		`{"WiFiClientNetworks": "not-an-array"}`,
-		`{"WiFiClientNetworks": [{"SSID": "home"}]}`,
-		`{"WiFiClientNetworks": [{"Password": "hunter2"}]}`,
-		`{"WiFiClientNetworks": ["not-an-object"]}`,
+	for _, val := range []interface{}{
+		"not-an-array",
+		[]interface{}{map[string]interface{}{"SSID": "home"}},
+		[]interface{}{map[string]interface{}{"Password": "hunter2"}},
+		[]interface{}{"not-an-object"},
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/setSettings", strings.NewReader(body))
-		rr, panicked := callHandlerSafely(t, req)
-		if panicked != nil {
-			t.Fatalf("body %s: handleSettingsSetRequest panicked: %v", body, panicked)
-		}
-		if rr.Code < 400 || rr.Code >= 500 {
-			t.Fatalf("body %s: expected 4xx, got %d: %s", body, rr.Code, rr.Body.String())
+		if _, err := decodeWiFiClientNetworks(val); err == nil {
+			t.Fatalf("value %+v: expected an error", val)
 		}
 	}
 }

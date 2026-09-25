@@ -11,6 +11,12 @@ nearby traffic and important Stratux health-state transitions.
 > adds a second, independent, Stratux-side notice on top of that, and never
 > changes what Stratux sends to ForeFlight.
 
+See also **[traffic-cpa-alerting.md](traffic-cpa-alerting.md)**: an
+additive, off-by-default closure-rate/closest-point-of-approach trend
+input that can raise (never lower) a traffic alert's tier one step
+early, built entirely on top of this page's own `classifyTier`/
+hysteresis machinery.
+
 ## Phase 1 findings: existing traffic/threat logic
 
 Before writing any new classification, the existing traffic pipeline was

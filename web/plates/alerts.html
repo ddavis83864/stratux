@@ -39,6 +39,23 @@
 						<span ng-show="a.relativeAltitudeValid">{{a.relativeAltitudeFeet | number:0}} ft rel &middot; </span>
 						age {{a.lastUpdatedAgeSeconds | number:0}}s
 					</p>
+					<p class="small" ng-show="a.category === 'traffic'">
+						<span class="label label-default" ng-show="a.cpaEscalated">CPA-escalated</span>
+						<span ng-if="a.cpaValid">
+							Trend: <strong>{{a.cpaTrend}}</strong> &middot;
+							Closure {{a.cpaClosureRateKnots | number:0}} kt &middot;
+							<span ng-if="a.cpaTcpaValid">
+								CPA in {{a.cpaTcpaSeconds | number:0}}s{{a.cpaTcpaClampedToHorizon ? '+' : ''}} &middot;
+								miss {{(a.cpaPredictedHorizontalMeters/1852) | number:2}} NM
+								<span ng-if="a.cpaPredictedVerticalValid">, {{a.cpaPredictedVerticalFeet | number:0}} ft rel</span>
+								<span ng-if="!a.cpaPredictedVerticalValid">, vertical trend unavailable</span>
+							</span>
+							&middot; confidence {{a.cpaConfidence}}
+						</span>
+						<span class="text-muted" ng-if="!a.cpaValid">
+							Closure-rate/CPA trend unavailable<span ng-show="a.cpaRejectReason"> ({{a.cpaRejectReason}})</span> - using distance/altitude only.
+						</span>
+					</p>
 					<button class="btn btn-default btn-xs" ng-click="acknowledge(a.id)" ng-disabled="a.acknowledged">
 						{{a.acknowledged ? 'Acknowledged' : 'Acknowledge'}}
 					</button>
@@ -98,6 +115,47 @@
 				<tr><td>High caution</td><td><input type="number" ng-model="Settings.highCautionHorizontalNm" step="0.1"/></td><td><input type="number" ng-model="Settings.highCautionVerticalFeet"/></td></tr>
 			</table>
 			<button class="btn btn-primary" ng-click="saveSettings()">Save Settings</button>
+		</div>
+	</div>
+
+	<div class="panel panel-default" ng-show="CPASettings">
+		<div class="panel-heading"><span class="panel_label">Closure-Rate / Closest-Point-of-Approach (CPA)</span></div>
+		<div class="panel-body">
+			<p class="small text-danger">
+				Closure-rate and closest-point-of-approach values are estimates derived from
+				received traffic data. They may be delayed, incomplete, inaccurate, or
+				unavailable. This is supplemental, non-certified situational-awareness
+				information only and must not be used for maneuver guidance, collision
+				avoidance, or separation assurance.
+			</p>
+			<p class="small text-muted">
+				A valid, sufficiently reliable CPA trend can raise a target's existing Notice
+				or Caution level by exactly one step early - it can never lower, delay, or
+				clear an alert the distance/altitude thresholds above already produce. See
+				each active alert's own "Trend" line above for its current estimate.
+			</p>
+			<div class="checkbox">
+				<label><input type="checkbox" ng-model="CPASettings.escalationEnabled"/> Enable CPA-based alert escalation</label>
+			</div>
+			<p class="small text-muted" ng-show="!CPASettings.escalationEnabled">
+				Disabled (the default): CPA trends are still computed and shown above for
+				awareness, but can never raise an alert level while this is off.
+			</p>
+			<table class="table table-condensed">
+				<tr>
+					<td>Prediction horizon</td>
+					<td><input type="number" ng-model="CPASettings.horizonSeconds" min="1" max="600" style="width:6em"/> seconds</td>
+				</tr>
+				<tr>
+					<td>Minimum relative speed to compute a trend</td>
+					<td><input type="number" ng-model="CPASettings.minRelativeSpeedKnots" min="1" max="500" style="width:6em"/> kt</td>
+				</tr>
+				<tr>
+					<td>Minimum closure rate to escalate an alert</td>
+					<td><input type="number" ng-model="CPASettings.minClosureRateKnots" min="1" max="500" style="width:6em"/> kt</td>
+				</tr>
+			</table>
+			<button class="btn btn-primary" ng-click="saveCPASettings()">Save CPA Settings</button>
 		</div>
 	</div>
 

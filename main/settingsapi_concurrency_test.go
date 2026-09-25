@@ -69,7 +69,12 @@ func TestGlobalSettingsMu_ConcurrentValidPatchesToDifferentFieldsAreRaceSafe(t *
 		`{"DarkMode": true}`,
 		`{"PPM": 12}`,
 		`{"Dump1090Gain": 30.5}`,
-		`{"WiFiChannel": 6}`,
+		// WiFiChannel used to be here - now rejected outright (see
+		// TestHandleSettingsSetRequest_LegacyWiFiKeysRejected), so this
+		// uses another genuinely-still-valid field instead to keep
+		// testing what this test is actually named for: concurrent valid
+		// PATCHes to different fields, not a rejection path.
+		`{"AltitudeOffset": 100}`,
 		`{"RadarRange": 20}`,
 	}
 	const rounds = 10

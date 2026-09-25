@@ -49,10 +49,18 @@ var URL_ALERT_ACKNOWLEDGE    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/acknowledge
 var URL_ALERTS_MUTE          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/muteAlerts";
 var URL_ALERTS_UNMUTE        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/unmuteAlerts";
 var URL_ALERTS_TEST_SOUND    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/testAlertSound";
+var URL_TRAFFIC_CPA_SETTINGS_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getTrafficCPASettings";
+var URL_TRAFFIC_CPA_SETTINGS_SET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setTrafficCPASettings";
 var URL_CONFIGBACKUP_DOWNLOAD = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadConfigurationBackup";
 var URL_CONFIGBACKUP_VALIDATE = URL_HOST_PROTOCOL + URL_HOST_BASE + "/validateConfigurationBackup";
 var URL_CONFIGBACKUP_APPLY    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/applyConfigurationBackup";
 var URL_CONFIGBACKUP_STATUS   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getConfigurationRestoreStatus";
+var URL_WIFIADMIN_STATUS      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getWifiAdminStatus";
+var URL_WIFIADMIN_PREVIEW     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/previewWifiAdminSettings";
+var URL_WIFIADMIN_APPLY       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/applyWifiAdminSettings";
+var URL_WIFIADMIN_CONFIRM     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmWifiAdminReconnection";
+var URL_WIFIADMIN_CANCEL      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/cancelWifiAdminChange";
+var URL_WIFIADMIN_ROLLBACK    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/rollbackWifiAdminChange";
 var URL_CALPROFILES_LIST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getCalibrationProfiles";
 var URL_CALPROFILES_ACTIVE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getActiveCalibrationProfile";
 var URL_CALPROFILES_CREATE   = URL_HOST_PROTOCOL + URL_HOST_BASE + "/createCalibrationProfile";
@@ -134,6 +142,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			controller: 'ConfigBackupCtrl',
 			reloadOnSearch: false
 		})
+		.state('wifiadmin', {
+			url: '/wifiadmin',
+			templateUrl: 'plates/wifiadmin.html',
+			controller: 'WifiAdminCtrl',
+			reloadOnSearch: false
+		})
 		.state('power', {
 			url: '/power',
 			templateUrl: 'plates/power.html',
@@ -150,6 +164,12 @@ app.config(function ($stateProvider, $urlRouterProvider) {
 			url: '/autorecord',
 			templateUrl: 'plates/autorecord.html',
 			controller: 'AutoRecordCtrl',
+			reloadOnSearch: false
+		})
+		.state('epaper', {
+			url: '/epaper',
+			templateUrl: 'plates/epaper.html',
+			controller: 'EpaperCtrl',
 			reloadOnSearch: false
 		})
 		.state('fisbcache', {

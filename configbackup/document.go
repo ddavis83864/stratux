@@ -247,6 +247,36 @@ type AutoRecordSettingsSection struct {
 	MinimumRecordingDurationSeconds float64 `json:"minimumRecordingDurationSeconds"`
 }
 
+// TrafficCPASettingsSection mirrors main.TrafficCPASettings's own
+// persisted fields, except SchemaVersion (this document has its own).
+// Every field here is durable configuration - there is no operational/
+// time-bound field to exclude, matching AutoRecordSettingsSection rather
+// than AlertSettingsSection.
+type TrafficCPASettingsSection struct {
+	EscalationEnabled     bool    `json:"escalationEnabled"`
+	HorizonSeconds        float64 `json:"horizonSeconds"`
+	MinRelativeSpeedKnots float64 `json:"minRelativeSpeedKnots"`
+	MinClosureRateKnots   float64 `json:"minClosureRateKnots"`
+}
+
+// EpaperSettingsSection mirrors the six Epaper* fields on globalSettings
+// (main/gen_gdl90.go), except SchemaVersion (this document has its own).
+// Every field here is durable configuration - there is no operational/
+// time-bound field to exclude, matching AutoRecordSettingsSection/
+// TrafficCPASettingsSection rather than AlertSettingsSection. This is
+// added as its own top-level Document field with its own checksum key,
+// never folded into ConfigurationSection, so that a backup exported
+// before this section existed still validates: see legacy.go's handling
+// of documents lacking the "epaperSettings" key.
+type EpaperSettingsSection struct {
+	Enabled                bool   `json:"enabled"`
+	Panel                  string `json:"panel"`
+	Rotation               int    `json:"rotation"`
+	RefreshIntervalSeconds int    `json:"refreshIntervalSeconds"`
+	FullRefreshEvery       int    `json:"fullRefreshEvery"`
+	Page                   string `json:"page"`
+}
+
 // FISBCacheSettingsSection mirrors main.FISBCacheSettings' own persisted
 // fields, except SchemaVersion (this document has its own). Like
 // AutoRecordSettingsSection, every field here is durable configuration -
@@ -284,6 +314,8 @@ type Document struct {
 	ActiveCalibrationProfileID string                    `json:"activeCalibrationProfileId,omitempty"`
 	AlertSettings              AlertSettingsSection      `json:"alertSettings"`
 	AutoRecordSettings         AutoRecordSettingsSection `json:"autoRecordSettings"`
+	TrafficCPASettings         TrafficCPASettingsSection `json:"trafficCpaSettings"`
+	EpaperSettings             EpaperSettingsSection     `json:"epaperSettings"`
 	FISBCacheSettings          FISBCacheSettingsSection  `json:"fisbCacheSettings"`
 
 	// SectionChecksums/ContentChecksum detect accidental corruption and
@@ -312,6 +344,8 @@ type BuildInputs struct {
 	ActiveCalibrationProfileID string
 	AlertSettings              AlertSettingsSection
 	AutoRecordSettings         AutoRecordSettingsSection
+	TrafficCPASettings         TrafficCPASettingsSection
+	EpaperSettings             EpaperSettingsSection
 	FISBCacheSettings          FISBCacheSettingsSection
 }
 
@@ -358,6 +392,8 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		ActiveCalibrationProfileID: in.ActiveCalibrationProfileID,
 		AlertSettings:              in.AlertSettings,
 		AutoRecordSettings:         in.AutoRecordSettings,
+		TrafficCPASettings:         in.TrafficCPASettings,
+		EpaperSettings:             in.EpaperSettings,
 		FISBCacheSettings:          in.FISBCacheSettings,
 	}
 
@@ -377,6 +413,14 @@ func BuildDocument(in BuildInputs) (Document, error) {
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming automatic-recording settings: %w", err)
 	}
+	trafficCPASum, err := sectionChecksum(doc.TrafficCPASettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming traffic CPA settings: %w", err)
+	}
+	epaperSum, err := sectionChecksum(doc.EpaperSettings)
+	if err != nil {
+		return Document{}, fmt.Errorf("configbackup: checksumming e-paper display settings: %w", err)
+	}
 	fisbCacheSum, err := sectionChecksum(doc.FISBCacheSettings)
 	if err != nil {
 		return Document{}, fmt.Errorf("configbackup: checksumming fisb weather cache settings: %w", err)
@@ -386,6 +430,8 @@ func BuildDocument(in BuildInputs) (Document, error) {
 		"calibrationProfiles": profSum,
 		"alertSettings":       alertSum,
 		"autoRecordSettings":  autoRecordSum,
+		"trafficCpaSettings":  trafficCPASum,
+		"epaperSettings":      epaperSum,
 		"fisbCacheSettings":   fisbCacheSum,
 	}
 

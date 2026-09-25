@@ -174,6 +174,25 @@ type Input struct {
 	FISBCacheState        string // one of fisbcache.State's own values, or "" if not yet initialized
 	FISBCacheReason       string
 	FISBCacheTotalEntries int
+
+	// TrafficCPAEnabled/TrafficCPASettingsValid mirror the closure-rate/
+	// closest-point-of-approach traffic-alerting enhancement's own
+	// state - see main/trafficcpaapi.go. This is a supplemental trend
+	// input to traffic alerting (see the alerting package), never itself
+	// authoritative for flight readiness - trafficCPAChecks accordingly
+	// never rises above Caution, mirroring autoRecordChecks' own
+	// restraint.
+	TrafficCPAEnabled       bool
+	TrafficCPASettingsValid bool
+
+	// WifiAdmin* mirrors the Wi-Fi administration-hardening feature's
+	// own transaction stage - see main/wifiadminapi.go and
+	// docs/wifi-administration-hardening.md. Never itself authoritative
+	// for flight readiness (a stuck or pending Wi-Fi transaction is an
+	// administrative inconvenience, not a safety condition) -
+	// wifiAdminChecks accordingly never rises above Caution, mirroring
+	// trafficCPAChecks'/autoRecordChecks' own restraint.
+	WifiAdminStage string // one of wifiadmin.Stage's own string values, or "" if not yet initialized
 }
 
 // Grace periods - see docs/preflight-readiness.md "Startup grace
@@ -223,6 +242,8 @@ func BuildReport(in Input) Report {
 	automated = append(automated, storageLifecycleChecks(in)...)
 	automated = append(automated, autoRecordChecks(in)...)
 	automated = append(automated, fisbCacheChecks(in)...)
+	automated = append(automated, trafficCPAChecks(in)...)
+	automated = append(automated, wifiAdminChecks(in)...)
 
 	manual := manualCheckResults(in)
 

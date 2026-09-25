@@ -3,6 +3,8 @@ package alerting
 import (
 	"math"
 	"time"
+
+	"github.com/stratux/stratux/trafficcpa"
 )
 
 // TrafficObservation is one target's freshly-recomputed state for the
@@ -36,6 +38,16 @@ type TrafficObservation struct {
 
 	ClockDirectionValid bool
 	ClockDirection      ClockDirection
+
+	// CPA is this target's closure-rate/closest-point-of-approach trend
+	// estimate, computed by the caller (main/trafficcpaapi.go, via
+	// trafficcpa.Compute) - nil whenever CPA calculation has not been
+	// performed for this cycle (e.g. the feature is not enabled, or
+	// ownship/target data did not support it). A non-nil CPA whose own
+	// Valid field is false carries only diagnostic information (e.g.
+	// RejectReason) and must never be treated as escalation-worthy - see
+	// classifyTier's own doc comment.
+	CPA *trafficcpa.Result
 }
 
 // tier is the internal 0-3 classification: 0 = not eligible/below notice,
@@ -65,40 +77,56 @@ func levelForTier(t int) Level {
 // traffic_test.go. It never mutates any state and has no memory: hysteresis
 // is applied by the caller (targetTrafficState.update) by calling this
 // twice, once with cfg and once with a widened ("exit") copy of cfg.
-func classifyTier(obs TrafficObservation, cfg Config) (tier int, validity string) {
+//
+// CPA escalation (cpaEscalated's own return value): after the existing,
+// unmodified distance/altitude classification above produces tier and
+// validity, a valid, sufficiently reliable closure-rate/CPA trend
+// estimate (obs.CPA) may raise tier by EXACTLY ONE LEVEL - never invent a
+// tier for a target this envelope check already decided is tierNone
+// (outside the monitored area, stale, or otherwise invalid), and never
+// lower a tier the distance/altitude check already produced. This is
+// what makes CPA a strictly ADDITIVE trend input, provably unable to
+// weaken or suppress any alert the existing policy would otherwise
+// produce - see docs/traffic-cpa-alerting.md's "Alert escalation policy"
+// section and TestClassifyTier_CPANeverWeakensAnAlert.
+func classifyTier(obs TrafficObservation, cfg Config) (tier int, validity string, cpaEscalated bool) {
 	if !obs.PositionValid || !obs.DistanceValid {
-		return tierNone, "position-invalid"
+		return tierNone, "position-invalid", false
 	}
 	if math.IsNaN(obs.DistanceMeters) || math.IsInf(obs.DistanceMeters, 0) || obs.DistanceMeters < 0 {
-		return tierNone, "invalid-distance"
+		return tierNone, "invalid-distance", false
 	}
 	if math.IsNaN(obs.AgeSeconds) || math.IsInf(obs.AgeSeconds, 0) || obs.AgeSeconds < 0 || obs.AgeSeconds > cfg.StaleAfterSeconds {
-		return tierNone, "stale"
+		return tierNone, "stale", false
 	}
 	if obs.DistanceMeters > cfg.MonitoringHorizontalMeters {
-		return tierNone, "outside-envelope"
+		return tierNone, "outside-envelope", false
 	}
+
+	groundCapped := cfg.SuppressGroundTraffic && obs.OnGround
 
 	altValid := obs.RelativeAltitudeValid && !math.IsNaN(obs.RelativeAltitudeFeet) && !math.IsInf(obs.RelativeAltitudeFeet, 0)
 	if !altValid {
 		// Horizontal-only match: conservative NOTICE-only ceiling - never
-		// a CAUTION tier without a trustworthy relative altitude.
+		// a CAUTION tier without a trustworthy relative altitude, and
+		// CPA never escalates past this ceiling either (cpaWarrantsEscalation
+		// itself also requires obs.RelativeAltitudeValid, but returning
+		// early here keeps that invariant obvious without relying on it).
 		if obs.DistanceMeters <= cfg.NoticeHorizontalMeters {
-			return tierNotice, "altitude-unavailable"
+			return tierNotice, "altitude-unavailable", false
 		}
-		return tierNone, "altitude-unavailable"
+		return tierNone, "altitude-unavailable", false
 	}
 
 	absAlt := math.Abs(obs.RelativeAltitudeFeet)
 	if absAlt > cfg.MonitoringVerticalFeet {
-		return tierNone, "outside-envelope"
+		return tierNone, "outside-envelope", false
 	}
 
 	tier = tierNone
 	if obs.DistanceMeters <= cfg.NoticeHorizontalMeters && absAlt <= cfg.NoticeVerticalFeet {
 		tier = tierNotice
 	}
-	groundCapped := cfg.SuppressGroundTraffic && obs.OnGround
 	if !groundCapped {
 		if obs.DistanceMeters <= cfg.CautionHorizontalMeters && absAlt <= cfg.CautionVerticalFeet {
 			tier = tierCaution
@@ -107,7 +135,75 @@ func classifyTier(obs TrafficObservation, cfg Config) (tier int, validity string
 			tier = tierHighCaution
 		}
 	}
-	return tier, "fresh"
+
+	if tier > tierNone && tier < tierHighCaution {
+		var nextHorizontal, nextVertical float64
+		if tier == tierNotice {
+			nextHorizontal, nextVertical = cfg.CautionHorizontalMeters, cfg.CautionVerticalFeet
+		} else {
+			nextHorizontal, nextVertical = cfg.HighCautionHorizontalMeters, cfg.HighCautionVerticalFeet
+		}
+		if cpaWarrantsEscalation(cfg, obs, groundCapped, nextHorizontal, nextVertical) {
+			tier++
+			cpaEscalated = true
+		}
+	}
+
+	return tier, "fresh", cpaEscalated
+}
+
+// cpaWarrantsEscalation reports whether obs's CPA estimate justifies
+// raising the tier ALREADY computed by distance/altitude alone by
+// exactly one level (to a tier whose own existing horizontal/vertical
+// entry thresholds are nextHorizontalMeters/nextVerticalFeet) - reusing
+// the already-reviewed Notice/Caution/HighCaution thresholds rather than
+// a new, separately-invented CPA-specific distance. Every condition here
+// is a conservative, explicit precondition; see
+// docs/traffic-cpa-alerting.md's "Alert escalation policy" section for
+// the rationale behind each one.
+func cpaWarrantsEscalation(cfg Config, obs TrafficObservation, groundCapped bool, nextHorizontalMeters, nextVerticalFeet float64) bool {
+	if !cfg.CPAEscalationEnabled {
+		return false
+	}
+	if obs.CPA == nil || !obs.CPA.Valid {
+		return false
+	}
+	if groundCapped {
+		return false
+	}
+	// An escalation is never based on a vertical PREDICTION when the
+	// CURRENT relative altitude itself could not be trusted - the
+	// caller's own altitude-unavailable path already caps the base tier
+	// at tierNotice for exactly this reason, but this is checked
+	// explicitly here too rather than relied upon implicitly.
+	if !obs.RelativeAltitudeValid {
+		return false
+	}
+	// A TCPA clamped to the configured horizon means the true closest
+	// approach falls beyond it - not yet an imminent trend.
+	if obs.CPA.TCPAClampedToHorizon {
+		return false
+	}
+	if !obs.CPA.HorizontalClosureRateValid || obs.CPA.HorizontalClosureRateKnots < cfg.CPAMinClosureRateKnots {
+		return false
+	}
+	if !obs.CPA.PredictedHorizontalSeparationValid || obs.CPA.PredictedHorizontalSeparationMeters > nextHorizontalMeters {
+		return false
+	}
+	if obs.CPA.Confidence == trafficcpa.ConfidenceHigh {
+		// A vertical prediction IS available - it must also fit the
+		// next tier's own vertical threshold, or this is not a genuine
+		// vertical-converging trend worth escalating for.
+		if !obs.CPA.PredictedVerticalSeparationValid || math.Abs(obs.CPA.PredictedVerticalSeparationFeet) > nextVerticalFeet {
+			return false
+		}
+	}
+	// Confidence == Medium (no vertical prediction available): escalation
+	// is still permitted on the horizontal trend alone, exactly one
+	// tier at a time - matching classifyTier's own existing
+	// altitude-unavailable conservatism elsewhere (never more than one
+	// tier without a trustworthy vertical component).
+	return true
 }
 
 // widen returns a copy of cfg with every entry threshold multiplied by
@@ -151,6 +247,11 @@ type targetTrafficState struct {
 
 	acknowledged bool
 	ackTier      int
+
+	// cpaEscalated mirrors classifyTier's own return value from the most
+	// recent update - whether a valid CPA estimate actually raised this
+	// target's current tier above what distance/altitude alone produced.
+	cpaEscalated bool
 
 	// lastAudioAt[tier] is the monotonic instant of the last
 	// audio-eligible event for this target at this tier (only tierNotice

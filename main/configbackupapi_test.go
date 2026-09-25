@@ -787,6 +787,9 @@ func TestHandleApplyConfigurationBackup_AddedAndActivatedProfile(t *testing.T) {
 		// than 0 knots) - a test-construction gap, not a real restore
 		// scenario.
 		AutoRecordSettings: doc.AutoRecordSettings,
+		// Carry over TrafficCPASettings too, for exactly the same
+		// reason as AutoRecordSettings above.
+		TrafficCPASettings: doc.TrafficCPASettings,
 		// Same reasoning as AutoRecordSettings above, for the same
 		// zero-value-fails-Validate() trap - see
 		// applyFISBCacheSettingsSection's own doc comment.
@@ -894,6 +897,28 @@ func TestLegacyDefaultAutoRecordSettingsMatchesAutoRecordPackageDefault(t *testi
 		got.RestartCooldownSeconds != want.RestartCooldownSeconds ||
 		got.MinimumRecordingDurationSeconds != want.MinimumRecordingDurationSeconds {
 		t.Fatalf("configbackup.LegacyDefaultAutoRecordSettings() = %+v has drifted from autorecord.DefaultSettings() = %+v - update legacy.go's legacyDefaultAutoRecordSettings to match", got, want)
+	}
+}
+
+// TestLegacyDefaultEpaperSettingsMatchesPackageDefault cross-checks
+// configbackup's own independently-restated legacy default against what
+// this package's own defaultSettings() actually produces for the six
+// Epaper* fields - the one place both are already in scope together
+// (unlike AutoRecordSettings/TrafficCPASettings, the Epaper* fields live
+// directly on globalSettings in this same package, not a separate
+// importable package, so there is no cross-package import to exercise
+// here - this still guards against legacyDefaultEpaperSettings silently
+// drifting from defaultSettings() if either is ever changed alone).
+func TestLegacyDefaultEpaperSettingsMatchesPackageDefault(t *testing.T) {
+	saved := globalSettings
+	defer func() { globalSettings = saved }()
+	globalSettings = settings{}
+	defaultSettings()
+
+	got := configbackup.LegacyDefaultEpaperSettings()
+	want := epaperSettingsSectionFromGlobalSettings()
+	if got != want {
+		t.Fatalf("configbackup.LegacyDefaultEpaperSettings() = %+v has drifted from defaultSettings()'s own Epaper* fields = %+v - update legacy.go's legacyDefaultEpaperSettings to match", got, want)
 	}
 }
 

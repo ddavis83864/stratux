@@ -211,6 +211,8 @@ func buildPreflightReport() (report preflight.Report) {
 	previousSession := powerPreviousSession
 	powerPreviousSessionMu.Unlock()
 
+	trafficCPASettingsForPreflight := currentTrafficCPASettings()
+
 	in := preflight.Input{
 		Health:                       health,
 		UptimeSeconds:                uptimeSeconds,
@@ -233,6 +235,9 @@ func buildPreflightReport() (report preflight.Report) {
 		FISBCacheState:               health.FISBCache.CacheState,
 		FISBCacheReason:              health.FISBCache.Reason,
 		FISBCacheTotalEntries:        health.FISBCache.TotalEntries,
+		TrafficCPAEnabled:            trafficCPASettingsForPreflight.EscalationEnabled,
+		TrafficCPASettingsValid:      trafficCPASettingsForPreflight.Validate() == nil,
+		WifiAdminStage:               wifiAdminStageForPreflight(),
 	}
 	return preflight.BuildReport(in)
 }

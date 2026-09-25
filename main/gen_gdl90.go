@@ -1301,6 +1301,20 @@ type settings struct {
 	// silently accepts an arbitrary mount: once pinned (by either path),
 	// every later check requires an exact match.
 	PersistentDataUUID   string
+
+	// Waveshare e-paper display settings (see epaper package and
+	// docs/waveshare-epaper-display.md). EpaperEnabled defaults to
+	// false, matching every other optional-hardware subsystem's own
+	// disabled-by-default convention - epaper_main (a separate,
+	// fault-isolated process/service) is the only code that ever acts
+	// on these. Zero-valued Epaper* fields (the shipped default) are
+	// filled in with safe defaults by epaper.Normalize, never here.
+	EpaperEnabled                bool
+	EpaperPanel                  string
+	EpaperRotation               int
+	EpaperRefreshIntervalSeconds int
+	EpaperFullRefreshEvery       int
+	EpaperPage                   string
 }
 
 type status struct {
@@ -1499,6 +1513,14 @@ func defaultSettings() {
 	globalSettings.GpsManualDevice = "/dev/ttyAMA0"
 	globalSettings.GpsManualTargetBaud = 115200
 	globalSettings.GpsManualChip = "ublox"
+
+	// Optional Waveshare e-paper display: disabled by default, matching
+	// every other optional-hardware subsystem above. The remaining
+	// zero-valued fields are intentionally left blank here - epaper.Normalize
+	// (called only by the separate epaper_main process) fills them in with
+	// safe, panel-appropriate defaults whenever the display is enabled, so
+	// this daemon never needs to know or duplicate those defaults itself.
+	globalSettings.EpaperEnabled = false
 }
 
 func readSettings() {
@@ -1894,6 +1916,15 @@ func main() {
 	// Read settings.
 	readSettings()
 
+	// Switch every persistence namespace's write guard from its
+	// (test-safe, no-op) default to the real "is PersistentDataPath
+	// genuinely mounted" check, before any subsystem below this point
+	// gets a chance to write anything - see
+	// wireProductionPersistenceGuards's own doc comment
+	// (main/health.go) and docs/persistent-data-partition.md's
+	// namespace audit.
+	wireProductionPersistenceGuards()
+
 	// Initialize named aircraft calibration profiles and migrate any
 	// pre-existing legacy calibration into a default profile - must run
 	// before initI2CSensors() below starts any goroutine that reads
@@ -1912,6 +1943,7 @@ func main() {
 	// main/alertingapi.go. Purely additive/observational; a failure here
 	// is recovered and logged, never allowed to affect traffic ingestion
 	// or GDL90 output (see docs/alerting.md's "Failure isolation" section).
+	initTrafficCPA()
 	initAlerting()
 
 	// Initialize power/thermal health monitoring, the previous-session
@@ -1920,6 +1952,15 @@ func main() {
 	// after initPreflight() (uses preflightSessionID as a fallback session
 	// id and as the shutdown-token boot-session binding).
 	initPower()
+
+	// Initialize Wi-Fi administration hardening - see
+	// main/wifiadminapi.go and docs/wifi-administration-hardening.md.
+	// Off unless an owner explicitly starts a transaction through its
+	// own API; never mutates the pre-existing WiFi* settings/API this
+	// project already has. Must run after initPreflight() (boot-session
+	// binding, matching initPower's own ordering requirement) and after
+	// initPower() (its own preconditions check shutdownManager).
+	initWifiAdmin()
 
 	// Initialize the storage-lifecycle inventory foundation - see
 	// main/storagelifecycleapi.go and docs/storage-lifecycle.md.

@@ -15,6 +15,28 @@ arch=$(uname -m)
 if  [ "$arch" == "aarch64" ]; then
 	if [ -f "/boot/firmware/config.txt" ]; then
 		systemctl stop stratux_fancontrol
+		# stratux_epaper runs on every device, exactly like
+		# stratux_fancontrol above (see debian/postinst.dpkg and
+		# debian/stratux_epaper.service for why always-running is safe) -
+		# it idles with no display attached or the feature disabled, but
+		# is still stopped here like any other stratux service.
+		# The boot splash first, so it can never still own the panel
+		# while the package is being replaced (a no-op once it has
+		# exited, which is the normal case).
+		systemctl stop stratux_epaper_splash 2>/dev/null || true
+		systemctl stop stratux_epaper 2>/dev/null || true
+		# The shutdown splash last, so nothing stale is left active once
+		# the package is removed. Stopping it runs its ExecStop, which
+		# draws nothing here: no power-off is queued, so
+		# `epaperd -splash-shutdown` exits 0 without touching the panel.
+		systemctl stop stratux_epaper_shutdown 2>/dev/null || true
+		# The SSH key restore: only on real removal (not an upgrade, whose postinst
+		# re-enables it) undo the enablement so no dangling symlink is left. This
+		# never touches /var/lib/stratux-data/ssh/authorized_keys, which is the
+		# administrator's persistent data and survives upgrade and removal.
+		if [ "${1:-}" = "remove" ]; then
+			systemctl disable stratux_ssh_authorized_keys 2>/dev/null || true
+		fi
 	fi
 fi
 # Example: Stop the stratux service before removing this version

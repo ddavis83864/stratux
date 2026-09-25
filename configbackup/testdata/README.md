@@ -3,36 +3,63 @@
 ## `legacy-pre-fisbcache-backup.json`
 
 An **authentic** Configuration Backup document, produced by literally
-running commit `83a20a8caab0fbf90c2d3bebab1d92fa76d409ca`'s (`master`,
-the merge of PR #14, immediately before the Rolling FIS-B Weather Cache)
-exact `configbackup.BuildDocument` - not hand-written or simulated. This
-is the second (newer) of the two Configuration Backup shapes that have
-ever existed on this project's `master` branch: it has `autoRecordSettings`
-but not yet `fisbCacheSettings`.
+running commit `8af40b10f71e4c9e7a534889f33e0becefa87906`'s (`master`, the
+merge of the package-ownership remediation, the state of `master` immediately
+before the Rolling FIS-B Weather Cache was merged) exact
+`configbackup.BuildDocument` - not hand-written or simulated. Its
+section-checksum key set is exactly `{configuration, calibrationProfiles,
+alertSettings, autoRecordSettings, trafficCpaSettings, epaperSettings}` - no
+`fisbCacheSettings` key, and no such field in the document body at all - the
+shape `legacy.go`'s `verifyLegacyPreFISBCacheChecksum` recognizes. The inputs
+(settings, profile) were taken from `legacy-pre-epaper-backup.json`; only the
+document was rebuilt by that commit's `BuildDocument`, so every checksum comes
+from that commit's real code.
 
-### How it was regenerated
+Its one calibration profile is named "Legacy Backup Aircraft
+(pre-fisbcache)" for the same name-uniqueness reason given for the other
+fixtures.
 
-```sh
-git worktree add .worktrees/pre-fisbcache-baseline 83a20a8caab0fbf90c2d3bebab1d92fa76d409ca
-# write fixturegen/main.go under that worktree, importing
-# "github.com/stratux/stratux/configbackup" (resolved to THAT worktree's
-# own source) and calling BuildDocument with the same inputs
-# configbackup/document_test.go's own testBuildInputs() used at that
-# commit (which already includes autoRecordSettings), then
-# json.MarshalIndent's the result to a file.
-./docker_run.sh "cd /data/.worktrees/pre-fisbcache-baseline && go run ./fixturegen"
-git worktree remove .worktrees/pre-fisbcache-baseline
-```
+An earlier revision of this file (produced by an earlier commit of the FIS-B
+branch, before `trafficCpaSettings` and `epaperSettings` existed on `master`)
+had the shape `{configuration, calibrationProfiles, alertSettings,
+autoRecordSettings}`. That shape is identical to
+`legacy-pre-trafficcpa-backup.json`'s and is covered by it.
 
-Do not hand-edit this file to "fix" a test - if the shape needs to
-change, regenerate it from the actual historical commit, or (if no such
-historical commit exists for the desired shape) do not claim the fixture
-is historical at all.
+## `legacy-pre-epaper-backup.json`
 
-Its one calibration profile is again named "Legacy Backup Aircraft" for
-the same test-fixture-convenience reason as the older fixture below (a
-different profile ID, to keep the two fixtures independently
-distinguishable in any test that happens to load both).
+An **authentic** Configuration Backup document, produced by literally
+running commit `6ca35c8f815b8b7b50a6c5976c65d94261ec3f2b`'s (`feature/
+waveshare-epaper-display`, the merge of `origin/master`'s PR #31/#32
+into this branch, immediately before the e-paper feature's own
+`EpaperSettings` section was added to `configbackup`) exact
+`configbackup.BuildDocument` - not hand-written or simulated. Its
+section-checksum key set is exactly `{configuration,
+calibrationProfiles, alertSettings, autoRecordSettings,
+trafficCpaSettings}` - no `epaperSettings` key, and no such field in the
+document body at all - the shape `legacy.go`'s
+`verifyLegacyPreEpaperChecksum` recognizes.
+
+Regenerated the same way as `legacy-pre-autorecord-backup.json` below,
+substituting the commit and output filename; its one calibration profile
+is named "Legacy Backup Aircraft (pre-epaper)" for the same
+name-uniqueness reason given below.
+
+## `legacy-pre-trafficcpa-backup.json`
+
+An **authentic** Configuration Backup document, produced by literally
+running commit `936c38e4281edf4886be4e0fe3b6c11fc2d1aa8b`'s (`master`,
+the merge of PR #18, immediately before the closure-rate/closest-point-
+of-approach traffic-alerting enhancement) exact `configbackup.BuildDocument`
+- not hand-written or simulated. Its section-checksum key set is exactly
+`{configuration, calibrationProfiles, alertSettings, autoRecordSettings}`
+- no `trafficCpaSettings` key, and no such field in the document body at
+all - the shape `legacy.go`'s `verifyLegacyPreTrafficCPAChecksum`
+recognizes.
+
+Regenerated the same way as `legacy-pre-autorecord-backup.json` below,
+substituting the commit and output filename; its one calibration profile
+is named "Legacy Backup Aircraft (pre-CPA)" for the same
+name-uniqueness reason given below.
 
 ## `legacy-pre-autorecord-backup.json`
 

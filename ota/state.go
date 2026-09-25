@@ -52,28 +52,88 @@ const (
 	StageComplete Stage = "complete"
 
 	// StageFailed: a step failed. RollbackNeeded (see State) indicates
-	// whether a backup exists to restore.
+	// whether a backup exists to restore. Not terminal by itself: Decide
+	// retries the overlay-disable/rollback handoff from here, bounded by
+	// MaxRecoveryAttempts and backed off per RecoveryBackoff, until either
+	// it succeeds (a reboot follows, and the bare-ext4 side moves the
+	// stage on) or recovery is exhausted into StageRecoveryExhausted.
 	StageFailed Stage = "failed"
 
 	// StageRolledBack: a failure was detected and the pre-install backup
 	// was restored; the overlay has been re-enabled.
 	StageRolledBack Stage = "rolled_back"
+
+	// StageRecoveryExhausted: StageFailed's automatic recovery (the
+	// overlay-disable/rollback handoff) did not succeed within
+	// MaxRecoveryAttempts. Terminal: Decide takes no further automatic
+	// action from here, so a persistently busy overlay (or any other
+	// reason requestOverlayDisable keeps failing) produces one bounded
+	// burst of retries and then a quiet, explicit stop - not an
+	// indefinite five-second retry loop. State.LastError (the original
+	// failure) and State.Recovery.LastError (the most recent secondary
+	// error from a retry) record why, for an operator to read via
+	// GET /getOTAStatus. Leaving this stage requires an explicit
+	// POST /resetOTA (see main/ota.go) - there is no automatic path out.
+	StageRecoveryExhausted Stage = "recovery_exhausted"
 )
 
 // Valid reports whether s is one of the defined stages.
 func (s Stage) Valid() bool {
 	switch s {
 	case StageIdle, StageStaged, StageDisableRequested, StageInstalling,
-		StageInstalled, StageVerifying, StageComplete, StageFailed, StageRolledBack:
+		StageInstalled, StageVerifying, StageComplete, StageFailed, StageRolledBack,
+		StageRecoveryExhausted:
 		return true
 	}
 	return false
 }
 
 // Terminal reports whether s is an end state - no further automatic
-// transition should occur without a new update being staged.
+// transition should occur without a new update being staged (StageComplete,
+// StageRolledBack) or without an explicit operator reset
+// (StageRecoveryExhausted).
 func (s Stage) Terminal() bool {
-	return s == StageComplete || s == StageRolledBack
+	return s == StageComplete || s == StageRolledBack || s == StageRecoveryExhausted
+}
+
+// Recovery holds StageFailed's own bounded-retry bookkeeping - see
+// StageRecoveryExhausted and Decide's StageFailed case. The zero value
+// means "no recovery attempt has been made yet in the current StageFailed
+// episode" (Attempts == 0, NextAttemptAt zero meaning "now, no backoff
+// pending").
+//
+// This is kept separate from State.Attempts/State.LastError, which belong
+// to StageInstalling and to the original failure cause respectively,
+// because retrying the overlay-disable/rollback handoff is a different
+// operation, with a different failure mode and policy, than retrying a
+// dpkg install - mechanically reusing StageInstalling's fields and
+// MaxInstallAttempts here would conflate two unrelated retry budgets and
+// two unrelated error histories.
+type Recovery struct {
+	// Attempts counts how many times requestOverlayDisable has been
+	// retried since Stage most recently became StageFailed. Reset to 0
+	// whenever Stage transitions into StageFailed from something else -
+	// a fresh failure gets a fresh recovery budget; retries of the same
+	// failure do not each reset it. See MaxRecoveryAttempts.
+	Attempts int
+
+	// LastError is the most recent secondary error produced by a
+	// recovery attempt itself (e.g. another "overlayctl lock: busy"),
+	// deliberately kept separate from State.LastError (the original
+	// failure that caused entry into StageFailed) so repeated retries
+	// never overwrite or nest into the original cause. This replaces the
+	// historical defect where each retry's Decide reason - itself
+	// formatted from the previous LastError - was written back into
+	// LastError, producing an unbounded
+	// "update previously marked failed: update previously marked
+	// failed: ..." string that grew by one wrapper per five-second tick.
+	LastError string
+
+	// NextAttemptAt is when the next recovery attempt is allowed to run.
+	// Zero means "now" (no backoff pending). Set by RecoveryBackoff after
+	// each failed attempt so retries space out with increasing patience
+	// rather than firing on every five-second health tick.
+	NextAttemptAt time.Time
 }
 
 // State is the full persisted OTA state, read and written by both the Go
@@ -94,8 +154,10 @@ type State struct {
 	StagedAt  time.Time
 	UpdatedAt time.Time
 
-	Attempts  int // install attempts at the current stage; used to detect stuck/looping resumes
-	LastError string
+	Attempts  int    // install attempts at the current stage (StageInstalling only - see MaxInstallAttempts). Not used by StageFailed; see Recovery.
+	LastError string // the error that caused entry into StageFailed - set once per failure episode, never overwritten by a later recovery attempt's own error (see Recovery.LastError)
+
+	Recovery Recovery
 }
 
 // NewState returns a freshly-staged State for a package with the given
