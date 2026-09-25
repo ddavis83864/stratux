@@ -121,7 +121,9 @@ that cadence per this feature's "expire conservatively" requirement.
 
 A cached entry moves through `FreshnessState` values
 (`CACHED_FRESH` &rarr; `CACHED_AGING` &rarr; `STALE` &rarr; `EXPIRED`) purely
-as a function of monotonic age and its product's own policy
+as a function of its **effective age** - the older of how long ago it was
+last received and how old the product itself is, see "Freshness semantics,"
+below - on the monotonic clock, and its product's own policy
 (`fisbcache.Freshness`). `LIVE` is reserved for a value just received,
 never assigned to anything served from the cache - see "Live versus
 cached labeling," below. A product with no known policy is
@@ -899,6 +901,96 @@ configured as on the live device at restore time.
   decode (AIRMET/SIGMET/NOTAM remain out of scope, matching
   `decodeAirmet`'s existing dead-code status).
 
+## Freshness semantics: reception age, product age, effective age
+
+Two different facts must not be conflated: **"received recently"** and
+**"issued recently."** A tower keeps rebroadcasting a report for as long as
+it is current to the ground system, so a METAR observed an hour ago can be
+received a second ago. The cache keeps both ages and never lets an entry look
+fresher than either permits.
+
+- **Reception age** - time since the last received copy (monotonic clock).
+- **Source (product) age** - reception age plus the *source lag*: how long
+  before its last reception the product's own time lay. The lag is
+  `ReceivedAtUTC - Source.UTC`, both wall times captured together at
+  reception while the wall clock was trusted, so a later clock correction
+  cannot change it; from then on the age advances on the monotonic clock only.
+- **Effective age** = `max(reception age, source age)` when a trustworthy
+  source time exists; because source age = reception age + a non-negative lag
+  this is the source age, and it is the reception age otherwise.
+  `Freshness`, retention, the API's `ageSeconds` and the dashboard all use it.
+- **Basis** (`ageBasis`): `source` when the effective age is the product's own
+  age; `reception` when no trustworthy source time exists - the age then says
+  nothing about how old the weather is, and the dashboard says so.
+
+Rules that follow, each with a test (`fisbcache/freshness_test.go`,
+`main/fisbcachee2e_test.go`, `main/fisbcachereal_test.go`):
+
+- A retransmission carries the same source time, so it refreshes the reception
+  age but **not** the source age (its lag grows by the time since the earlier
+  copy); a rebroadcast old product is never immortal - it reaches `EXPIRED` on
+  its own schedule.
+- A product already past its expiry by its own time **on arrival** is not cached
+  (`expiredOnArrival` in the status), so a tower rebroadcasting an old report
+  cannot churn the cache and its files.
+- A newer source time replaces and resets the source age; an older
+  out-of-order copy is rejected, exactly as before.
+- A source time slightly *after* reception (clock-domain skew, at most 5 min) is
+  treated as lag 0 - never a negative age, never younger than reception. A
+  source time further in the future, malformed fields, or a decode landing more
+  than 48 h in the past are rejected by the reconstruction: no source time is
+  fabricated and the entry is judged on reception age with `ageBasis`
+  `reception`. A persisted lag is capped (7 days) so an age is always bounded.
+- **Unsynchronized clock:** with no trusted wall clock at reception there is no
+  source time and no recorded reception wall time, so the basis is `reception`
+  (the Pi's clock is often unsynchronized before a GPS fix). Nothing waits for
+  or adds time synchronization.
+- The past window for a source time was raised from 6 h to 48 h so the
+  long-lived products (a TAF is transmitted for up to 30 h) are recognised as
+  old rather than rejected - a rejected source time would make them look fresh.
+  The two formats without a date (hour/minute only) can only express the last
+  24 h, so a product older than that reconstructs to its age modulo 24 h:
+  never older than reality and never younger than its reception age.
+
+### What the header time is, per product (evidence)
+
+The only structured timestamp the decoder provides is the FIS-B information
+frame's header time. The real capture `dump978/sample-data.txt.gz` (704 uplinks,
+about 03:45-04:35Z on the 24th, western US; month/year not recorded) shows what
+it is (`uatparse/real_sample_test.go`):
+
+| Product | Header time vs. the product | Used as source time | Notes |
+| --- | --- | --- | --- |
+| METAR / SPECI | equals the report's own observation time (`ddhhmmZ`) in all 150 frames | yes | |
+| PIREP | equals the report time in all 6 frames | yes | |
+| TAF / TAF.AMD | equals the issue-time token in all 24 frames that have one; the 9 validity-period-form TAFs carry the start of validity or a few minutes before it (issue time) | yes | ages are conservative for a TAF, which is transmitted for up to 30 h |
+| Winds aloft | the product **generation** time (02:06Z), not the forecast valid time in the text (250000Z) | yes | judged on its generation age |
+| NEXRAD | all 200 radar frames carry one header time (04:10Z), the scan time; **no per-tile time** exists | yes, frame-level | one time per frame; no tile-level timing is decoded |
+
+Report-embedded timestamps (the `ddhhmmZ` in a METAR/TAF, `/TM` in a PIREP) are
+**not** parsed by the cache - that would be a new per-product text parser, and
+the header time was shown above to agree with them where they exist. If the
+header time were ever a transmission time rather than a product time the rule
+degenerates safely to reception age; it can only ever add age.
+
+### Retention versus display
+
+Retention uses the same effective age, so the retention *windows* are unchanged
+(the table above); what changed is that an entry the cache itself would label
+`EXPIRED` is evictable. The ordering used to make room when over budget
+(oldest-received first) is unchanged.
+
+### API and dashboard
+
+`/getFISBCacheInventory` items: `ageSeconds` is now the **effective** age (never
+smaller than before), and new `ageBasis`, `receptionAgeSeconds`,
+`sourceAgeSeconds` (null when unavailable), `receivedAtUtc`, `sourceTimeUtc`
+(omitted when untrusted); `freshness` is classified from the effective age.
+`/getFISBCacheStatus`: `byAgeBasis` and `expiredOnArrival` are new; `byFreshness`
+uses the effective age. No field was removed or renamed. The dashboard shows the
+effective age with "(product)" or "(since received)", and how long ago each
+product was received.
+
 ## Reconciliation with current master and off-device validation
 
 This section records what was found and added when the feature branch was
@@ -954,26 +1046,75 @@ The "time of reception" field remains hard-coded to `0x00`.
 - `main/fisbcachesoak_test.go`: the real capture worker under sustained,
   concurrent, heavily duplicated load; store bounded, queue drains,
   goroutines flat, heap flat, persisted files never exceed committed entries.
-- `test/fisb_mutation_test.sh`: 12 mutations of the above (each caught).
+- `uatparse/real_sample_test.go` and `main/fisbcachereal_test.go`: the 704 real
+  uplinks in `dump978/sample-data.txt.gz` decoded, shown to carry the product
+  time in the header (table above) and run through the cache against a fixed
+  receive time (559 cached products; every METAR/SPECI station's effective age
+  cross-checked against the observation time in its own report text; a second
+  pass over the capture adds nothing; the same capture received 6 h later caches
+  no METAR/PIREP/radar at all). The fuzz target is seeded from these frames.
+- `fisbcache/freshness_test.go` (deterministic, no waiting) and the freshness
+  cases of `main/fisbcachee2e_test.go`: old source + recent reception, recent
+  source + old reception, missing/invalid/future source time, retransmission,
+  newer and out-of-order products, rollover, per-product thresholds, age bounds.
+- `test/fisb_mutation_test.sh`: 22 mutations - the 12 above plus 10 for the freshness rules (each caught).
 
-### Not validated, and open decisions
+### Not validated
 
-- No captured FIS-B frame exists in the repository and the bench receiver
-  has never received a ground station; the byte-level fixtures are synthetic.
-  Real reception and physical ForeFlight behaviour are **not** validated.
-- **Owner decision - freshness is measured from reception, not from the
-  product's own time.** `Freshness` uses the age since the last *received*
-  copy; a rebroadcast product's reconstructed source time is display-only
-  and a same-source retransmission refreshes the reception time. A METAR
-  whose own time is long past but which the tower is still rebroadcasting
-  therefore reads `CACHED_FRESH` for the policy's fresh window after the
-  last reception. Whether age should be `max(reception age, source age)` when
-  the source time is trusted is a labelling-safety decision that has not
-  been made here.
-- Per accepted product the capture path copies the store snapshot under the
-  queue lock (O(entries)); at the default 2,000-entry ceiling this is
-  acceptable for realistic rates but has not been measured on the target
-  Raspberry Pi.
+- The bench receiver has never received a ground station, so nothing here has
+  been validated against **live** reception. The repository does hold one
+  real capture - `dump978/sample-data.txt.gz`, 704 real uplinks - which the
+  real-capture tests below use; the hand-built frames elsewhere are synthetic.
+  (An earlier revision of this section wrongly said no captured frame
+  existed.) Physical ForeFlight behaviour is **not** validated.
+- Capture cost grows with cache size - see "Capture cost versus cache size";
+  `PI_CACHE_COST_SCALING_PHYSICAL_MEASUREMENT_REQUIRED`.
+
+### Capture cost versus cache size
+
+Each accepted capture copies the store snapshot under the queue lock
+(`reserveAndEnqueue`), so its cost grows linearly with the number of cached
+entries. `BenchmarkFISBReserveAndEnqueue` on the development machine (AMD Ryzen 7
+5700X): 100 entries 14 us and 27 KB allocated per capture; 500 entries 75 us /
+197 KB; 2,000 entries 342 us / 762 KB; 10,000 entries 1.76 ms / 3.0 MB. A radar
+uplink can carry many tiles, so at the default 2,000-entry ceiling this is
+plausibly material on a Raspberry Pi when the cache is enabled (and it allocates
+garbage in proportion). It is not a correctness defect and the cache is disabled
+by default, so it was characterized, not optimized here. Maintaining running
+byte/entry totals instead of copying the snapshot is the obvious fix if
+measurement on the Pi shows it matters. `PI_CACHE_COST_SCALING_PHYSICAL_MEASUREMENT_REQUIRED`.
+
+### GDL90 replay is intentionally not implemented
+
+By owner decision the cache stays display/diagnostic-only: nothing cached is ever
+injected into GDL90 or sent to a newly connected client, the live uplink relay
+and its encoding are unchanged, and `ReplayEnabled: true` is rejected by
+settings validation and Configuration Backup. Replay would need a reception-time
+signal GDL90 does not provide plus physical ForeFlight validation:
+`STRATUX_FISB_GDL90_REPLAY_DESIGN_REVIEW_REQUIRED` (a separate workstream, only if
+authorized).
+
+### Future physical acceptance (not performed)
+
+1. Receive real 978 MHz FIS-B from a ground station.
+2. **Capture representative raw uplinks** as fixtures. Existing tooling is
+   sufficient: `dump978` prints one `+<hex>;rs=..;ss=..` line per uplink, which is
+   exactly what `uatparse.New` and the tests here consume (`rtl_sdr -f 978000000
+   -s 2083334 -g 48 - | ./dump978 > capture.txt`); Stratux's own `ReplayLog`
+   records the same lines with tick counts (`uatReplay` plays them back). Record
+   the capture date (month and year - the frames carry only hour/minute/day),
+   location, receiver, and the tool version beside the file; gzip it like
+   `sample-data.txt.gz`; keep the raw lines unmodified (they contain no personal
+   data - tower positions and public weather only).
+3. Verify real products populate the cache and the dashboard/API show product
+   identity, product age, reception age, effective freshness, the fallback label
+   and expiration.
+4. Verify live FIS-B/GDL90 in ForeFlight is unchanged and that the cache does
+   **not** replay weather into a newly connected ForeFlight client.
+5. On the Pi measure CPU, memory, capture latency versus cache size, goroutines
+   and sustained-reception behaviour.
+6. Verify cache and settings writes happen only with the data partition genuinely
+   mounted (and are refused otherwise).
 
 ## Test strategy
 
