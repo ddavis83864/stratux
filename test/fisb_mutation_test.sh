@@ -34,10 +34,11 @@ SETUP='make libdump978.so >/dev/null 2>&1; export LIBRARY_PATH=$PWD CGO_CFLAGS_A
 # tests[NAME] = go test invocation(s) that must FAIL on the mutant and pass on the control
 declare -A TESTS
 TESTS[queue]="$SETUP; go test -count=1 -run 'CaptureForAnInFlightKeyIsNotLost|FISBCacheSoak' ./main/"
-TESTS[uat]="go test -vet=off -count=1 ./uatparse/ && $SETUP && go test -count=1 -run 'FISBEndToEnd' ./main/"
+TESTS[uat]="set -e; go test -vet=off -count=1 ./uatparse/; $SETUP; go test -count=1 -run 'FISBEndToEnd|FISBRealCapture' ./main/"
 TESTS[guard]="$SETUP; go test -count=1 -run 'DataPartitionNotMounted|InitDir' ./main/"
 TESTS[domain]="go test -count=1 ./fisbcache/"
-TESTS[e2e]="$SETUP; go test -count=1 -run 'FISBEndToEnd|ReplayIntoGDL90' ./main/"
+TESTS[e2e]="$SETUP; go test -count=1 -run 'FISBEndToEnd|FISBRealCapture|ReplayIntoGDL90' ./main/"
+TESTS[fresh]="set -e; go test -count=1 ./fisbcache/; go test -vet=off -count=1 ./uatparse/; $SETUP; go test -count=1 -run 'FISBEndToEnd|FISBRealCapture|EffectiveAgeSurvives' ./main/"
 TESTS[backup]="go test -count=1 ./configbackup/"
 
 mutate() { python3 - "$@" <<'PY'
@@ -56,7 +57,19 @@ M() { # name suite file old new description
 	local c="$W/m-$name"; copy_tree "$c"
 	if ! mutate "$c" "$file" "$old" "$new"; then echo "FAIL: mutation '$name' could not be applied"; overall=1; return; fi
 	if run_in "$c" "${TESTS[$suite]}" >"$W/out.$name"; then
-		echo "FAIL: mutation '$name' NOT caught by the $suite tests -- $desc"; overall=1
+		echo "FAIL: mutation '$name' NOT caught by the $suite tests -- $desc"; tail -6 "$W/out.$name" | sed 's/^/        /'; overall=1
+	else
+		echo "PASS: mutation '$name' caught by the $suite tests -- $desc"
+	fi
+}
+
+M2() { # name suite file old1 new1 old2 new2 description - a mutation needing two edits in one file
+	local name=$1 suite=$2 file=$3 o1=$4 n1=$5 o2=$6 n2=$7 desc=$8
+	if [ -n "${WANT:-}" ] && [[ " $WANT " != *" $name "* ]]; then return; fi
+	local c="$W/m-$name"; copy_tree "$c"
+	if ! mutate "$c" "$file" "$o1" "$n1" || ! mutate "$c" "$file" "$o2" "$n2"; then echo "FAIL: mutation '$name' could not be applied"; overall=1; return; fi
+	if run_in "$c" "${TESTS[$suite]}" >"$W/out.$name"; then
+		echo "FAIL: mutation '$name' NOT caught by the $suite tests -- $desc"; tail -6 "$W/out.$name" | sed 's/^/        /'; overall=1
 	else
 		echo "PASS: mutation '$name' caught by the $suite tests -- $desc"
 	fi
@@ -82,6 +95,17 @@ M budget-ignored domain fisbcache/retention.go $'if maxEntries > 0 && remainingC
 M replay-accepted e2e main/fisbcachesettings.go $'if s.ReplayEnabled {\n\t\treturn fmt.Errorf("fisbcache: replayEnabled' $'if false {\n\t\treturn fmt.Errorf("fisbcache: replayEnabled' "replay into GDL90 becomes acceptable without a reception-time design"
 M backup-no-default backup configbackup/legacy.go $'if verifyLegacyPreEpaperChecksum(doc) {\n\t\tdoc.EpaperSettings = legacyDefaultEpaperSettings\n\t\tdoc.FISBCacheSettings = legacyDefaultFISBCacheSettings' $'if verifyLegacyPreEpaperChecksum(doc) {\n\t\tdoc.EpaperSettings = legacyDefaultEpaperSettings' "a pre-epaper backup restores with an invalid all-zero FIS-B section"
 M backup-all-shapes backup configbackup/legacy.go $'if verifyLegacyPreFISBCacheChecksum(doc) {\n\t\tdoc.FISBCacheSettings = legacyDefaultFISBCacheSettings\n\t\treturn doc, true\n\t}\n' '' "the pre-fisbcache backup shape (master's real current format) is no longer restorable"
+echo "=== freshness-semantics mutations ==="
+M fresh-min-age fresh fisbcache/entry.go 'ok && src >= reception {' 'ok && src <= reception {' "the MINIMUM of reception and source age is used, so an old product looks as fresh as it was received"
+M fresh-ignore-source fresh fisbcache/entry.go 'if policy.UsesSourceAge() {' 'if false {' "the source age is ignored (reception-only freshness, the original behaviour)"
+M fresh-retransmission-resets fresh fisbcache/store.go $'s.entries[candidate.Key] = candidate\n\t\treturn AdmitSuperseded' $'candidate.Source.UTC = candidate.ReceivedAtUTC\n\t\ts.entries[candidate.Key] = candidate\n\t\treturn AdmitSuperseded' "a retransmission resets the product's source age"
+M fresh-missing-as-zero fresh fisbcache/entry.go $'return 0, false\n\t}\n\tlag = e.ReceivedAtUTC' $'return 0, true\n\t}\n\tlag = e.ReceivedAtUTC' "a missing/untrusted source time is treated as a zero-lag source (claims source basis)"
+M2 fresh-future-trusted fresh fisbcache/entry.go $'if lag < 0 {\n\t\tlag = 0\n\t}' '' 'ok && src >= reception {' 'ok {' "a future source time is trusted blindly (negative lag makes the product look younger)"
+M fresh-fallback-mislabelled fresh fisbcache/entry.go 'return reception, AgeBasisReception' 'return reception, AgeBasisSource' "reception-only fallback is labelled as source-derived"
+M fresh-window-6h fresh fisbcache/time.go 'maxPastSkew = 48 * time.Hour' 'maxPastSkew = 6 * time.Hour' "a long-lived product older than 6h is rejected as a source time and looks fresh"
+M fresh-lag-uncapped fresh fisbcache/entry.go 'if lag > maxSourceLag {' 'if false {' "an absurd persisted source lag makes the age unbounded"
+M fresh-arrival-check-removed fresh main/fisbcacherun.go 'entry.ReceivedAtMonotonic) == fisbcache.FreshnessExpired {' 'entry.ReceivedAtMonotonic) == fisbcache.FreshnessUnsupported {' "an already-expired product is cached (and churns) on every rebroadcast"
+M fresh-api-reception-age fresh main/fisbcacheapi.go 'AgeSeconds:          effective.Seconds(),' 'AgeSeconds:          e.ReceptionAge(now).Seconds(),' "the API's ageSeconds reports reception age only"
 echo
 [ "$overall" = 0 ] && echo "ALL FIS-B MUTATIONS CAUGHT" || echo "FIS-B MUTATION TEST FAILED"
 exit $overall

@@ -54,6 +54,14 @@ func TestSoak_AcceleratedLongUptimeStaysBoundedAndExpiresOnSchedule(t *testing.T
 		repeating = append(repeating, product{NexradKey(63, 0, 40+float64(i)*0.0667, -100+float64(i%50)*0.8, 0.0667, 0.8), 1200})
 	}
 
+	// A tower that keeps rebroadcasting 50 METARs whose own time never changes (source
+	// fixed 30 min before the run starts): they age by their SOURCE time while their
+	// reception keeps being refreshed. They must expire on schedule (3h after issue),
+	// be refused at arrival afterwards (as the capture path does), and never be immortal.
+	const oldStations = 50
+	oldSource := start.Add(-30 * time.Minute)
+	var expiredOnArrival uint64
+
 	var admits, accepted, superseded, rejected, evicted uint64
 	maxSeen := 0
 	seqNew := 0
@@ -75,6 +83,22 @@ func TestSoak_AcceleratedLongUptimeStaysBoundedAndExpiresOnSchedule(t *testing.T
 					superseded++
 				default:
 					rejected++
+				}
+			}
+		}
+		if sec%300 == 0 {
+			for i := 0; i < oldStations; i++ {
+				e := Entry{Key: TextKey("METAR", fmt.Sprintf("OLD%02d", i)), ReceivedAtMonotonic: now, ReceivedAtUTC: wall, SizeBytes: 90,
+					Source: SourceTime{Trusted: true, UTC: oldSource}}
+				if Freshness(e, PolicyFor(e.Key), now) == FreshnessExpired {
+					expiredOnArrival++ // refused at arrival, exactly like main.fisbCacheEnqueue
+					continue
+				}
+				admits++
+				if r := store.Admit(e); r == AdmitAccepted {
+					accepted++
+				} else if r == AdmitSuperseded {
+					superseded++
 				}
 			}
 		}
@@ -137,6 +161,15 @@ func TestSoak_AcceleratedLongUptimeStaysBoundedAndExpiresOnSchedule(t *testing.T
 	// (in place, no growth) - the repeating set is ~846k of the admissions.
 	if superseded < 700000 {
 		t.Fatalf("only %d retransmissions were recognised as supersessions, want the great majority of ~846k", superseded)
+	}
+	// The rebroadcast-but-old products aged out on their SOURCE schedule and stayed out.
+	for i := 0; i < oldStations; i++ {
+		if _, ok := store.Get(TextKey("METAR", fmt.Sprintf("OLD%02d", i))); ok {
+			t.Fatalf("OLD%02d is still cached after 72h although its own time is 72.5h old", i)
+		}
+	}
+	if expiredOnArrival < uint64(oldStations)*800 {
+		t.Fatalf("only %d old rebroadcasts were refused at arrival", expiredOnArrival)
 	}
 	if maxSeen == 0 {
 		t.Fatal("nothing was ever retained")

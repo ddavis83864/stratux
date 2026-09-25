@@ -1,8 +1,12 @@
 package uatparse
 
 import (
+	"bufio"
+	"compress/gzip"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -88,6 +92,16 @@ func FuzzDecodeUplink(f *testing.F) {
 	f.Add(infoFrame(0, append([]byte{0x10, 0x00}, make([]byte, 40)...)))
 	f.Add(append(infoFrame(0, make([]byte, 20)), infoFrame(15, make([]byte, 9))...))
 	f.Add([]byte{0xff, 0xff, 0xff})
+	// Seed from real captured uplinks (their application-data area), so the fuzzer
+	// starts from genuine text, NEXRAD, AIRMET/NOTAM frames rather than only from
+	// hand-built ones.
+	if real, err := loadRealSampleForFuzz(); err == nil {
+		for i, m := range real {
+			if i%4 == 0 {
+				f.Add(append([]byte(nil), m.msg[8:]...))
+			}
+		}
+	}
 	f.Fuzz(func(t *testing.T, app []byte) {
 		if len(app) > UPLINK_FRAME_DATA_BYTES-8 {
 			app = app[:UPLINK_FRAME_DATA_BYTES-8]
@@ -106,4 +120,28 @@ func FuzzDecodeUplink(f *testing.F) {
 			_ = fr.Points
 		}
 	})
+}
+
+func loadRealSampleForFuzz() ([]*UATMsg, error) {
+	fh, err := os.Open("../dump978/sample-data.txt.gz")
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+	zr, err := gzip.NewReader(fh)
+	if err != nil {
+		return nil, err
+	}
+	sc := bufio.NewScanner(zr)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	var out []*UATMsg
+	for sc.Scan() {
+		if !strings.HasPrefix(sc.Text(), "+") {
+			continue
+		}
+		if m, err := New(sc.Text()); err == nil {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
