@@ -137,6 +137,13 @@ func saveFISBCacheSettings(s FISBCacheSettings) error {
 	fisbCacheSettingsMu.Lock()
 	defer fisbCacheSettingsMu.Unlock()
 
+	// Refuse to write into the RAM-backed overlay directory that exists at
+	// this path when the real data partition failed to mount - the same
+	// guard every other persistence namespace applies (see
+	// ensurePersistentDataMounted and docs/persistent-data-partition.md).
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist fisbcache settings: %w", err)
+	}
 	dir := filepath.Dir(fisbCacheSettingsPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("could not create settings directory: %w", err)

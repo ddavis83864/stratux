@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -210,7 +211,15 @@ func initFISBCache() {
 	settingsSnapshot := fisbCacheSettingsCache
 	fisbCacheMu.Unlock()
 
-	if err := os.MkdirAll(fisbCacheDir, 0o755); err != nil {
+	// Same persistent-mount guard as every other persistence namespace: never
+	// create the cache directory inside the RAM overlay when the data
+	// partition is not (yet) genuinely mounted.
+	mkdirErr := ensurePersistentDataMounted()
+	if mkdirErr == nil {
+		mkdirErr = os.MkdirAll(fisbCacheDir, 0o755)
+	}
+	if mkdirErr != nil {
+		err := mkdirErr
 		log.Printf("fisbcache: could not create cache directory: %s\n", err)
 		fisbCacheMu.Lock()
 		fisbCacheRecoveryError = true
@@ -457,6 +466,12 @@ func fisbCachePersist(e fisbcache.Entry, payload string) error {
 		ReceivedAtMonotonic:  e.ReceivedAtMonotonic,
 		GeneratedAtWallClock: e.ReceivedAtUTC,
 		SizeBytes:            e.SizeBytes,
+	}
+	// Re-checked on every persisted entry (off the capture path - this runs on
+	// the write worker): a partition that unmounts while running must stop
+	// accepting cache files rather than fill the RAM overlay.
+	if err := ensurePersistentDataMounted(); err != nil {
+		return fmt.Errorf("could not persist FIS-B cache entry: %w", err)
 	}
 	fisbCacheDiskMu.Lock()
 	defer fisbCacheDiskMu.Unlock()
