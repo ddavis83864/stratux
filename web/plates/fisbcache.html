@@ -52,6 +52,10 @@
 					<tr ng-repeat="(k, v) in Status.byFreshness"><td>{{k}}</td><td>{{v}}</td></tr>
 				</table>
 				<table class="table small" style="margin-top:10px;">
+					<tr><th colspan="2">Entries by age basis</th></tr>
+					<tr ng-repeat="(k, v) in Status.byAgeBasis"><td>{{k == 'source' ? 'product age (source time trusted)' : 'since received only (source time unavailable)'}}</td><td>{{v}}</td></tr>
+				</table>
+				<table class="table small" style="margin-top:10px;">
 					<tr><th colspan="2">Entries by product</th></tr>
 					<tr ng-repeat="(k, v) in Status.byProductClass"><td>{{k}}</td><td>{{v}}</td></tr>
 				</table>
@@ -69,12 +73,15 @@
 		<div class="panel-heading"><span class="panel_label">Cached products</span></div>
 		<div class="panel-body">
 			<table class="table table-condensed small">
-				<tr><th>Product</th><th>Identity</th><th>Freshness</th><th>Age (s)</th><th>Bytes</th></tr>
+				<tr><th>Product</th><th>Identity</th><th>Freshness</th><th>Age</th><th>Received</th><th>Bytes</th></tr>
 				<tr ng-repeat="item in Inventory">
 					<td>{{item.productClass}}</td>
 					<td>{{item.identity}}</td>
 					<td><span class="label" ng-class="freshnessClass(item.freshness)">{{item.freshness}}</span></td>
-					<td>{{item.ageSeconds | number:0}}</td>
+					<td>{{fmtAge(item.ageSeconds)}}
+						<span class="small text-muted" ng-show="item.ageBasis == 'source'">(product)</span>
+						<span class="small text-muted" ng-show="item.ageBasis != 'source'" title="The product's own time is unavailable or untrusted, so this only says how long ago it was received, not how old the weather is.">(since received)</span></td>
+					<td>{{fmtAge(item.receptionAgeSeconds)}} ago</td>
 					<td>{{item.sizeBytes}}</td>
 				</tr>
 			</table>

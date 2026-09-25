@@ -46,6 +46,21 @@ function FISBCacheCtrl($rootScope, $scope, $state, $http, $interval) {
 		}
 	};
 
+	// fmtAge renders an age in seconds compactly: seconds under a minute, minutes
+	// under two hours, otherwise hours - the page is a diagnostic, not a weather app.
+	$scope.fmtAge = function (seconds) {
+		if (seconds === undefined || seconds === null || isNaN(seconds)) {
+			return '?';
+		}
+		if (seconds < 60) {
+			return Math.round(seconds) + ' s';
+		}
+		if (seconds < 7200) {
+			return Math.round(seconds / 60) + ' min';
+		}
+		return (seconds / 3600).toFixed(1) + ' h';
+	};
+
 	$scope.refresh = function () {
 		$http.get(URL_FISBCACHE_STATUS_GET).
 			then(function (response) {

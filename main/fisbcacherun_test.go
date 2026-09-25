@@ -12,6 +12,7 @@ actually wires them together safely against a real (temp) filesystem.
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -818,5 +819,48 @@ func TestHandleSetFISBCacheSettings_TighteningBudgetRequestsCleanupNotInlineEvic
 
 	if fisbCacheStore.Len() > 2 {
 		t.Errorf("expected the tightened maxEntries=2 budget enforced once cleanup runs, got Store.Len()=%d", fisbCacheStore.Len())
+	}
+}
+
+// A persisted entry keeps BOTH its reception wall time and its source time, so after a
+// restart its effective age is still the product's own age - not just the (small) time
+// since the file was written - and a product that was already too old by its own time
+// is removed rather than re-admitted as fresh.
+func TestFISBCacheStartupRecovery_EffectiveAgeSurvivesARestart(t *testing.T) {
+	now := time.Now().UTC()
+	nowMono := 5000.0
+	key := makeFISBTestKey("KSEA")
+	mk := func(sourceLag time.Duration) []byte {
+		e := fisbcache.Entry{
+			Key: key, SizeBytes: 60,
+			ReceivedAtUTC: now.Add(-5 * time.Minute),
+			Source:        fisbcache.SourceTime{Trusted: true, UTC: now.Add(-5*time.Minute - sourceLag)},
+		}
+		p, err := fisbcache.EncodePersistedEntry(e, "METAR KSEA 091853Z AUTO 00000KT 10SM CLR 15/10 A3000")
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	d := fisbCacheClassifyRecoveryFile(mk(50*time.Minute), now, nowMono)
+	if d.reason != fisbCacheRecoveryOK {
+		t.Fatalf("a 55-minute-old METAR should be recovered, got %v", d.reason)
+	}
+	age, basis := d.entry.EffectiveAge(fisbcache.PolicyFor(key), nowMono)
+	if basis != fisbcache.AgeBasisSource || age < 55*time.Minute || age > 56*time.Minute {
+		t.Fatalf("recovered effective age = %v (%s), want ~55m from the source (reception alone would say 5m)", age, basis)
+	}
+	if got := fisbcache.Freshness(d.entry, fisbcache.PolicyFor(key), nowMono); got != fisbcache.FreshnessCachedAging {
+		t.Fatalf("recovered freshness = %s, want CACHED_AGING", got)
+	}
+
+	// Received 5 minutes ago, but its own time was 4h before that: expired by its own age.
+	if d := fisbCacheClassifyRecoveryFile(mk(4*time.Hour), now, nowMono); d.reason != fisbCacheRecoveryExpired {
+		t.Fatalf("a product already expired by its own time must be dropped at recovery, got %v", d.reason)
 	}
 }

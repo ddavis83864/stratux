@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stratux/stratux/fisbcache"
+	"github.com/stratux/stratux/readiness"
 	"github.com/stratux/stratux/storagelifecycle"
 	"github.com/stratux/stratux/uatparse"
 )
@@ -328,5 +330,116 @@ func TestFISBReplayIntoGDL90RemainsRejected(t *testing.T) {
 	s.ReplayEnabled = true
 	if err := s.Validate(); err == nil {
 		t.Fatal("replay into GDL90 must stay disabled until a reception-time signal exists")
+	}
+}
+
+// --- freshness semantics, end to end from raw bytes ---------------------------------
+
+func TestFISBEndToEnd_OldSourceReceivedNowIsNotPresentedAsFresh(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	withTrustedTimeForTest(t)
+	enableFISBCacheForTest(t, false)
+	now := time.Now().UTC()
+
+	// A METAR whose own time is 50 minutes before we received it (a tower rebroadcasting it).
+	receiveUplink(t, fisbUplink(fisbTextFrame(t, 413, now.Add(-50*time.Minute), metarSEA)))
+	inv := fisbInventoryForTest(t)
+	if len(inv) != 1 {
+		t.Fatalf("inventory = %+v", inv)
+	}
+	it := inv[0]
+	if it.Freshness != string(fisbcache.FreshnessCachedAging) {
+		t.Fatalf("freshness = %s, want CACHED_AGING (reception-only age would say CACHED_FRESH)", it.Freshness)
+	}
+	if it.AgeBasis != "source" {
+		t.Fatalf("ageBasis = %q, want source", it.AgeBasis)
+	}
+	if it.AgeSeconds < 49*60 || it.AgeSeconds > 52*60 {
+		t.Fatalf("ageSeconds (effective) = %.0f, want about 50 minutes", it.AgeSeconds)
+	}
+	if it.ReceptionAgeSeconds > 5 {
+		t.Fatalf("receptionAgeSeconds = %.1f, want ~0 (just received)", it.ReceptionAgeSeconds)
+	}
+	if it.SourceAgeSeconds == nil || *it.SourceAgeSeconds != it.AgeSeconds {
+		t.Fatalf("sourceAgeSeconds = %v, want the effective age %v", it.SourceAgeSeconds, it.AgeSeconds)
+	}
+	if it.SourceTimeUTC == nil || it.ReceivedAtUTC == nil {
+		t.Fatalf("expected both wall times to be reported: %+v", it)
+	}
+}
+
+func TestFISBEndToEnd_UntrustedClockFallsBackToReceptionAgeAndSaysSo(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	orig := timeTrust
+	timeTrust = readiness.NewTimeTrust(readiness.DefaultTimeTrustConfig())
+	t.Cleanup(func() { timeTrust = orig })
+	enableFISBCacheForTest(t, false)
+	now := time.Now().UTC()
+
+	receiveUplink(t, fisbUplink(fisbTextFrame(t, 413, now.Add(-50*time.Minute), metarSEA)))
+	rr := httptest.NewRecorder()
+	handleGetFISBCacheInventoryRequest(rr, httptest.NewRequest(http.MethodGet, "/getFISBCacheInventory", nil))
+	var raw []map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil || len(raw) != 1 {
+		t.Fatalf("inventory: %v %s", err, rr.Body.String())
+	}
+	it := raw[0]
+	if it["ageBasis"] != "reception" {
+		t.Fatalf("ageBasis = %v, want reception (no trusted clock at reception)", it["ageBasis"])
+	}
+	if v, present := it["sourceAgeSeconds"]; !present || v != nil {
+		t.Fatalf("sourceAgeSeconds must be present and null, got %v (present=%v)", v, present)
+	}
+	if _, present := it["sourceTimeUtc"]; present {
+		t.Fatal("no source time may be reported when it is untrusted")
+	}
+	if it["sourceTrusted"] != false {
+		t.Fatalf("sourceTrusted = %v", it["sourceTrusted"])
+	}
+	if it["freshness"] != string(fisbcache.FreshnessCachedFresh) {
+		t.Fatalf("with no trusted source time the freshness is reception-based: %v", it["freshness"])
+	}
+	for _, k := range []string{"ageSeconds", "receptionAgeSeconds", "freshness", "identity", "productClass", "sizeBytes"} {
+		if _, ok := it[k]; !ok {
+			t.Errorf("existing/expected field %q missing", k)
+		}
+	}
+}
+
+func TestFISBEndToEnd_ProductAlreadyExpiredByItsOwnTimeIsNotCached(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	withTrustedTimeForTest(t)
+	enableFISBCacheForTest(t, false)
+	now := time.Now().UTC()
+	before := atomic.LoadUint64(&fisbCacheExpiredOnArrival)
+
+	// A METAR (expires after 3h) whose own time is 4h old: not cached. A TAF (30h) 4h old: cached, aging.
+	receiveUplink(t, fisbUplink(fisbTextFrame(t, 413, now.Add(-4*time.Hour), metarSEA)))
+	if n := fisbCacheStore.Len(); n != 0 {
+		t.Fatalf("an already-expired product was cached (%d entries)", n)
+	}
+	if got := atomic.LoadUint64(&fisbCacheExpiredOnArrival) - before; got != 1 {
+		t.Fatalf("expiredOnArrival counter moved by %d, want 1", got)
+	}
+	receiveUplink(t, fisbUplink(fisbTextFrame(t, 413, now.Add(-4*time.Hour), tafSEA)))
+	inv := fisbInventoryForTest(t)
+	if len(inv) != 1 || inv[0].Freshness != string(fisbcache.FreshnessCachedAging) || inv[0].AgeBasis != "source" {
+		t.Fatalf("a 4h-old TAF should be cached as CACHED_AGING from its source age: %+v", inv)
+	}
+	if st := fisbCacheStatusSnapshot(); st.ByAgeBasis[fisbcache.AgeBasisSource] != 1 || st.ExpiredOnArrival < 1 {
+		t.Fatalf("status = %+v", st)
+	}
+}
+
+// NEXRAD is judged on the same rule; the decoder gives one frame time per frame (no per-tile time).
+func TestFISBEndToEnd_NexradOldFrameTimeIsNotFresh(t *testing.T) {
+	withFISBCacheTestEnv(t)
+	withTrustedTimeForTest(t)
+	enableFISBCacheForTest(t, false)
+	now := time.Now().UTC()
+	receiveUplink(t, fisbUplink(fisbNexradRLEFrame(63, now.Add(-15*time.Minute), 0, 1234, 0x01, 0x0a, 0x13)))
+	inv := fisbInventoryForTest(t)
+	if len(inv) != 1 || inv[0].Freshness != string(fisbcache.FreshnessCachedAging) || inv[0].AgeBasis != "source" {
+		t.Fatalf("a radar tile whose frame time is 15 min old must not be CACHED_FRESH (10 min limit): %+v", inv)
 	}
 }

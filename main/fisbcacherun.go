@@ -56,6 +56,7 @@ var (
 	fisbCacheDroppedWrites     uint64 // atomic
 	fisbCachePressureRejected  uint64 // atomic
 	fisbCacheOversizedRejected uint64 // atomic
+	fisbCacheExpiredOnArrival  uint64 // atomic
 	fisbCacheCapacityRejected  uint64 // atomic
 	fisbCacheShutdownRejected  uint64 // atomic
 	fisbCacheStartupRecovered  bool
@@ -259,8 +260,13 @@ func fisbCacheTrustedNowUTC() time.Time {
 	if !fisbCacheTrustedTimeState() {
 		return time.Time{}
 	}
-	return time.Now().UTC()
+	return fisbCacheWallClock().UTC()
 }
+
+// fisbCacheWallClock is the wall clock this feature reads (only ever behind the
+// trusted-time gate above). It is a variable solely so tests can replay real
+// captured frames against a fixed receive time; production never reassigns it.
+var fisbCacheWallClock = time.Now
 
 // fisbReadFileBounded reads path, refusing anything larger than a
 // persisted entry could ever legitimately be - defense in depth beyond
@@ -374,6 +380,15 @@ func fisbCacheEnqueue(key fisbcache.Key, ft fisbcache.FISBTime, payload string) 
 		ReceivedAtMonotonic: monotonicSeconds(),
 		ReceivedAtUTC:       receiveUTC,
 		SizeBytes:           int64(len(payload)),
+	}
+	// A product whose own (trusted source) time already puts it past its
+	// expiry when it arrives - a tower still rebroadcasting a very old
+	// report - is not cached at all: it could only be displayed as EXPIRED and
+	// evicted, and re-admitting it on every rebroadcast would churn the cache
+	// and its files. Judged at arrival, so age here is purely the source lag.
+	if fisbcache.Freshness(entry, fisbcache.PolicyFor(key), entry.ReceivedAtMonotonic) == fisbcache.FreshnessExpired {
+		atomic.AddUint64(&fisbCacheExpiredOnArrival, 1)
+		return
 	}
 	item := fisbCaptureItem{entry: entry, payload: payload}
 

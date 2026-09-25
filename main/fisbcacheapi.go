@@ -67,6 +67,7 @@ type fisbCacheStatusResponse struct {
 	MaxEntries         int                              `json:"maxEntries"`
 	ByFreshness        map[fisbcache.FreshnessState]int `json:"byFreshness"`
 	ByProductClass     map[fisbcache.ProductClass]int   `json:"byProductClass"`
+	ByAgeBasis         map[fisbcache.AgeBasis]int       `json:"byAgeBasis"`
 	QueueDepth         int                              `json:"queueDepth"`
 	QueueCapacity      int                              `json:"queueCapacity"`
 	InFlightEntries    int                              `json:"inFlightEntries"`
@@ -79,6 +80,7 @@ type fisbCacheStatusResponse struct {
 	OversizedRejected  uint64                           `json:"oversizedRejected"`
 	CapacityRejected   uint64                           `json:"capacityRejected"`
 	ShutdownRejected   uint64                           `json:"shutdownRejected"`
+	ExpiredOnArrival   uint64                           `json:"expiredOnArrival"`
 	LastCleanupUTC     time.Time                        `json:"lastCleanupUtc,omitempty"`
 	LastCleanupCount   int                              `json:"lastCleanupCount"`
 	CleanupRunning     bool                             `json:"cleanupRunning"`
@@ -92,6 +94,7 @@ func fisbCacheNotes() []string {
 	return []string{
 		"Weather is supplemental and may be incomplete or unavailable.",
 		"Cached weather can be older than currently broadcast data - always check the product's own timestamp and age before use.",
+		"Freshness and age use the OLDER of how long ago the product was last received and how old the product itself is; where the product's own time is unavailable or untrusted the age is reception-based only and says nothing about the weather's own age.",
 		"The absence of a cached product does not indicate the absence of a hazard.",
 		"This is never a substitute for an official preflight briefing or current airborne weather sources.",
 	}
@@ -163,6 +166,7 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		MaxEntries:         settings.MaxEntries,
 		ByFreshness:        stats.ByFreshness,
 		ByProductClass:     stats.ByProductClass,
+		ByAgeBasis:         stats.ByAgeBasis,
 		QueueDepth:         queueDepth,
 		QueueCapacity:      fisbCachePendingCapacity,
 		InFlightEntries:    inFlightEntries,
@@ -175,6 +179,7 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 		OversizedRejected:  atomic.LoadUint64(&fisbCacheOversizedRejected),
 		CapacityRejected:   atomic.LoadUint64(&fisbCacheCapacityRejected),
 		ShutdownRejected:   atomic.LoadUint64(&fisbCacheShutdownRejected),
+		ExpiredOnArrival:   atomic.LoadUint64(&fisbCacheExpiredOnArrival),
 		LastCleanupUTC:     lastCleanupUTC,
 		LastCleanupCount:   lastCleanupCount,
 		CleanupRunning:     fisbCacheCleanupRunning.Load(),
@@ -188,12 +193,31 @@ func fisbCacheStatusSnapshot() fisbCacheStatusResponse {
 // --- inventory -----------------------------------------------------
 
 type fisbCacheInventoryItem struct {
-	ProductClass  string  `json:"productClass"`
-	Identity      string  `json:"identity"`
-	Freshness     string  `json:"freshness"`
-	AgeSeconds    float64 `json:"ageSeconds"`
-	SizeBytes     int64   `json:"sizeBytes"`
-	SourceTrusted bool    `json:"sourceTrusted"`
+	ProductClass string `json:"productClass"`
+	Identity     string `json:"identity"`
+	// Freshness is classified from the EFFECTIVE age below.
+	Freshness string `json:"freshness"`
+	// AgeSeconds is the EFFECTIVE age - the older of the reception age and the
+	// product's own age when a trusted source time exists (AgeBasis
+	// "source"), the reception age otherwise (AgeBasis "reception"). Before
+	// the freshness-semantics change this field was the reception age only;
+	// it is now never smaller than that, so a consumer reading it can only
+	// have been made more conservative.
+	AgeSeconds float64 `json:"ageSeconds"`
+	// AgeBasis says which clock AgeSeconds is measured from.
+	AgeBasis string `json:"ageBasis"`
+	// ReceptionAgeSeconds is how long ago the product was last received.
+	ReceptionAgeSeconds float64 `json:"receptionAgeSeconds"`
+	// SourceAgeSeconds is the product's own age; null when no trustworthy
+	// source time exists (untrusted clock at reception, malformed or
+	// implausible time field).
+	SourceAgeSeconds *float64 `json:"sourceAgeSeconds"`
+	// ReceivedAtUTC/SourceTimeUTC are informational wall-clock values, present
+	// only when they were recorded while the wall clock was trusted.
+	ReceivedAtUTC *time.Time `json:"receivedAtUtc,omitempty"`
+	SourceTimeUTC *time.Time `json:"sourceTimeUtc,omitempty"`
+	SizeBytes     int64      `json:"sizeBytes"`
+	SourceTrusted bool       `json:"sourceTrusted"`
 }
 
 // handleGetFISBCacheInventoryRequest never returns raw payload content -
@@ -220,14 +244,31 @@ func handleGetFISBCacheInventoryRequest(w http.ResponseWriter, r *http.Request) 
 	snap := fisbCacheStore.Snapshot()
 	out := make([]fisbCacheInventoryItem, 0, len(snap))
 	for k, e := range snap {
-		out = append(out, fisbCacheInventoryItem{
-			ProductClass:  string(k.Class),
-			Identity:      k.Identity,
-			Freshness:     string(fisbcache.Freshness(e, fisbcache.PolicyFor(k), now)),
-			AgeSeconds:    e.Age(now).Seconds(),
-			SizeBytes:     e.SizeBytes,
-			SourceTrusted: e.Source.Trusted,
-		})
+		policy := fisbcache.PolicyFor(k)
+		effective, basis := e.EffectiveAge(policy, now)
+		item := fisbCacheInventoryItem{
+			ProductClass:        string(k.Class),
+			Identity:            k.Identity,
+			Freshness:           string(fisbcache.Freshness(e, policy, now)),
+			AgeSeconds:          effective.Seconds(),
+			AgeBasis:            string(basis),
+			ReceptionAgeSeconds: e.ReceptionAge(now).Seconds(),
+			SizeBytes:           e.SizeBytes,
+			SourceTrusted:       e.Source.Trusted,
+		}
+		if src, ok := e.SourceAge(now); ok {
+			v := src.Seconds()
+			item.SourceAgeSeconds = &v
+		}
+		if !e.ReceivedAtUTC.IsZero() {
+			v := e.ReceivedAtUTC
+			item.ReceivedAtUTC = &v
+		}
+		if e.Source.Trusted {
+			v := e.Source.UTC
+			item.SourceTimeUTC = &v
+		}
+		out = append(out, item)
 	}
 	json.NewEncoder(w).Encode(out)
 }
