@@ -899,6 +899,82 @@ configured as on the live device at restore time.
   decode (AIRMET/SIGMET/NOTAM remain out of scope, matching
   `decodeAirmet`'s existing dead-code status).
 
+## Reconciliation with current master and off-device validation
+
+This section records what was found and added when the feature branch was
+brought up to the accepted `master` (`8af40b10`) and validated further
+off-device. It changes no product decision above: the cache is still
+disabled by default, display/diagnostic only, and **replay into GDL90 is
+still deliberately off**.
+
+### What the live path really does (corrected)
+
+The live uplink relay (`relayMessage`, message ID `0x07`) queues each
+uplink for 15 minutes **per already-known client connection**
+(`sendGDL90(..., 15*time.Minute, ...)`): a client that is temporarily
+asleep or throttled is caught up from that queue, but a **newly connected
+client receives no history**, and nothing is replayed from this cache.
+The "time of reception" field remains hard-coded to `0x00`.
+
+### Defects found and fixed
+
+- **Stuck reservation (this branch).** A capture arriving for a key that
+  was *in flight* (popped by the worker, `Admit` not yet decided) was
+  stored in the queue's item map but not in its FIFO order, so it was never
+  popped: the reservation leaked, the key could never be admitted again and
+  each such event permanently consumed one structural slot. Found by the
+  sustained-load test; reproduced deterministically
+  (`TestFISBPendingQueue_CaptureForAnInFlightKeyIsNotLost`).
+- **Decoder panic (pre-existing, `uatparse`).** A frame length that fits the
+  remaining application data by itself but not with its own 2-byte header
+  sliced past the buffer and panicked `DecodeUplink`; the live receive path
+  does not recover, so one malformed uplink could crash the daemon. Fixed
+  with a one-line bounds correction; found by a unit test and then a 27.8M-
+  execution fuzz run (`FuzzDecodeUplink`).
+- **Missing mount guard (integration).** `master`'s persistence audit made
+  every namespace refuse to write when the data partition is not genuinely
+  mounted; this branch's two namespaces (settings file, cache directory)
+  predated it. Both are now guarded (`docs/persistent-data-partition.md`).
+- **Configuration Backup chain.** `fisbCacheSettings` is now the seventh
+  section after `trafficCpaSettings` and `epaperSettings`; the legacy chain
+  is pre-autorecord, pre-trafficcpa, pre-epaper, pre-fisbcache, each
+  normalizing to the disabled FIS-B default. The pre-fisbcache fixture is
+  produced by running master's real `BuildDocument`.
+
+### Off-device validation added
+
+- `main/fisbcachee2e_test.go`: raw uplink bytes (synthetic, built from the
+  frame layout `uatparse` decodes - see the file header for provenance)
+  through `uatparse` → capture → reservation queue → `Store.Admit` →
+  persisted file → the inventory handler; retransmissions, newer/older
+  copies, unsupported and malformed frames, disabled-by-default.
+- `fisbcache/soak_test.go`: 72 simulated hours, 1.37 M admissions (776 k
+  recognised retransmissions) plus an adversarial unbounded-key stream; the
+  store never exceeds its budget and no expired entry survives a pass.
+- `main/fisbcachesoak_test.go`: the real capture worker under sustained,
+  concurrent, heavily duplicated load; store bounded, queue drains,
+  goroutines flat, heap flat, persisted files never exceed committed entries.
+- `test/fisb_mutation_test.sh`: 12 mutations of the above (each caught).
+
+### Not validated, and open decisions
+
+- No captured FIS-B frame exists in the repository and the bench receiver
+  has never received a ground station; the byte-level fixtures are synthetic.
+  Real reception and physical ForeFlight behaviour are **not** validated.
+- **Owner decision - freshness is measured from reception, not from the
+  product's own time.** `Freshness` uses the age since the last *received*
+  copy; a rebroadcast product's reconstructed source time is display-only
+  and a same-source retransmission refreshes the reception time. A METAR
+  whose own time is long past but which the tower is still rebroadcasting
+  therefore reads `CACHED_FRESH` for the policy's fresh window after the
+  last reception. Whether age should be `max(reception age, source age)` when
+  the source time is trusted is a labelling-safety decision that has not
+  been made here.
+- Per accepted product the capture path copies the store snapshot under the
+  queue lock (O(entries)); at the default 2,000-entry ceiling this is
+  acceptable for realistic rates but has not been measured on the target
+  Raspberry Pi.
+
 ## Test strategy
 
 - `fisbcache/*_test.go` (55 tests, pure, no I/O): product classification;
