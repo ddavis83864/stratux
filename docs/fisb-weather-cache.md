@@ -728,7 +728,7 @@ never silently enabling the feature.
 | `persistenceEnabled` | `false` | when `false` even while enabled, the in-memory index still tracks live products for the dashboard, but nothing is written to disk or survives a restart |
 | `replayEnabled` | `false` | always rejected by `Validate()` in this release - see "Replay," above |
 | `maxCacheBytes` | 16 MiB (configured default) | user-adjustable, 1 byte - 256 MiB (hard safety cap) |
-| `maxEntries` | 2000 (configured default) | user-adjustable, 1 - 100000 (hard safety cap) |
+| `maxEntries` | 2000 (configured default) | user-adjustable, 1 - 10000 (hard safety cap; see "Maximum cache size") |
 
 ### Exact limits, bounds, and safety caps
 
@@ -748,7 +748,7 @@ any external standard.
 | `maxCacheBytes` | Configured default | 16 MiB | Below this, no eviction is driven by size. |
 | `maxCacheBytes` | User-adjustable bound | 1 byte - 256 MiB | `Validate()` rejects anything outside this range (0, negative, or > 256 MiB), for both the live settings API and Configuration Backup restore. |
 | `maxEntries` | Configured default | 2000 | Below this, no eviction is driven by count. |
-| `maxEntries` | User-adjustable bound | 1 - 100000 | Same rejection rule as above. |
+| `maxEntries` | User-adjustable bound | 1 - 10000 | Same rejection rule as above, for the settings API, Configuration Backup restore and the dashboard form (`FISBCacheMaxEntriesLimit` / `configbackup.FISBCacheMaxEntries`, kept equal by a test). |
 | Individual payload size | Hard safety cap | 65536 bytes (64 KiB) | `fisbcache.EncodePersistedEntry` refuses to build a persisted record at all - the capture path simply never persists that one product (it is still visible live via the in-memory Store, exactly like any other non-persisted entry when persistence is off). Not user-configurable. |
 | Persisted entry file size (payload + metadata/framing) | Hard safety cap | 69632 bytes (payload cap + 4096 bytes headroom) | `DecodePersistedEntry` rejects a file larger than this outright during recovery - quarantined (removed), never partially read. |
 | Pending-reservation queue capacity | Hard safety cap | 256 distinct product keys | `fisbCacheEnqueue` drop-and-count (`droppedWrites`) rather than block once the structural cap is reached - see "Capture path," above, and "Synchronous admission bounds," below, for the separate byte/entry *capacity* rejection (`capacityRejected`). |
@@ -1057,7 +1057,7 @@ The "time of reception" field remains hard-coded to `0x00`.
   cases of `main/fisbcachee2e_test.go`: old source + recent reception, recent
   source + old reception, missing/invalid/future source time, retransmission,
   newer and out-of-order products, rollover, per-product thresholds, age bounds.
-- `test/fisb_mutation_test.sh`: 22 mutations - the 12 above plus 10 for the freshness rules (each caught).
+- `test/fisb_mutation_test.sh`: 30 mutations - the 12 above, 10 for the freshness rules and 8 for the cache-size limit (each caught).
 
 ### Not validated
 
@@ -1069,6 +1069,26 @@ The "time of reception" field remains hard-coded to `0x00`.
   existed.) Physical ForeFlight behaviour is **not** validated.
 - Capture cost grows with cache size - see "Capture cost versus cache size";
   `PI_CACHE_COST_SCALING_PHYSICAL_MEASUREMENT_REQUIRED`.
+
+### Maximum cache size: 10,000 entries
+
+The configurable maximum entry count is **10,000** (it was 100,000). Every accepted
+capture copies the store snapshot, so its cost is linear in the entry count; on the
+target Raspberry Pi (900 MHz) the measured cost is about 138 us at 100 entries, 0.8 ms
+at 500, 3.9-5.4 ms at 2,000 and 20-35 ms at 10,000 (allocating 3 MB). 10,000 is the
+largest size measured there, so it is the validated production ceiling; 100,000 was
+never measured and would cost on the order of 0.2 s per capture. The owner chose to
+bound the setting rather than change the copy, so the capture path is unchanged and
+the **default stays 2,000**. The limit is enforced in `FISBCacheSettings.Validate`
+(settings API, HTTP 400; also every save and load), in Configuration Backup
+validation (`configbackup.FISBCacheMaxEntries`, so a backup cannot restore a larger
+cache), and in the dashboard input (`max="10000"`; the server stays authoritative).
+`10000` is accepted, `10001` and above are rejected without changing or corrupting the
+persisted setting. A device that already holds a persisted value above 10,000 (allowed by
+the previous build) follows the existing convention for any persisted setting that fails
+validation: the file is left untouched, the load is logged and falls back to the disabled
+defaults (cache off, 2,000 entries) - it is neither clamped silently nor fatal - and the
+cache can then be re-enabled within the new limit.
 
 ### Capture cost versus cache size
 
