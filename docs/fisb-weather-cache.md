@@ -1337,3 +1337,76 @@ correctly ages, displays, and never presents replayed data as live)
 before `replayEnabled` could ever be accepted by this build's own
 `Validate()`. That work is out of scope for this foundation and was not
 attempted here.
+
+## Physical acceptance (Raspberry Pi 4 Model B Rev 1.4) - partial: live FIS-B reception pending
+
+Performed 2026-09-25 on the bench unit (external Stratux UATRadio for 978 MHz, RTL-SDR for 1090 MHz, u-blox GPS, Waveshare e-paper), on the **exact** PR #15 CI artifact
+`stratux-2.0.0~rc2-arm64.deb`, 86,406,664 bytes, SHA-256
+`76183073aa7c509561558627dfa1985b7b90c45594ac1bce59ca381e1821e278`, head `94c4fc48`, CI run 36082822823
+(not the byte-different workflow-dispatch build of the same commit). Classification:
+`STRATUX_FISB_PHYSICAL_ACCEPTANCE_LIVE_RF_EVIDENCE_PENDING`.
+
+**Passed on the hardware**
+
+- **OTA** through the normal path (`/updateUpload`; staged copy on the device hashes to the authorized SHA-256): boot
+  `4d5806a4` (previous build `381bed1e`) → bare-ext4 boot `d373a100` → new build `94c4fc48`, stage `idle`, `dpkg --audit` clean,
+  `dpkg --verify` clean. All 172 package-listed paths plus the two new dashboard files are `root:root`; the privileged-path
+  invariant (100 paths and parents) has 0 violations. The OTA itself rebooted twice; one further supported reboot (`/reboot`) proved persistence (three reboots in total).
+- **Default disabled:** after the upgrade `state DISABLED`, `enabled/persistenceEnabled/replayEnabled` false, 0 entries, no settings
+  file; the only artefact is the empty `fisb-weather-cache/` directory the feature creates at start-up.
+- **Enable / disable / re-enable** through `/setFISBCacheSettings`; the settings file is written on the data partition and survives
+  the reboot (cache `LIVE`, persistence on, 0 entries after it); `replayEnabled: true` is rejected (HTTP 400).
+- **Dashboard** (headless Chrome against the device): the Weather Cache page renders, shows the enabled state and the new
+  freshness note; screenshots in the evidence set.
+- **Mount guard:** the production `readiness.EnsurePersistentDir`, run on the device against its real mounts, ALLOWS
+  `/var/lib/stratux-data` (and `/boot/firmware`) and REFUSES a volatile overlay path (`/tmp`, `/opt/stratux`, `/`) - i.e. exactly
+  what would face the cache if the data partition failed to mount. The partition was not unmounted.
+- **Real capture on ARM64:** the tests built from the exact commit for arm64 replay the 704 real uplinks on the Pi: 559 cached
+  products (METAR 126, SPECI 3, TAF 29, TAF.AMD 4, PIREP 2, WINDS 35, NEXRAD tiles 360), identical to the development-machine
+  result, all lab assertions passing (also the fuzz seeds and the 72-simulated-hour soak, 43.7 s on the Pi).
+- **Freshness on the target (API-handler output, checked mathematically):** effective age never below reception age; with
+  `ageBasis: "source"` it equals the source age. The same capture rebroadcast 30 minutes later (simulated wall clock) left every
+  reception age near 0 but raised every effective age by 1,799-1,800 s (METAR, SPECI, TAF, TAF.AMD, WINDS) - a rebroadcast does not
+  reset product age - and radar tiles past their expiry by scan time (04:10Z at 05:10Z) were refused on arrival (`expiredOnArrival` 4 after the first pass,
+  729 after the second - 725 more, chiefly radar tile records). Example: METAR KMER 2,700.8 s / `CACHED_AGING` at 04:40Z, 4,500.3 s / `STALE` after the rebroadcast, reception age 0.3-0.8 s.
+- **Cache cost on the Pi** (`BenchmarkFISBReserveAndEnqueue`, three runs, CPU at 900 MHz, live daemon running): 100 entries about
+  137-141 us, 500 about 805-830 us, 2,000 about 3.9-5.4 ms, 10,000 about 20-35 ms per accepted capture, allocating 27 KB / 197 KB /
+  762 KB / 3.0 MB. About 10x the desktop figures and linear in entries. The real capture averages about 0.8 cache captures per
+  uplink, so the default 2,000-entry ceiling costs on the order of 1% of one core; a 10,000-entry cache about 4%. Settings validation
+  allows up to 100,000 entries, where the same linear cost would be roughly 0.2 s per capture on the live decode goroutine - not
+  exercised; the ceiling or an O(1) accounting is the owner's call. Sustained load on the real worker (16,000 captures from 4
+  goroutines, 500-entry budget): store bounded, goroutines 6 -> 6, heap +239 KiB, 22.5 s.
+- **Physical soak, 61 minutes with the cache enabled** (sampled every 30 s): `stratuxrun` RSS 23.7 -> 25.8 MB (max 26.7 MB), threads
+  <= 16, open files <= 30, CPU <= 14.6 %, temperature <= 52.5 C, cache state `LIVE` throughout, no failed units, no panic or
+  FIS-B error in the journal. The cache was empty (no weather received); this soaked the enabled-but-idle path, the settings and
+  the live GDL90/ADS-B/UAT-traffic processing beside it.
+- **Configuration Backup:** the device's own backup is seven sections including `fisbCacheSettings`; a freshly built seven-section
+  document validates and previews the FIS-B changes; all four legacy shapes (pre-autorecord, pre-trafficcpa, pre-epaper,
+  pre-fisbcache) validate and default the FIS-B section to disabled; a `replayEnabled: true` document is rejected by checksum. (Nothing
+  was applied.) **Unrelated finding:** the device's own current backup fails validation because e-paper is enabled with
+  `EpaperRefreshIntervalSeconds` unset (0) while the backup validator requires >= 5 - a defect in the e-paper backup section on `master`,
+  not in this change.
+- **Live GDL90 regression (passive client on the Stratux network, not ForeFlight):** with the cache enabled the stream carries the
+  normal message mix (heartbeat 0x00, ownship 0x0A, geometric altitude 0x0B, traffic 0x14, AHRS 0x4C, ForeFlight ID 0x65, 0x53, 0xCC);
+  after disconnecting and reconnecting the client no uplink (0x07) message appears. The cache held no entries then, so that is not by
+  itself proof of no replay; the proof is structural - the cache implementation has no reference to any GDL90/network send path and
+  `relayMessage` is only called from the receive paths (`noreplay-static-evidence.txt`) - plus the lab tests.
+- **Regressions:** SSH key login worked after the OTA and after the reboot without re-adding a key and the restore helper found the
+  volatile copy already matching; e-paper `RUNNING`, 0 BUSY timeouts, 0 consecutive failures; 1090 ES receiving, 978 UAT receiving
+  traffic through the external radio, GPS 3D, AHRS, barometer, GDL90, fan, storage ready; 0 failed units; overlay active; OTA `idle`.
+
+**Not validated (pending)**
+
+- **Live FIS-B.** In more than 70 minutes with the external radio receiving 978 MHz traffic (117 messages, up to 23 a minute) no ground
+  station uplink was received (`UAT_METAR/TAF/NEXRAD/PIREP_total` stayed 0), so no product reached the cache on the device and the
+  dashboard's inventory rows, the API's live values and a new real capture were not exercised on live data. The receive path itself
+  is healthy (classification B: insufficient RF opportunity, not a receiver malfunction). Needed: a session within range of a ground station.
+- **ForeFlight itself** (app session, live FIS-B display, and the explicit reconnect-without-replay test with a populated cache) was
+  not performed; the passive GDL90 client above is a stand-in.
+- Power: the supply is marginal - `get_throttled` showed active under-voltage bits on the running system before the OTA, and kernel
+  under-voltage events coincided with the CPU-heavy Pi-side test runs (the cost figures were taken at a 900 MHz clock with events
+  possible); the boot after the reboot was clean (`0x0`). Recorded only; the power investigation remains on hold.
+
+Evidence: `/var/lib/stratux-data/acceptance/fisb-rolling-weather/` on the device (60 files, manifest SHA-256
+`31a20051d0da0916d7b1087cdc649b0f743bf0d0fd06ca29a0677edf62aa7940`) with a byte-identical host copy. The Pi-side test binaries
+(arm64 builds of this commit, a mount-guard probe and an API-dump harness) ran from RAM and are hashed there; they are not part of the package.
