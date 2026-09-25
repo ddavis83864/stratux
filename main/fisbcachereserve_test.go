@@ -573,3 +573,45 @@ func TestFISBCacheProcessOneCaptureItem_SettingsTighteningDuringOutstandingReser
 		t.Errorf("expected the now-tighter maxEntries=1 budget enforced once cleanup runs, got Store.Len()=%d", got)
 	}
 }
+
+// A capture for a key that is currently IN FLIGHT (popped by the worker, its
+// Admit not yet decided) must still be processed afterwards. It used to be
+// stored in the queue's item map without being added to the FIFO order, so it
+// was never popped again: the reservation leaked, the key could never be
+// admitted again (later updates only overwrote the stuck item), and every such
+// event permanently consumed one of the queue's structural slots.
+func TestFISBPendingQueue_CaptureForAnInFlightKeyIsNotLost(t *testing.T) {
+	withTestFISBCacheStorage(t)
+	withTestStorageManagerReportingPressure(t, storagelifecycle.PressureNormal)
+	fisbCacheMu.Lock()
+	fisbCacheStore = fisbcache.NewStore()
+	fisbCacheMu.Unlock()
+	q := newFISBPendingQueue(16)
+	settings := FISBCacheSettings{Enabled: true, MaxCacheBytes: 1 << 20, MaxEntries: 100}
+	key := makeFISBTestKey("KSEA")
+
+	if ok, _ := q.reserveAndEnqueue(key, newTestPendingItem("first"), settings); !ok {
+		t.Fatal("first reservation refused")
+	}
+	k, first, ok := q.pop() // the worker now has KSEA in flight
+	if !ok || k != key || first.payload != "first" {
+		t.Fatalf("pop = %v %+v %v", k, first, ok)
+	}
+	// A retransmission of the same product arrives while it is in flight.
+	if ok, _ := q.reserveAndEnqueue(key, newTestPendingItem("second"), settings); !ok {
+		t.Fatal("reservation for an in-flight key refused")
+	}
+	q.releaseInFlight(key) // the worker finishes the first one
+
+	k, second, ok := q.pop()
+	if !ok {
+		t.Fatal("the capture that arrived while the key was in flight is stuck in the queue: pop found nothing")
+	}
+	if k != key || second.payload != "second" {
+		t.Fatalf("second pop = %v %+v", k, second)
+	}
+	q.releaseInFlight(key)
+	if queued, inFlight, _, _ := q.stats(); queued != 0 || inFlight != 0 {
+		t.Fatalf("reservations leaked: queued=%d inFlight=%d", queued, inFlight)
+	}
+}

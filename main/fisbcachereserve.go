@@ -177,7 +177,12 @@ func (q *fisbPendingQueue) reserveAndEnqueue(key fisbcache.Key, item fisbCapture
 		return false, fisbReserveReasonCapacity
 	}
 
-	if !alreadyPending && !alreadyInFlight {
+	// A key that is queued must always be in the FIFO order, even when the
+	// same key is currently in flight: the worker pops it again after it has
+	// released the in-flight one. Skipping the append for an in-flight key
+	// stored the item in q.items but never in q.order, so pop never returned
+	// it - the reservation leaked and the key could never be admitted again.
+	if !alreadyPending {
 		q.order = append(q.order, key)
 	}
 	q.items[key] = item
