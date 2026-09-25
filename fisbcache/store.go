@@ -181,6 +181,9 @@ type Stats struct {
 	TotalBytes     int64
 	ByFreshness    map[FreshnessState]int
 	ByProductClass map[ProductClass]int
+	// ByAgeBasis counts entries by which clock their effective age is measured
+	// from: the product's own (source) time, or reception only.
+	ByAgeBasis map[AgeBasis]int
 }
 
 // ComputeStats summarizes snap - a pure function of a Snapshot, so it is
@@ -189,11 +192,14 @@ func ComputeStats(snap map[Key]Entry, nowMonotonic float64) Stats {
 	st := Stats{
 		ByFreshness:    make(map[FreshnessState]int),
 		ByProductClass: make(map[ProductClass]int),
+		ByAgeBasis:     make(map[AgeBasis]int),
 	}
 	for k, e := range snap {
 		st.TotalEntries++
 		st.TotalBytes += e.SizeBytes
 		st.ByFreshness[Freshness(e, PolicyFor(k), nowMonotonic)]++
+		_, basis := e.EffectiveAge(PolicyFor(k), nowMonotonic)
+		st.ByAgeBasis[basis]++
 		st.ByProductClass[k.Class]++
 	}
 	return st

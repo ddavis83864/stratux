@@ -102,9 +102,16 @@ const (
 	// genuinely different day.
 	maxFutureSkew = 5 * time.Minute
 	// maxPastSkew bounds how far behind receive time a reconstructed
-	// source time may lie - generous enough for a legitimately delayed/
-	// rebroadcast product (FIS-B ground stations rebroadcast the same
-	// uplink message repeatedly for some time), conservative enough to
-	// catch a decode error landing on the wrong day/month.
-	maxPastSkew = 6 * time.Hour
+	// source time may lie before being rejected as a decode error. It must
+	// cover the longest-lived cached product: a TAF is transmitted for up
+	// to 30 hours, and a rebroadcast product whose source time is old must
+	// be recognised as OLD (so its displayed age is not just its reception
+	// age) rather than rejected, which would make it look fresh. Anything
+	// older than this is still rejected (a wrong day/month decode), and an
+	// entry with no trusted source time is judged on reception age alone.
+	// Note that the two time formats without a date (hour/minute only) can
+	// only express a time within the last 24 hours, so a product older than
+	// that reconstructs to an age modulo 24 hours - never OLDER than
+	// reality, and never fresher than its reception age.
+	maxPastSkew = 48 * time.Hour
 )
