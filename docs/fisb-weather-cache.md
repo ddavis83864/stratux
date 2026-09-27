@@ -1469,15 +1469,18 @@ capture, did not observe the cache or the GDL90 stream, and does not validate we
 **What was done.** The receiver ran for about one hour at a site with better reception than the 2026-09-25 bench (where the 978 MHz radio received
 traffic only - 117 messages in more than 70 minutes - and no ground-station uplink; see "Not validated" above). No MacBook was available (no usable AC power), so there was **no** passive GDL90 capture, **no** pre-parser
 UAT recording (`TraceLog`) and **no** replayable artifact. The Stratux was later shut down and rebooted; its volatile counters, cache
-contents (if any) and logs from that session must be assumed lost. Screenshots of the Stratux dashboard and of ForeFlight on an iPad mini were
-taken by the owner (the image files are not part of this record yet; when supplied they belong in a new acceptance evidence directory, not in Git).
+contents (if any) and logs from that session must be assumed lost. Six screenshots of the Stratux web UI (Status, Traffic, Weather, Towers, from a phone
+browser; the displayed clocks are 4:08 and 4:41, local, no zone) were taken by the owner. They are kept, with SHA-256 verification against their
+manifest, in a private evidence directory outside Git (`stratux-fisb-2026-09-26-field`, archive SHA-256
+`eadce06403c8c4e67ccc7552d7c97bdfe77e333fb61f9377f3768fbde775c7fd`). **No ForeFlight or iPad mini screenshot exists in that archive**; the
+ForeFlight observation below rests on the owner's account alone.
 
 | Time (approx.) | Observation from the dashboard screenshots |
 | --- | --- |
-| ~30 min | 151 UAT frames, current UAT activity, 1 tower |
-| ~60 min | 444 UAT frames; product statistics METAR 21, TAF 6, NEXRAD 108, NOTAM 8, Other 67; tower count 0 (PIREP/SIGMET values were not reported) |
-| throughout | 1090 receiver receiving traffic; GPS 3D fix; traffic shown in ForeFlight (iPad mini) - the screenshots do not say which band supplied it |
-| during the session | Stratux Weather page: "Connected", "Watching (0)", "Recent Reports (0)" |
+| ~30 min (Stratux uptime 0:30:40) | 151 UAT frames, current UAT 4 messages (peak 36), 1 tower; METAR/TAF/NEXRAD/PIREP/SIGMET/NOTAM all 0, Other 3 |
+| ~60 min (Stratux uptime 1:03:53) | 444 UAT frames; product statistics METAR 21, TAF 6, NEXRAD 108, NOTAM 8, Other 67 (PIREP 0, SIGMET 0); tower count 0 |
+| throughout | 1090 receiver receiving traffic; GPS 3D fix (3.6 m, then 3.0 m); the Stratux Traffic page listed targets (no source-band column); traffic shown in ForeFlight (iPad mini) is the owner's account only, no image; the build shown is `b26686c752` |
+| at both points | Stratux Weather page: "Connected", "Watching (0)", "Recent Reports (0)" - at the ~30 min point (all weather counters 0) and again at the ~60 min point, the same displayed minute as the screenshot with 21 METARs |
 
 **Classification of this evidence**
 
