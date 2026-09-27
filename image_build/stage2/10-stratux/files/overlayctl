@@ -73,9 +73,37 @@ fi
 if overlay_is_active ; then
     overlay_active="yes"
     overlay_base="/overlay/robase/"
+    # /overlay/robase is a bind mount of the same underlying block device
+    # that init-overlay's own pivot_root leaves mounted separately at
+    # /overlay/pivot (the relocated old root - see docs/ota.md), which
+    # itself starts read-only (the kernel's own "ro" boot parameter).
+    #
+    # Going TO read-write (unlock, and enable/disable's own internal
+    # unlock step) must stay a PLAIN remount: a bind mount created from a
+    # read-only source inherits a *locked* read-only flag that only a
+    # plain, whole-superblock remount can clear - a "bind,rw" remount
+    # cannot escalate it (confirmed directly: it silently no-ops rather
+    # than granting write access). This matters most on a device's very
+    # first boot, when /overlay/robase has never yet been made writable.
+    #
+    # Going TO read-only (lock, and enable/disable's own internal re-lock
+    # step) must instead use a BIND remount: by the time this runs,
+    # /overlay/robase has already been genuinely elevated to read-write by
+    # the plain unlock above, so a plain "remount,ro" here targets the
+    # whole shared superblock rather than just this one bind-mounted view -
+    # and fails "mount point is busy" (EBUSY) on real hardware, because
+    # /overlay/pivot still holds a live read reference to that same
+    # superblock. A bind remount only sets this one view's own read-only
+    # flag, which never conflicts with /overlay/pivot and always succeeds.
+    # Confirmed on real hardware; see docs/ssh-host-keys.md for the
+    # physical validation that found this.
+    overlay_remount_ro_bind="bind,"
 else
     overlay_active="no"
     overlay_base="/"
+    # Not a bind mount in this branch (overlay disabled entirely) - a
+    # plain remount is correct for both directions here.
+    overlay_remount_ro_bind=""
 fi
 
 overlay_disable_file="$overlay_base""overlay/disable"
@@ -104,7 +132,7 @@ case "$1" in
             else
                mount -o remount,rw "$overlay_base"
                rm "$overlay_disable_file"
-               mount -o remount,ro "$overlay_base"
+               mount -o remount,${overlay_remount_ro_bind}ro "$overlay_base"
             fi
         fi
         ;;
@@ -116,13 +144,13 @@ case "$1" in
             else
                mount -o remount,rw "$overlay_base"
                echo 1 >"$overlay_disable_file"
-               mount -o remount,ro "$overlay_base"
+               mount -o remount,${overlay_remount_ro_bind}ro "$overlay_base"
             fi
         fi
         ;;
 
     lock)
-        mount -o remount,ro "$overlay_base"
+        mount -o remount,${overlay_remount_ro_bind}ro "$overlay_base"
         ;;
 
     unlock)

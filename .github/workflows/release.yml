@@ -117,6 +117,21 @@ jobs:
           echo "deb=$deb_out" >> "$GITHUB_OUTPUT"
           echo "img=$img_out" >> "$GITHUB_OUTPUT"
 
+      - name: Verify no SSH host private keys shipped in clean image
+        # A clean-install image must never ship pre-generated SSH host
+        # (server identity) keys - every device generates its own on first
+        # boot (stratux-ssh-hostkeys.service). This is a release-blocking
+        # check, not advisory: it fails the build outright if it finds any
+        # of /etc/ssh/ssh_host_{rsa,dsa,ecdsa,ed25519}_key baked into the
+        # image. It does not inspect or flag user authorized_keys files -
+        # an unrelated, legitimate mechanism this check never touches.
+        run: |
+          set -euo pipefail
+          raw_img="$(mktemp -u --suffix=.img)"
+          xz -T0 -dc "${{ steps.artifacts.outputs.img }}" > "$raw_img"
+          sudo scripts/verify-no-host-keys.sh "$raw_img"
+          rm -f "$raw_img"
+
       - name: Generate SBOM
         # go run needs the project's own containerized Go toolchain -
         # the bare runner has no Go installed directly (everything else
