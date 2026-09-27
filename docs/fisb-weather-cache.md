@@ -1466,8 +1466,8 @@ Evidence: `/var/lib/stratux-data/acceptance/fisb-cache-limit/` on the device (33
 **Status of the live-acceptance gate: still open.** This session produced partial, screenshot-only evidence. It did not record a raw
 capture, did not observe the cache or the GDL90 stream, and does not validate weather reaching ForeFlight.
 
-**What was done.** The receiver ran for about one hour at a site with better reception than the 2026-09-25 bench (which received no 978 MHz
-message of any kind in 90 minutes). No MacBook was available (no usable AC power), so there was **no** passive GDL90 capture, **no** pre-parser
+**What was done.** The receiver ran for about one hour at a site with better reception than the 2026-09-25 bench (where the 978 MHz radio received
+traffic only - 117 messages in more than 70 minutes - and no ground-station uplink; see "Not validated" above). No MacBook was available (no usable AC power), so there was **no** passive GDL90 capture, **no** pre-parser
 UAT recording (`TraceLog`) and **no** replayable artifact. The Stratux was later shut down and rebooted; its volatile counters, cache
 contents (if any) and logs from that session must be assumed lost. Screenshots of the Stratux dashboard and of ForeFlight on an iPad mini were
 taken by the owner (the image files are not part of this record yet; when supplied they belong in a new acceptance evidence directory, not in Git).
@@ -1481,11 +1481,11 @@ taken by the owner (the image files are not part of this record yet; when suppli
 
 **Classification of this evidence**
 
-- Live 978 MHz reception: **confirmed** (444 frames; see the counter semantics below - the count cannot be a bench artifact).
+- Live 978 MHz reception: **confirmed** (444 UAT frames; the product counters below advance only for decoded uplinks).
 - Weather-related counter activity: **observed**.
 - Rolling-cache population, current product freshness, Weather-page delivery, GDL90 weather (0x07) delivery and ForeFlight weather reception:
-  **unverified**. In particular nothing here shows that weather reached ForeFlight, and the last known cache setting on the device is
-  *disabled* (left so on 2026-09-25); whether it was enabled for this session is unknown.
+  **unverified**. In particular nothing here shows that weather reached ForeFlight, and whether the cache was enabled during this session is unknown (the last
+  documented state, at the end of the 2026-09-25 verification, is the default *disabled*; it was not re-read on 2026-09-26).
 
 ### Read-only review of the status paths (no code was changed)
 
@@ -1525,8 +1525,7 @@ Everything below is from reading this branch (`92427fd3`); nothing was run on th
   `NetworkDataMessagesSent/BytesSent` and the per-connection data in `/getClients`.
 - **What survives a reboot.** The root filesystem is an overlay with a RAM upper layer, so *lost*: every `globalStatus` counter, the tower map,
   `/var/log/stratux.log`, `/var/log/stratux.sqlite` (`ReplayLog`), `/var/log/stratux/*_trace.txt.gz` (`TraceLog`) and the volatile journal.
-  *Survives* (data partition): cache entries **only if the cache and its persistence are both enabled**, settings, manual recordings and
-  diagnostic bundles (both embed the UAT counters, tower count and weather-product counts), and anything copied off the device.
+  *Survives* (data partition): cache entries **only if the cache and its persistence are both enabled**, settings, manual recordings (which embed the UAT counters, tower count and weather-product counts), and anything copied off the device.
   (`PersistentLogging` would make logs persist, but it disables the overlay protection - not proposed here.)
 
 **Interpretations supported by the code (not verified live)**
@@ -1540,8 +1539,8 @@ Everything below is from reading this branch (`92427fd3`); nothing was run on th
 
 **Hypotheses that need another live test**
 
-1. The METAR/TAF counts come from 413 text reports (as in the 704-uplink capture, which contains no structured METAR/TAF ids) rather than ids 0/1/20/21.
-2. "Other 67" is mostly ids such as 13 (present in the capture) rather than anything cacheable.
+1. The METAR/TAF counts come from 413 text reports rather than structured ids 0/1/20/21 (not checked against the real capture here).
+2. "Other 67" is dominated by products the cache never stores (not established which ids).
 3. Tower 0 at the one-hour mark was a coverage gap rather than a decode or bookkeeping problem (check `/getTowers` over time).
 4. The empty Weather page is explained by page-open timing plus the default watch list (open it before/while reports arrive; set `WatchList` to local stations).
 5. ForeFlight's targets came from the 1090 receiver; and whether ForeFlight received 0x07 weather at all.
@@ -1563,8 +1562,8 @@ Recordings, in order of value:
    product assembly and settles hypotheses 1-2 and 7.
 2. A passive GDL90 recorder on any laptop on the Stratux network (per-minute message-ID counts and every 0x07 message with a timestamp) - the
    only direct evidence of client delivery and of the reconnect behavior.
-3. A **manual recording** or a **diagnostic bundle** made before shutdown: the only persisted copy of the counters and tower count if no laptop
-   is available.
+3. A **manual recording** made before shutdown (`recordingapi.go` records the UAT message rate, tower count and per-product weather counters):
+   the only persisted copy of the counters if no laptop is available (whether a diagnostic bundle carries the same was not checked).
 4. With the cache enabled and persistence on, its inventory (ages, basis) - the only evidence of cache updates; cache files survive the reboot.
 
 How they separate the questions: valid uplink reception = raw trace lines plus `UAT_messages_total` deltas and `/getTowers`; product assembly = the
