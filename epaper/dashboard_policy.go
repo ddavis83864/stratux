@@ -26,10 +26,14 @@ import "time"
 //     (10) refreshes have happened inside DashboardStormWindow (a flapping
 //     input must not wear the panel), and (c) caps partial refreshes at
 //     DashboardMaxPartials between full ones.
-//     The one exception: the transition *into* an inverted banner (a fault or
-//     NO STATUS DATA) is urgent - a screen that cannot be confirmed current
-//     must not sit unchanged for up to 180 s - and skips the storm guard (never
-//     the 30 s floor), at most once per DashboardUrgentSpacing.
+//     The one exception: a flip of the big banner between normal and
+//     inverted (a fault or NO STATUS DATA appearing - or clearing) is
+//     urgent: a screen that cannot be confirmed current, or that shows an
+//     alarm that has passed, must not sit unchanged for up to 180 s. Urgent
+//     refreshes skip the storm guard (never the 30 s floor), at most
+//     DashboardUrgentMax per DashboardStormWindow, so an outage and its
+//     recovery both show promptly while a flapping fault cannot bypass the
+//     guard.
 //  5. A refresh is FULL (flashing, ghost-clearing) instead of partial if
 //     fullRefreshEvery partial refreshes have accumulated, if the last full
 //     refresh is older than DashboardFullMaxAge, or if the banner's
@@ -61,9 +65,10 @@ const (
 	// DashboardMaxPartials caps partial refreshes between full ones,
 	// whatever EpaperFullRefreshEvery says (vendor FAQ: 5).
 	DashboardMaxPartials = 5
-	// DashboardUrgentSpacing bounds how often the storm-guard exemption for
-	// entering a fault / no-data banner can be used.
-	DashboardUrgentSpacing = 5 * time.Minute
+	// DashboardUrgentMax bounds the storm-guard exemptions for banner
+	// inversion flips per DashboardStormWindow (an outage and its recovery
+	// use two).
+	DashboardUrgentMax = 4
 )
 
 // DashPolicyState is what DecideDashboard carries between calls (memory
@@ -83,8 +88,8 @@ type DashPolicyState struct {
 	Recent []time.Time
 	// Storm says the storm guard is engaged.
 	Storm bool
-	// LastUrgentAt is when the storm-guard exemption was last used.
-	LastUrgentAt time.Time
+	// Urgent holds the times the storm-guard exemption was used.
+	Urgent []time.Time
 }
 
 // DecideDashboard implements the rules above. inverted says whether the
@@ -119,8 +124,14 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 	} else if st.Storm && len(recent) <= DashboardStormRelease {
 		st.Storm = false
 	}
-	urgent := inverted && !st.LastInverted && key != st.LastKey &&
-		(st.LastUrgentAt.IsZero() || now.Sub(st.LastUrgentAt) >= DashboardUrgentSpacing)
+	urgentRecent := st.Urgent[:0:0]
+	for _, at := range st.Urgent {
+		if now.Sub(at) < DashboardStormWindow {
+			urgentRecent = append(urgentRecent, at)
+		}
+	}
+	st.Urgent = urgentRecent
+	urgent := inverted != st.LastInverted && key != st.LastKey && len(urgentRecent) < DashboardUrgentMax
 	if st.Storm && !urgent && refreshInterval < DashboardStormSpacing {
 		refreshInterval = DashboardStormSpacing
 	}
@@ -137,7 +148,7 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 	st.LastKey, st.LastInverted, st.LastRefreshAt, st.NotBefore = key, inverted, now, time.Time{}
 	st.Recent = append(st.Recent, now)
 	if urgent {
-		st.LastUrgentAt = now
+		st.Urgent = append(st.Urgent, now)
 	}
 	if full {
 		st.Partials, st.LastFullAt = 0, now

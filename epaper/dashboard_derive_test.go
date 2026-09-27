@@ -754,3 +754,29 @@ func TestSatelliteCountHysteresis(t *testing.T) {
 		t.Errorf("3 satellites -> %+v", d.GPS)
 	}
 }
+
+// After a daemon restart the uptime falls to near zero and then climbs from
+// there: that is a live daemon, not a frozen one, however long the previous
+// run had been up. (Found on the bench panel: the screen stayed NO STATUS
+// DATA after a restart until the new uptime overtook the old.)
+func TestRestartedDaemonIsNotMistakenForAFrozenOne(t *testing.T) {
+	tr, _ := newRef(t) // uptime ~10 min
+	// The daemon is down for a minute (no reading succeeds), then comes
+	// back with its uptime near zero.
+	at := t0.Add(60 * time.Second)
+	up := int64(2000)
+	var d Dashboard
+	for i := 0; i < 8; i++ { // 40 s of polling after the restart
+		u := up
+		step(tr, at, func(s *Sample) { s.Status.UptimeMs = u })
+		d = tr.Derive(at, t0)
+		if d.Overall == OverallNoData || d.Stale {
+			t.Fatalf("%d s after the restart the screen reads %v (stale=%v): %q", i*5, d.Overall, d.Stale, d.Subtitle)
+		}
+		at = at.Add(5 * time.Second)
+		up += 5000
+	}
+	if d.Overall != OverallStarting {
+		t.Errorf("overall = %v, want STARTING while the new run is under 90 s", d.Overall)
+	}
+}

@@ -208,7 +208,9 @@ func (t *Tracker) Observe(s Sample) {
 			st.Products.all() < t.status.Products.all()) {
 			t.resetHistory()
 		}
-		if !t.haveEP[epStatus] || st.UptimeMs > t.upMs {
+		// Any change of the daemon's uptime is a sign of life - including
+		// a fall to near zero, which is a restart, not a freeze.
+		if !t.haveEP[epStatus] || st.UptimeMs != t.upMs {
 			t.upAdvancedAt = at
 		}
 		t.upMs = st.UptimeMs

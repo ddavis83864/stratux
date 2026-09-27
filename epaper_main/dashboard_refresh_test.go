@@ -307,3 +307,43 @@ func TestDashboardSelectedRules(t *testing.T) {
 		}
 	}
 }
+
+// Found on the bench panel: with the storm guard engaged (a busy startup),
+// the NO STATUS DATA frame appeared promptly but its clearing was held back
+// for minutes while the data was live again. Both directions must be prompt.
+func TestRefreshNoDataAndRecoveryAreBothPromptUnderTheStormGuard(t *testing.T) {
+	h := newHarness(t)
+	h.poll(nil)
+	h.tick()
+	// Pretend a busy startup: the guard is engaged.
+	h.pol.Storm = true
+	for i := 0; i < epaper.DashboardStormCount; i++ {
+		h.pol.Recent = append(h.pol.Recent, h.now)
+	}
+	// The source dies; NO DATA must show within ~30 s of going stale.
+	for i := 0; i < 8; i++ {
+		h.advance(5 * time.Second)
+		h.tick()
+	}
+	if len(h.drv.updates) != 2 {
+		t.Fatalf("NO STATUS DATA not drawn promptly under the guard: %d updates", len(h.drv.updates))
+	}
+	// The daemon comes back (restarted: uptime near zero). The alarm must
+	// clear within one poll plus the 30 s floor, not after 180 s.
+	h.advance(5 * time.Second)
+	restartAt := h.now
+	for i := 0; i < 9 && len(h.drv.updates) < 3; i++ {
+		st := baseStatus()
+		st.UptimeMs = int64(h.now.Sub(restartAt)/time.Millisecond) + 2000
+		h.snap.tr.Observe(epaper.Sample{At: h.now, Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"},
+			Towers: &epaper.TowerData{}, Clients: &epaper.ClientData{Responding: 1}, Power: &epaper.PowerData{}})
+		h.tick()
+		h.advance(5 * time.Second)
+	}
+	if len(h.drv.updates) != 3 {
+		t.Fatalf("recovery not drawn within ~45 s under the guard: %d updates", len(h.drv.updates))
+	}
+	if d := h.snap.Dashboard(h.now, h.now); d.Overall == epaper.OverallNoData {
+		t.Error("still NO DATA after recovery")
+	}
+}

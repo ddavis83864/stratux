@@ -226,25 +226,40 @@ func TestDecideDashboardUrgentTransitionsSkipTheStormGuard(t *testing.T) {
 	if !st.Storm {
 		t.Fatal("setup: storm guard should be engaged")
 	}
-	// An ordinary change 40 s later is held...
+	// An ordinary change is held...
 	if k, _ := DecideDashboard(st, "ordinary", false, 30*time.Second, 20, now.Add(40*time.Second)); k != RefreshNone {
 		t.Errorf("ordinary change under the guard = %v", k)
 	}
-	// ...but entering NO STATUS DATA / FAULT (inverted banner) is not.
-	k, st2 := DecideDashboard(st, "nodata", true, 30*time.Second, 20, now.Add(40*time.Second))
+	// ...but a fault / no-data banner appearing is not, and neither is it
+	// clearing again (the outage and its recovery both show promptly).
+	now = now.Add(40 * time.Second)
+	k, st2 := DecideDashboard(st, "nodata", true, 30*time.Second, 20, now)
 	if k != RefreshFull {
-		t.Errorf("entering an inverted banner under the guard = %v, want an immediate FULL", k)
+		t.Fatalf("entering an inverted banner under the guard = %v, want an immediate FULL", k)
 	}
-	// It is not repeatable at will: leave and re-enter within 5 minutes and
-	// the guard applies again.
-	_, st3 := DecideDashboard(st2, "ok", false, 30*time.Second, 20, now.Add(40*time.Second+180*time.Second))
-	if k, _ := DecideDashboard(st3, "fault-again", true, 30*time.Second, 20, now.Add(40*time.Second+180*time.Second+40*time.Second)); k != RefreshNone {
-		t.Errorf("second urgent entry inside %v = %v, want it held by the guard", DashboardUrgentSpacing, k)
+	now = now.Add(31 * time.Second)
+	k, st3 := DecideDashboard(st2, "recovered", false, 30*time.Second, 20, now)
+	if k != RefreshFull {
+		t.Fatalf("clearing the inverted banner under the guard = %v, want an immediate FULL", k)
 	}
-	// The 30 s floor still applies to an urgent entry.
+	// A flapping fault cannot use this to bypass the guard indefinitely:
+	// after DashboardUrgentMax flips in the window, they are held.
+	held := false
+	for i := 0; i < 6; i++ {
+		now = now.Add(31 * time.Second)
+		k, st3 = DecideDashboard(st3, "flip"+string(rune('a'+i)), i%2 == 0, 30*time.Second, 20, now)
+		if k == RefreshNone {
+			held = true
+			break
+		}
+	}
+	if !held {
+		t.Error("an endlessly flapping fault bypassed the storm guard every time")
+	}
+	// The 30 s floor still applies to an urgent flip.
 	_, base := DecideDashboard(DashPolicyState{}, "a", false, 30*time.Second, 20, t0)
 	if k, _ := DecideDashboard(base, "b", true, 30*time.Second, 20, t0.Add(10*time.Second)); k != RefreshNone {
-		t.Errorf("urgent entry inside the 30 s floor = %v", k)
+		t.Errorf("urgent flip inside the 30 s floor = %v", k)
 	}
 }
 

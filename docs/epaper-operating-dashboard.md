@@ -191,11 +191,13 @@ FAQ says after 5; refresh at least every 24 h):
   (a flapping input must not wear the panel) and releases once the window has
   drained to 2 or fewer. (Measured on the bench panel: a normal boot uses 5-6
   refreshes in its first four minutes, so a lower threshold engaged the guard
-  on every boot and held real changes back for minutes.) The transition *into* an inverted banner (`RECEIVER FAULT` or
-  `NO STATUS DATA`) is exempt (never from the 30 s floor), at most once per
-  5 minutes: a screen that cannot be confirmed current must not sit
-  unchanged for up to 3 minutes. Otherwise a short-lived state can be
-  coalesced away entirely (a 10 s daemon restart may never draw `STARTING`);
+  on every boot and held real changes back for minutes.) A flip of the banner
+  between normal and inverted (`RECEIVER FAULT` / `NO STATUS DATA` appearing
+  **or clearing**) is exempt (never from the 30 s floor), at most 4 times per
+  10 minutes: a screen that cannot be confirmed current - or that still shows
+  an alarm that has passed - must not sit unchanged for up to 3 minutes.
+  Otherwise a short-lived state can be coalesced away entirely (a 10 s daemon
+  restart may never draw `STARTING`);
 * a **proof-of-life partial refresh** every 10 minutes if nothing changed, so
   the footer time keeps proving the service is alive (6 per hour);
 * at most **5 partial refreshes** between full ones (whatever
