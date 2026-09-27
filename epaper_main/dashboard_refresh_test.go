@@ -10,11 +10,15 @@ import (
 	"github.com/stratux/stratux/epaper"
 )
 
-// updateRecorder is a fake panel: it records every Update and can be made
-// to fail.
+// updateRecorder is a fake panel: it records every Update and every Clear
+// (in one combined, ordered sequence, so a test can assert their relative
+// order), and can be made to fail either call.
 type updateRecorder struct {
-	updates []recordedUpdate
-	fail    error
+	updates  []recordedUpdate
+	sequence []string // "clear" or "update:full"/"update:partial", in call order
+	fail     error    // fails Update
+	failClear error   // fails Clear
+	clears   int
 }
 
 type recordedUpdate struct {
@@ -22,10 +26,22 @@ type recordedUpdate struct {
 	bmp  []byte
 }
 
-func (u *updateRecorder) Init(context.Context) error  { return nil }
-func (u *updateRecorder) Clear(context.Context) error { return nil }
-func (u *updateRecorder) Sleep() error                { return nil }
+func (u *updateRecorder) Init(context.Context) error { return nil }
+func (u *updateRecorder) Clear(context.Context) error {
+	u.clears++
+	u.sequence = append(u.sequence, "clear")
+	if u.failClear != nil {
+		return u.failClear
+	}
+	return nil
+}
+func (u *updateRecorder) Sleep() error { return nil }
 func (u *updateRecorder) Update(_ context.Context, bmp []byte, full bool) error {
+	if full {
+		u.sequence = append(u.sequence, "update:full")
+	} else {
+		u.sequence = append(u.sequence, "update:partial")
+	}
 	if u.fail != nil {
 		return u.fail
 	}
@@ -351,5 +367,94 @@ func TestRefreshNoDataAndRecoveryAreBothPromptUnderTheStormGuard(t *testing.T) {
 	}
 	if d := h.snap.Dashboard(h.now, h.now); d.Overall == epaper.OverallNoData {
 		t.Error("still NO DATA after recovery")
+	}
+}
+
+// Owner-witnessed on the bench panel: a full refresh alone left visible
+// whole-screen ghosting on the inverted (fault / no-data) banner's large
+// solid black fill, even with every refresh onto it already forced full. A
+// plain page switch (Init -> Clear -> draw) redrew clean on the same panel
+// right afterwards, so every full refresh while inverted must Clear() first.
+func TestRefreshClearsBeforeDrawingAnInvertedFrame(t *testing.T) {
+	h := newHarness(t)
+	h.poll(nil) // healthy, non-inverted
+	h.tick()
+	if h.drv.clears != 0 {
+		t.Fatalf("Clear called for a normal frame: %d", h.drv.clears)
+	}
+	// The source dies: the next full refresh draws the inverted NO DATA banner.
+	for i := 0; i < 8; i++ {
+		h.advance(5 * time.Second)
+		h.tick()
+	}
+	if h.drv.clears != 1 {
+		t.Fatalf("Clear called %d times entering NO DATA, want 1", h.drv.clears)
+	}
+	last3 := h.drv.sequence[len(h.drv.sequence)-2:]
+	if last3[0] != "clear" || last3[1] != "update:full" {
+		t.Fatalf("sequence = %v, want [clear, update:full] immediately before the inverted content", last3)
+	}
+
+	// A second full refresh while STILL inverted (content-only change, the
+	// bucket advancing) must ALSO Clear() first - this is the exact case
+	// that stayed ghosted even after "always full while inverted".
+	h.advance(35 * time.Second)
+	h.tick()
+	if h.drv.clears != 2 {
+		t.Fatalf("Clear called %d times for the second inverted frame, want 2", h.drv.clears)
+	}
+
+	// Recovery (leaving inverted) is also a full refresh, but it draws a
+	// NORMAL frame - Clear() must not fire for it.
+	h.advance(35 * time.Second)
+	h.poll(nil)
+	h.tick()
+	if h.drv.clears != 2 {
+		t.Errorf("Clear called leaving the inverted state (drawing a normal frame): %d, want still 2", h.drv.clears)
+	}
+	if got := h.drv.sequence[len(h.drv.sequence)-1]; got != "update:full" {
+		t.Errorf("last call = %q, want a plain full update with no preceding clear", got)
+	}
+}
+
+func TestRefreshClearFailureIsReportedAndRetried(t *testing.T) {
+	h := newHarness(t)
+	h.poll(nil)
+	h.tick()
+	updatesBefore := len(h.drv.updates)
+	h.drv.failClear = errors.New("clear failed")
+	for i := 0; i < 8; i++ { // enough to go stale and attempt the inverted (Clear-first) frame
+		h.advance(5 * time.Second)
+		h.tick()
+	}
+	if h.health.State != epaper.StateError || h.health.LastErrorCat != epaper.ErrorSPIWrite {
+		t.Fatalf("health after a failed Clear = %+v", h.health)
+	}
+	if h.drv.clears == 0 {
+		t.Fatal("test did not exercise a Clear failure at all")
+	}
+	if len(h.drv.updates) != updatesBefore {
+		t.Errorf("Update was called %d times despite Clear failing first", len(h.drv.updates)-updatesBefore)
+	}
+	// Not retried every poll: only after the interval.
+	for i := 0; i < 2; i++ {
+		h.advance(5 * time.Second)
+		h.tick()
+	}
+	after1 := h.drv.clears
+	if h.drv.clears != after1 {
+		t.Error("Clear retried inside the interval")
+	}
+	// The panel comes back: the owed inverted frame is finally drawn (Clear
+	// then the full update), in that order.
+	h.advance(30 * time.Second)
+	h.drv.failClear = nil
+	h.tick()
+	if h.health.State != epaper.StateRunning || len(h.drv.updates) != updatesBefore+1 {
+		t.Fatalf("recovery: health=%+v updates=%d", h.health, len(h.drv.updates))
+	}
+	last2 := h.drv.sequence[len(h.drv.sequence)-2:]
+	if last2[0] != "clear" || last2[1] != "update:full" {
+		t.Errorf("recovery sequence = %v, want [clear, update:full]", last2)
 	}
 }

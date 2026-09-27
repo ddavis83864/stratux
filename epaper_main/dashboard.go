@@ -77,18 +77,36 @@ func refreshDashboard(ctx context.Context, driver PanelDriver, dash dashSnapshot
 	}
 
 	bmp := RenderDashboard(d, cfg.Rotation)
-	if err := driver.Update(ctx, bmp, kind == epaper.RefreshFull); err != nil {
+	fail := func(err error) epaper.Health {
 		cat, busy := epaper.ErrorSPIWrite, prev.BusyTimeoutCount
 		if err == errBusyTimeout {
 			cat, busy = epaper.ErrorBusyTimeout, busy+1
 		}
-		h = errorHealth(prev, cat)
+		h := errorHealth(prev, cat)
 		h.BusyTimeoutCount = busy
 		// Do not commit the decision (the frame is still owed), but wait a
 		// full interval before trying again rather than hammering a
 		// failing panel every poll.
 		policy.NotBefore = now.Add(interval)
 		return h
+	}
+
+	// Anti-ghosting: owner-witnessed on the bench panel, a full refresh
+	// alone was not enough for the inverted (fault / no-data) banner's
+	// large solid black fill - whole-screen ghosting persisted even with
+	// every refresh onto it already forced full (epaper.DecideDashboard's
+	// own rule). A plain page switch (which goes through the driver's
+	// Init -> Clear -> draw sequence) redrew clean on the very same panel
+	// right afterwards, so this reuses that already-proven-clean step:
+	// Clear() (a genuine blank, full-refresh baseline) immediately before
+	// the real content, whenever the frame being drawn is inverted.
+	if kind == epaper.RefreshFull && inverted {
+		if err := driver.Clear(ctx); err != nil {
+			return fail(err)
+		}
+	}
+	if err := driver.Update(ctx, bmp, kind == epaper.RefreshFull); err != nil {
+		return fail(err)
 	}
 	*policy = next // (also clears NotBefore)
 	h.LastSuccessfulRefresh = now

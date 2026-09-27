@@ -218,12 +218,17 @@ FAQ says after 5; refresh at least every 24 h):
 * at most **5 partial refreshes** between full ones (whatever
   `EpaperFullRefreshEvery` says), and a full refresh at least every 4 h;
 * **every refresh is full while the banner is inverted** (`RECEIVER FAULT` /
-  `NO STATUS DATA`), not only the flip into or out of it: the inverted banner
-  is a large solid black fill, and a partial refresh's weaker waveform
-  visibly ghosts on a fill that size. (Found on the bench: a content-only
+  `NO STATUS DATA`), not only the flip into or out of it, **and is preceded by
+  a Clear()** (a genuine blank, full-refresh baseline - the same step the
+  driver already does at panel init/page-switch time, and the owner confirmed
+  it redraws clean). Found on the bench in two rounds: (1) a content-only
   change while still inverted - the "NO DATA FOR ..." bucket advancing - was
-  drawn as a partial refresh and left the whole screen looking smudged and
-  doubled; every refresh while inverted is now full.)
+  drawn as a *partial* refresh and left the whole screen visibly ghosted;
+  marking every refresh full while inverted did not fully fix it - (2) even a
+  *full* refresh straight onto existing panel content was not enough for the
+  banner's large solid black fill (confirmed by owner re-test); a plain page
+  switch (Init -> Clear -> draw) on the very same panel redrew clean, so every
+  full refresh while inverted now reuses that same Clear-first sequence.
 * refreshes never overlap (single goroutine; the poller runs separately and a
   hung request cannot delay a decision), and a failed panel update is reported
   in the service health and retried once per interval, not once per poll.
