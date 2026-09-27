@@ -1460,3 +1460,113 @@ Verified on the device:
 Still pending, unchanged: live FIS-B reception (none observed during this session either), the ForeFlight session and the reconnect-with-populated-cache test.
 Evidence: `/var/lib/stratux-data/acceptance/fisb-cache-limit/` on the device (33 files, manifest SHA-256
 `01e10e094b8f88025734cf75a5218d6497c87339f7656d3f32d526c64c8542be`), with the earlier campaign's evidence untouched.
+
+## Field observation, 2026-09-26: 978 MHz reception (new evidence; NOT FIS-B acceptance)
+
+**Status of the live-acceptance gate: still open.** This session produced partial, screenshot-only evidence. It did not record a raw
+capture, did not observe the cache or the GDL90 stream, and does not validate weather reaching ForeFlight.
+
+**What was done.** The receiver ran for about one hour at a site with better reception than the 2026-09-25 bench (which received no 978 MHz
+message of any kind in 90 minutes). No MacBook was available (no usable AC power), so there was **no** passive GDL90 capture, **no** pre-parser
+UAT recording (`TraceLog`) and **no** replayable artifact. The Stratux was later shut down and rebooted; its volatile counters, cache
+contents (if any) and logs from that session must be assumed lost. Screenshots of the Stratux dashboard and of ForeFlight on an iPad mini were
+taken by the owner (the image files are not part of this record yet; when supplied they belong in a new acceptance evidence directory, not in Git).
+
+| Time (approx.) | Observation from the dashboard screenshots |
+| --- | --- |
+| ~30 min | 151 UAT frames, current UAT activity, 1 tower |
+| ~60 min | 444 UAT frames; product statistics METAR 21, TAF 6, NEXRAD 108, NOTAM 8, Other 67; tower count 0 (PIREP/SIGMET values were not reported) |
+| throughout | 1090 receiver receiving traffic; GPS 3D fix; traffic shown in ForeFlight (iPad mini) - the screenshots do not say which band supplied it |
+| during the session | Stratux Weather page: "Connected", "Watching (0)", "Recent Reports (0)" |
+
+**Classification of this evidence**
+
+- Live 978 MHz reception: **confirmed** (444 frames; see the counter semantics below - the count cannot be a bench artifact).
+- Weather-related counter activity: **observed**.
+- Rolling-cache population, current product freshness, Weather-page delivery, GDL90 weather (0x07) delivery and ForeFlight weather reception:
+  **unverified**. In particular nothing here shows that weather reached ForeFlight, and the last known cache setting on the device is
+  *disabled* (left so on 2026-09-25); whether it was enabled for this session is unknown.
+
+### Read-only review of the status paths (no code was changed)
+
+Everything below is from reading this branch (`92427fd3`); nothing was run on the device.
+
+**Confirmed from code (direct reading)**
+
+- The external UAT radio path (`lowpower_uat.go`) hands a message to `parseInput` only when the radio-side Reed-Solomon correction did not fail
+  (`rs_errors != 9999`); the same call then relays an uplink as GDL90 0x07 (`relayMessage`) *whatever the product decoder makes of it*.
+- **`UAT_messages_total`** (dashboard "UAT frames" in the receiver block) is incremented for every non-empty line `parseInput` sees, i.e.
+  uplinks (`+`) **and** downlinks (`-`: aircraft ADS-B, TIS-B/ADS-R), before any product decoding. It is a message count, not a FIS-B count.
+  `UAT_messages_last_minute` is a 60-second window over the same messages; both live only in RAM.
+- **Product counters** (`UAT_*_total`) are incremented only after an uplink was parsed (`uatparse.New`) and only per *decoded information
+  frame*: `UpdateUATStats(product id)` - ids 0/20 METAR, 1/21 TAF, 51-64/81-83 NEXRAD, 2/3/4/6/11/12/22-24/26/254 SIGMET, 5/25 PIREP, 8 NOTAM,
+  everything else "Other", and 413 (generic text) deliberately skipped here. Text is counted separately, per report line with at least five
+  words: METAR/SPECI to METAR; TAF/TAF.AMD **and WINDS** to TAF; PIREP to PIREP; other text types are counted nowhere. Consequences: a counter
+  counts frames or reports, not distinct products; a tower rebroadcasting the same product counts again every time; NEXRAD counts frames, not
+  tiles; "TAF" includes winds aloft; the counters cannot say whether a METAR arrived as a structured product (id 0/20) or as text (413).
+- **Cache eligibility is narrower than the counters:** only text (413) reports whose first word is METAR, SPECI, TAF, TAF.AMD, WINDS or PIREP, and
+  NEXRAD ids 63/64, are cached (`fisbcache.ClassifyProductID`), and only when the cache is enabled. NOTAM (id 8), "Other", SIGMET and the
+  structured METAR/TAF ids are counted but never cached.
+- **Weather page** (`weather.js`, `/weather` websocket): it receives only the text reports produced by `registerADSBTextMessageReceived`
+  (the 413 path) - no NEXRAD, NOTAM or structured products. The websocket has **no replay buffer** (the comment in `handleWeatherWS` claiming
+  otherwise is stale; `uibroadcaster` only forwards new messages), so reports that arrived before the page connected never appear.
+  "Recent Reports" lists only reports received while the page was connected (last 10). "Watching" is the subset whose location appears in the
+  `WatchList` setting, whose default is `KBOS KATL KORD KLAX`, so in Idaho it stays 0 unless the list was changed. "Connected" means only that
+  the websocket opened.
+- **Tower count.** The dashboard's "Towers" is computed in `status.js` as the number of entries of `/getTowers` with `Messages_last_minute > 0`,
+  refreshed every 5 s. A tower is keyed by the position decoded from the uplink header; its per-minute count is rebuilt from the last 60 s of
+  parsed uplinks. It therefore goes to 0 whenever no uplink was parsed in the previous minute (coverage gap, terrain, motion, a weak radio) -
+  not only when a station "disappears". The `ADSBTowers` map itself is never pruned, so `/getHealth` `UAT978.TowerCount` and the tower list in the
+  GDL90 Stratux status message are cumulative distinct towers - a different quantity from the dashboard's.
+- **GDL90 delivery.** Each uplink is queued for every *known* client connection with priority 4 and a 15-minute age limit. A client that does not
+  answer ICMP for more than 10 s is "sleeping" (only heartbeats are sent) and a "throttled" connection (recent unreachable) sends only priority-0
+  items, so uplinks are held (up to 15 minutes) and released as a burst when the client wakes. That existing queue - not the diagnostic cache -
+  is the only source of 0x07 messages after a reconnect. Stratux keeps no per-client uplink counter; only the aggregate
+  `NetworkDataMessagesSent/BytesSent` and the per-connection data in `/getClients`.
+- **What survives a reboot.** The root filesystem is an overlay with a RAM upper layer, so *lost*: every `globalStatus` counter, the tower map,
+  `/var/log/stratux.log`, `/var/log/stratux.sqlite` (`ReplayLog`), `/var/log/stratux/*_trace.txt.gz` (`TraceLog`) and the volatile journal.
+  *Survives* (data partition): cache entries **only if the cache and its persistence are both enabled**, settings, manual recordings and
+  diagnostic bundles (both embed the UAT counters, tower count and weather-product counts), and anything copied off the device.
+  (`PersistentLogging` would make logs persist, but it disables the overlay protection - not proposed here.)
+
+**Interpretations supported by the code (not verified live)**
+
+- The product counters can only move when RS-valid uplinks were decoded, so 210 frames (21+6+108+8+67) is strong evidence that genuine uplinks
+  were received and decoded; whether they were FIS-B *weather* content of the cacheable kinds is not established.
+- "Watching (0)" is expected at that site regardless of reception; "Recent Reports (0)" does not contradict the METAR count, because the counter
+  also includes structured products and reports received before the page was open. The screenshots cannot distinguish these.
+- The tower count moving 1 -> 0 is consistent with an intermittent (coverage/motion-limited) link, not necessarily a fault.
+- The 444 total includes an unknown number of aircraft downlinks; the uplink share cannot be recovered from the screenshots.
+
+**Hypotheses that need another live test**
+
+1. The METAR/TAF counts come from 413 text reports (as in the 704-uplink capture, which contains no structured METAR/TAF ids) rather than ids 0/1/20/21.
+2. "Other 67" is mostly ids such as 13 (present in the capture) rather than anything cacheable.
+3. Tower 0 at the one-hour mark was a coverage gap rather than a decode or bookkeeping problem (check `/getTowers` over time).
+4. The empty Weather page is explained by page-open timing plus the default watch list (open it before/while reports arrive; set `WatchList` to local stations).
+5. ForeFlight's targets came from the 1090 receiver; and whether ForeFlight received 0x07 weather at all.
+6. The cache was disabled during the session (so it could not have populated).
+7. A header-position glitch could create a phantom tower (the code does not check the header's position-valid flag).
+
+### Smallest evidence set for the next live session
+
+Snapshots (every ~5 minutes and at each event below; a phone or laptop is enough): `/getStatus` (UAT message totals, product totals,
+`NetworkDataMessagesSent/BytesSent`, `Connected_Users`), `/getHealth` (`UAT978`: frame total, last-frame age, tower count, weather-product counts),
+`/getTowers`, `/getClients` (connect/disconnect/sleep state), `/getFISBCacheStatus` and `/getFISBCacheInventory` (only meaningful with the cache
+enabled - record its setting first), plus a dashboard screenshot.
+
+Recordings, in order of value:
+
+1. **`TraceLog`** (existing setting, toggles live, flushes every second) - records the raw radio messages *before* Reed-Solomon and parsing, into a
+   RAM file; **download it from `/logs/stratux/` (a phone browser works) before any shutdown or reboot**, then hash it. Offline decoding with the
+   repository's `uatparse` then gives, per uplink, the product ids and the text/NEXRAD contents, which separates valid uplink reception from
+   product assembly and settles hypotheses 1-2 and 7.
+2. A passive GDL90 recorder on any laptop on the Stratux network (per-minute message-ID counts and every 0x07 message with a timestamp) - the
+   only direct evidence of client delivery and of the reconnect behavior.
+3. A **manual recording** or a **diagnostic bundle** made before shutdown: the only persisted copy of the counters and tower count if no laptop
+   is available.
+4. With the cache enabled and persistence on, its inventory (ages, basis) - the only evidence of cache updates; cache files survive the reboot.
+
+How they separate the questions: valid uplink reception = raw trace lines plus `UAT_messages_total` deltas and `/getTowers`; product assembly = the
+offline decode of the trace against the product counters; cache updates = cache status/inventory (enabled beforehand); client delivery = 0x07 in the
+GDL90 recording and the `NetworkData*` deltas - never the ForeFlight display alone.
