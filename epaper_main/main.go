@@ -42,6 +42,17 @@ import (
 	"github.com/stratux/stratux/epaper"
 )
 
+// The hardware seams of run(), overridable so the service lifecycle can be
+// exercised in tests with a fake panel and no GPIO.
+var (
+	openBusFn   = openGPIOBus
+	closeBusFn  = closeGPIOBus
+	newDriverFn = newPanelDriver
+	// writeHealthFn publishes the service's self-reported health (the
+	// /run status file); tests capture it instead.
+	writeHealthFn = writeHealth
+)
+
 func main() {
 	baseURL := flag.String("baseurl", "http://127.0.0.1", "base URL of the main Stratux daemon's HTTP API")
 	pollInterval := flag.Duration("poll", 5*time.Second, "how often to sample status and consider a refresh")
@@ -52,6 +63,7 @@ func main() {
 	splashForce := flag.Bool("splash-force", false, "with -splash: skip the check that the epaperd service is not running")
 	splashBoot := flag.Bool("splash-boot", false, "boot mode: render the ARS splash once if EpaperEnabled in the config file says so, then exit (run by stratux_epaper_splash.service)")
 	splashShutdown := flag.Bool("splash-shutdown", false, "shutdown mode: on an orderly power-off or halt (never a reboot or a plain service stop), render the ARS splash once if EpaperEnabled in the config file says so, then exit (run by stratux_epaper_shutdown.service)")
+	previewPNG := flag.String("preview-png", "", "acceptance aid: show this 400x300 PNG on the panel once and exit (needs the epaperd service stopped, or -splash-force); uses -splash-panel and -splash-rotation; see docs/epaper-operating-dashboard.md")
 	bootConfig := flag.String("splash-config", defaultBootConfigPath, "with -splash-boot or -splash-shutdown: stratux.conf to read EpaperEnabled/EpaperPanel/EpaperRotation from")
 	flag.Parse()
 
@@ -67,6 +79,10 @@ func main() {
 		os.Exit(runSplashBootCommand(*bootConfig))
 	}
 
+	if *previewPNG != "" {
+		os.Exit(runPreviewCommand(*previewPNG, *splashPanel, *splashRotation, *splashForce))
+	}
+
 	if *splashOnce {
 		os.Exit(runSplashCommand(*splashPanel, *splashRotation, *splashForce))
 	}
@@ -76,8 +92,9 @@ func main() {
 
 	src := NewStatusSource(*baseURL, 3*time.Second)
 	settingsSrc := NewStatusSource(*baseURL, 3*time.Second)
+	dashSrc := NewDashSource(*baseURL, 2*time.Second)
 
-	run(ctx, src, settingsSrc, *pollInterval, *settingsInterval)
+	run(ctx, src, settingsSrc, dashSrc, *pollInterval, *settingsInterval)
 }
 
 // run is the whole service lifecycle, factored out of main so it can be
@@ -87,13 +104,26 @@ func main() {
 // file, never propagated as a process crash (a real panic anywhere in
 // the refresh path is itself recovered around, one level up, in
 // refreshOnce).
-func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval, settingsInterval time.Duration) {
+func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dashPoller, pollInterval, settingsInterval time.Duration) {
 	cfg := epaper.Config{} // disabled zero value until the first settings poll succeeds
 	var bus *gpioBus
 	var driver PanelDriver
 	var policy epaper.PolicyState
+	// The operating dashboard (docs/epaper-operating-dashboard.md) keeps
+	// its own poller and refresh-policy state; both exist only while the
+	// dashboard page is the one being shown.
+	var dash *dashboardRunner
+	var dpolicy epaper.DashPolicyState
+	stopDash := func() {
+		if dash != nil {
+			dash.Stop()
+			dash = nil
+		}
+		dpolicy = epaper.DashPolicyState{}
+	}
+	defer stopDash()
 	health := epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
-	writeHealth(health)
+	writeHealthFn(health)
 
 	lastSettingsPoll := time.Time{}
 
@@ -101,6 +131,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 	defer ticker.Stop()
 
 	shutdown := func() {
+		stopDash()
 		if driver != nil {
 			lines := append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine})
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
@@ -109,7 +140,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 			_ = driver.Sleep()
 		}
 		if bus != nil {
-			closeGPIOBus()
+			closeBusFn()
 		}
 	}
 
@@ -127,9 +158,15 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 			if ok && newCfg != cfg {
 				if driver != nil {
 					_ = driver.Sleep()
-					closeGPIOBus()
+					closeBusFn()
 					driver, bus = nil, nil
 					policy = epaper.PolicyState{}
+					// The panel is about to be re-initialised and cleared:
+					// the dashboard owes it a fresh first (full) frame.
+					dpolicy = epaper.DashPolicyState{}
+				}
+				if newCfg.Page != cfg.Page || newCfg.Panel != cfg.Panel || newCfg.Rotation != cfg.Rotation || newCfg.Enabled != cfg.Enabled {
+					stopDash()
 				}
 				cfg = newCfg
 			}
@@ -137,16 +174,17 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 
 		if !cfg.Enabled {
 			health = epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
-			writeHealth(health)
+			writeHealthFn(health)
 			continue
 		}
+		useDash := dashboardSelected(cfg)
 
 		if driver == nil {
 			var err error
-			bus, err = openGPIOBus(cfg.GPIO)
+			bus, err = openBusFn(cfg.GPIO)
 			if err != nil {
 				health = errorHealth(health, epaper.ErrorGPIOOpen)
-				writeHealth(health)
+				writeHealthFn(health)
 				continue
 			}
 			// The driver is always constructed with the panel's fixed
@@ -160,12 +198,12 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 			// rotation is applied separately, in Render below, using the
 			// logical (w, h) dimensions for drawing.
 			nativeW, nativeH := epaper.NativeDimensions(cfg.Panel)
-			driver = newPanelDriver(cfg.Panel, bus, nativeW, nativeH)
+			driver = newDriverFn(cfg.Panel, bus, nativeW, nativeH)
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
 			if err := driver.Init(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
-				writeHealth(health)
-				closeGPIOBus()
+				writeHealthFn(health)
+				closeBusFn()
 				driver, bus = nil, nil
 				continue
 			}
@@ -177,17 +215,28 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 			// papered over by drawing content on top of it.
 			if err := driver.Clear(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
-				writeHealth(health)
-				closeGPIOBus()
+				writeHealthFn(health)
+				closeBusFn()
 				driver, bus = nil, nil
 				continue
 			}
-			startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
-			_ = driver.Update(ctx, Render(startupLines, w, h, cfg.Rotation), true)
+			// The dashboard's first frame IS its startup screen (STARTING,
+			// then live state), so it needs no separate text frame.
+			if !useDash {
+				startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
+				_ = driver.Update(ctx, Render(startupLines, w, h, cfg.Rotation), true)
+			}
 		}
 
-		health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
-		writeHealth(health)
+		if useDash {
+			if dash == nil {
+				dash = startDashboardRunner(ctx, dashSrc, epaper.DefaultThresholds(), dashboardPollInterval, time.Now)
+			}
+			health = refreshDashboard(ctx, driver, dash, cfg, &dpolicy, health, time.Now())
+		} else {
+			health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
+		}
+		writeHealthFn(health)
 	}
 }
 

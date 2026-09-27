@@ -207,7 +207,7 @@ func validateSettingsValue(key string, val interface{}) error {
 		// the default page (always valid).
 		if s, ok := val.(string); ok && s != "" {
 			switch s {
-			case epaper.PageOverview, epaper.PageReceivers, epaper.PageHealth:
+			case epaper.PageDashboard, epaper.PageOverview, epaper.PageReceivers, epaper.PageHealth:
 			default:
 				return fmt.Errorf("setting %q: %q is not a supported page", key, s)
 			}

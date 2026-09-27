@@ -296,7 +296,7 @@ func validateTrafficCPASettings(t TrafficCPASettingsSection, res *ValidationResu
 // re-checks main.TrafficCPASettings.Validate's rules.
 var (
 	validEpaperPanels    = map[string]bool{"waveshare-3.7in": true, "waveshare-4.2in-v2": true}
-	validEpaperPages     = map[string]bool{"overview": true, "receivers": true, "health": true}
+	validEpaperPages     = map[string]bool{"dashboard": true, "overview": true, "receivers": true, "health": true}
 	validEpaperRotations = map[int]bool{0: true, 90: true, 180: true, 270: true}
 )
 

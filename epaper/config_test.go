@@ -86,3 +86,28 @@ func TestDefaultGPIOMapping_NeverUsesExcludedPhysicalPins(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalize_DefaultPageDependsOnPanel(t *testing.T) {
+	got, err := Normalize(Config{Enabled: true, Panel: PanelWaveshare42V2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Page != PageDashboard {
+		t.Errorf("4.2in V2 default page = %q, want %q", got.Page, PageDashboard)
+	}
+	got, err = Normalize(Config{Enabled: true, Panel: PanelWaveshare37})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Page != PageOverview {
+		t.Errorf("3.7in default page = %q, want %q (its behavior must not change)", got.Page, PageOverview)
+	}
+	// An explicit choice is never overridden.
+	got, _ = Normalize(Config{Enabled: true, Panel: PanelWaveshare42V2, Page: PageHealth})
+	if got.Page != PageHealth {
+		t.Errorf("explicit page overridden: %q", got.Page)
+	}
+	if _, err := Normalize(Config{Enabled: true, Panel: PanelWaveshare42V2, Page: PageDashboard}); err != nil {
+		t.Errorf("dashboard page rejected: %v", err)
+	}
+}

@@ -291,12 +291,18 @@ Guarantees this architecture provides:
 
 ### What is shown
 
-Three selectable pages (`epaper.Page*`), plus a one-line header (version +
-short build) and disclaimer on every full refresh:
+Four selectable pages (`epaper.Page*`). On the 4.2" V2 panel the default is
+the **operating dashboard** (`dashboard`) - a 400 x 300 landscape screen with
+its own layout, state model, freshness rules and refresh policy, documented in
+[epaper-operating-dashboard.md](epaper-operating-dashboard.md). The other
+three are the text pages below, each with a one-line header (version + short
+build) and the disclaimer on every full refresh; they remain the default on
+the 3.7" panel and are used by any panel at rotation 90/270.
 
 | Page | Content |
 |---|---|
-| `overview` (default) | Overall readiness, GPS fix, trusted time, overlay-protection state, storage pressure, Auto Record armed state, alerts enabled/muted |
+| `dashboard` (default on the 4.2" V2 panel) | Operating dashboard: overall state, GPS / 1090 / 978 / FIS-B tiles, connected clients, update time - see [epaper-operating-dashboard.md](epaper-operating-dashboard.md) |
+| `overview` (default on other panels) | Overall readiness, GPS fix, trusted time, overlay-protection state, storage pressure, Auto Record armed state, alerts enabled/muted |
 | `receivers` | 978 UAT / 1090 ES receiving state, GDL90 client count, traffic target count |
 | `health` | AHRS/baro/fan state, CPU temperature, undervoltage/throttle warning |
 

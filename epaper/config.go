@@ -69,6 +69,13 @@ const (
 
 // Supported status pages.
 const (
+	// PageDashboard is the normal operating screen (400x300 landscape
+	// panels only): header, overall state, GPS/1090/978/FIS-B tiles and
+	// client/update footer - see docs/epaper-operating-dashboard.md. It is
+	// the default when no page is configured on that panel. On the 3.7in
+	// panel and at rotations the landscape layout does not target
+	// (90/270) epaperd shows PageOverview instead.
+	PageDashboard = "dashboard"
 	PageOverview  = "overview"  // version, readiness, GPS/time trust, storage/overlay
 	PageReceivers = "receivers" // 978/1090/GDL90/traffic count
 	PageHealth    = "health"    // AHRS/baro/fan/power/temperature
@@ -98,7 +105,7 @@ const (
 )
 
 var validPanels = map[string]bool{PanelWaveshare37: true, PanelWaveshare42V2: true}
-var validPages = map[string]bool{PageOverview: true, PageReceivers: true, PageHealth: true}
+var validPages = map[string]bool{PageDashboard: true, PageOverview: true, PageReceivers: true, PageHealth: true}
 var validRotations = map[int]bool{0: true, 90: true, 180: true, 270: true}
 
 // Normalize returns a copy of c with every zero-valued optional field
@@ -115,7 +122,14 @@ func Normalize(c Config) (Config, error) {
 		c.Panel = PanelWaveshare37
 	}
 	if c.Page == "" {
-		c.Page = PageOverview
+		// The operating dashboard is the default only where its landscape
+		// layout fits (the 400x300 panel); every other panel keeps the
+		// overview page it has always defaulted to.
+		if c.Panel == PanelWaveshare42V2 {
+			c.Page = PageDashboard
+		} else {
+			c.Page = PageOverview
+		}
 	}
 	if c.RefreshIntervalSeconds <= 0 {
 		c.RefreshIntervalSeconds = DefaultRefreshIntervalSeconds

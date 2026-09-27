@@ -280,3 +280,19 @@ func TestEpaperSettingsPreview_ShowsChange(t *testing.T) {
 		t.Fatal("expected HasChanges to be true given an epaperSettings diff")
 	}
 }
+
+// The operating-dashboard page is a real, restorable page selection.
+func TestEnabledEpaperDashboardPageValidates(t *testing.T) {
+	in := testBuildInputs()
+	in.EpaperSettings = EpaperSettingsSection{
+		Enabled: true, Panel: "waveshare-4.2in-v2", Page: "dashboard",
+		Rotation: 0, RefreshIntervalSeconds: 15, FullRefreshEvery: 20,
+	}
+	doc, err := BuildDocument(in)
+	if err != nil {
+		t.Fatalf("BuildDocument: %v", err)
+	}
+	if res := Validate(doc, mustMarshalLen(t, doc)); !res.OK() {
+		t.Fatalf("the dashboard page must validate: %v", res.Errors)
+	}
+}
