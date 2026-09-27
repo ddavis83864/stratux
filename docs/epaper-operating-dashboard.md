@@ -275,6 +275,69 @@ Preview index: `01-startup`, `02-reference`, `03-fully-receiving`,
 `07-status-unavailable`, `08-health-warning`, `09-uplink-no-products`,
 `10-clock-untrusted`, `11-1090-down-fault`, `12-worst-case-text`.
 
+## Physical validation (bench Pi, 2026-09-27)
+
+Bench unit: Raspberry Pi 4B, external 978 UAT radio, RTL-SDR 1090, u-blox GPS,
+Waveshare 4.2" V2 panel (rotation 0). Every build below was installed through the
+normal OTA path (`/updateUpload`) from its **PR CI arm64 artifact**, and the
+installed `epaperd` was hashed and compared with the artifact's; `dpkg --audit`
+clean each time. The bench Pi's explicit `EpaperPage` was switched from
+`overview` to `dashboard` through `/setSettings` (the only device setting
+changed; set it back to `overview` to revert).
+
+**Observed by the owner (looking at the panel):** with build `eed8de4a` and again
+with the final build `65ae00f9`, the frame matched the expected state
+(`RECEIVER ONLINE` / GPS 3D FIX / 1090 ACTIVE / 978 CONNECTED, NO MESSAGES YET /
+FIS-B NO UPLINK, AWAITING GROUND STATION), legible, nothing clipped, no visible
+ghosting.
+
+**Observed through the API and the display service's own status file (not by
+eye):** refresh counters, timestamps, health and the derived state, below.
+The panel *content* for these was not looked at by a person.
+
+| Test (final build unless noted) | Result |
+|---|---|
+| Install / persistence | OTA verified; `EpaperPage` persisted across the OTA reboot; `dpkg --audit` clean |
+| Client joins / leaves the network | join: refresh in 21-31 s (30 s floor); leave: refresh 54 s after the laptop left (45 s hold + poll) |
+| Daemon outage (stopped 55 s) | `NO STATUS DATA` frame drawn 21 s after the stop (full refresh; health `STATUS_SOURCE_UNAVAILABLE`); recovery frame drawn 4 s after the daemon returned (health cleared) |
+| Display service restart | `RUNNING`, first frame drawn, 8.7 MB RSS, ~1.6 % CPU, 9 threads, 0 busy timeouts |
+| Boot | 1 full + 5 partial refreshes in the first ~5 minutes (6 material changes; 35 before the fixes below) |
+| Regression | Overall/1090/978/GPS/AHRS/baro/GDL90/fan/system/storage all READY; 0 failed units; `get_throttled` 0x0; 0 kernel power lines; 0 busy-timeout lines; web UI and the new page option served |
+| GDL90 (passive client) | full message mix (0x00 heartbeat 60/min, 0x0A, 0x0B, 0x14, 0x4C, 0x53, 0x65, 0xCC) at normal rates, same IDs as the pre-install baseline |
+
+**Not validated on hardware (only by tests and previews):** the boot-splash ->
+dashboard hand-over as seen by eye, the inverted `NO STATUS DATA` / `RECEIVER
+FAULT` banners and every warning/degraded/fault look, GPS fix loss and recovery,
+978 radio removal and reconnection, FIS-B states (there is no live uplink on the
+bench: `NO UPLINK` is what the panel showed; the other states were exercised
+with isolated fixtures only), long-run ghosting over many partial refreshes, and
+the shutdown (power-off) screen, which needs the Pi to be switched back on and was
+not run. No simulated telemetry was sent to the daemon, ForeFlight or any live data path.
+
+**Defects the bench found and fixed** (each has a test that fails without the fix):
+
+1. The storm guard engaged on every boot (6 refreshes in 10 minutes) and held real
+   changes back for minutes: threshold raised to 10 in 10 minutes.
+2. It could equally delay `NO STATUS DATA`: flips of the banner into or out of
+   the inverted state are exempt (never from the 30 s floor), at most 4 per 10 minutes.
+3. After a daemon restart (uptime falls to near zero) the "frozen status loop" check
+   misread the first reading as frozen: any change of uptime now counts as life.
+4. A configuration change that re-initialised the panel left the refresh policy
+   believing the frame was drawn (blank panel until the next change).
+5. The client count flapped 0 <-> 1 every ~30 s for any device that answers pings but
+   has no app listening: presence has a 45 s hold.
+6. The GPS satellite counts (used, and seen while searching) wandered every few
+   seconds: hysteresis.
+7. Both bands read "DISABLED IN SETTINGS" for ~90 s after a boot: that reads
+   `STARTING` during the startup grace period.
+
+**Environment notes.** One OTA attempt (of the second-to-last build) failed
+and rolled back with `could not write disable marker: open
+/overlay/robase/overlay/disable: read-only file system` (`overlayctl unlock`
+reported success; the SD card showed no I/O errors, the Pi stayed on the previous
+build); a retry of the identical package succeeded. That is the existing OTA
+overlay-handling path, unrelated to this change, and was not investigated further.
+
 ## Known limitations
 
 * Weather freshness is *reception* age from frame counters; the daemon exposes
