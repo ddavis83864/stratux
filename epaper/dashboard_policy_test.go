@@ -197,8 +197,8 @@ func TestDecideDashboardStormGuardSpacesRefreshesAtVendorInterval(t *testing.T) 
 func TestDecideDashboardStormGuardReleasesAfterQuiet(t *testing.T) {
 	_, st := DecideDashboard(DashPolicyState{}, "s0", false, 30*time.Second, 20, t0)
 	now := t0
-	for i := 1; i <= 8; i++ { // engage it
-		now = now.Add(200 * time.Second)
+	for i := 1; i <= 12; i++ { // engage it (10 refreshes inside 10 minutes)
+		now = now.Add(35 * time.Second)
 		_, st = DecideDashboard(st, "s"+string(rune('a'+i)), false, 30*time.Second, 20, now)
 	}
 	// Quiet for 15 minutes: the window drains and the guard releases.
@@ -219,7 +219,7 @@ func TestDecideDashboardUrgentTransitionsSkipTheStormGuard(t *testing.T) {
 	// Engage the storm guard with a flapping input.
 	_, st := DecideDashboard(DashPolicyState{}, "s0", false, 30*time.Second, 20, t0)
 	now := t0
-	for i := 1; i <= 8; i++ {
+	for i := 1; i <= 12; i++ {
 		now = now.Add(35 * time.Second)
 		_, st = DecideDashboard(st, "s"+string(rune('a'+i)), false, 30*time.Second, 20, now)
 	}
@@ -245,5 +245,25 @@ func TestDecideDashboardUrgentTransitionsSkipTheStormGuard(t *testing.T) {
 	_, base := DecideDashboard(DashPolicyState{}, "a", false, 30*time.Second, 20, t0)
 	if k, _ := DecideDashboard(base, "b", true, 30*time.Second, 20, t0.Add(10*time.Second)); k != RefreshNone {
 		t.Errorf("urgent entry inside the 30 s floor = %v", k)
+	}
+}
+
+// A normal boot (a handful of refreshes as GPS, radios and clients come up)
+// must not engage the guard: the next real change has to show at the floor
+// interval, not minutes later.
+func TestDecideDashboardNormalStartupDoesNotEngageTheStormGuard(t *testing.T) {
+	iv := 30 * time.Second
+	_, st := DecideDashboard(DashPolicyState{}, "boot0", false, iv, 20, t0)
+	now := t0
+	for i := 1; i <= 6; i++ { // six more refreshes over the first ~4 minutes
+		now = now.Add(40 * time.Second)
+		_, st = DecideDashboard(st, "boot"+string(rune('0'+i)), false, iv, 20, now)
+	}
+	if st.Storm {
+		t.Fatal("normal startup engaged the storm guard")
+	}
+	now = now.Add(31 * time.Second)
+	if k, _ := DecideDashboard(st, "client-joined", false, iv, 20, now); k == RefreshNone {
+		t.Error("a change 31 s after startup settled was held back")
 	}
 }

@@ -23,7 +23,7 @@ import "time"
 //     therefore (a) never refreshes faster than DashboardMinInterval even
 //     if the configured interval is shorter, (b) falls back to
 //     DashboardStormSpacing between refreshes once DashboardStormCount
-//     refreshes have happened inside DashboardStormWindow (a flapping
+//     (10) refreshes have happened inside DashboardStormWindow (a flapping
 //     input must not wear the panel), and (c) caps partial refreshes at
 //     DashboardMaxPartials between full ones.
 //     The one exception: the transition *into* an inverted banner (a fault or
@@ -47,7 +47,15 @@ const (
 	// The storm guard: DashboardStormCount refreshes within
 	// DashboardStormWindow -> spacing of DashboardStormSpacing (the
 	// vendor's recommended 180 s) until the window drains.
-	DashboardStormCount   = 6
+	//
+	// Measured on the bench panel: a normal boot alone produces 5-6
+	// refreshes in its first four minutes (GPS, radios and clients coming
+	// up), and a threshold of 6 engaged the guard on every boot and held
+	// real changes back for minutes. 10 in 10 minutes (one a minute) is
+	// flapping, not startup; the guard then releases only when the window
+	// has drained to DashboardStormRelease (2) or fewer - sustained flapping at the 180 s spacing keeps 3-4 refreshes in the window, so it stays engaged.
+	DashboardStormCount   = 10
+	DashboardStormRelease = 2
 	DashboardStormWindow  = 10 * time.Minute
 	DashboardStormSpacing = 180 * time.Second
 	// DashboardMaxPartials caps partial refreshes between full ones,
@@ -103,12 +111,12 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 	}
 	st.Recent = recent
 	// The guard engages at DashboardStormCount refreshes in the window and
-	// stays engaged (hysteresis) until the window has drained to two or
-	// fewer, so sustained flapping settles at one refresh per 180 s instead
+	// stays engaged (hysteresis) until the window has drained to
+	// DashboardStormRelease or fewer, so sustained flapping settles at one refresh per 180 s instead
 	// of bursting back to the short interval every time the window empties.
 	if !st.Storm && len(recent) >= DashboardStormCount {
 		st.Storm = true
-	} else if st.Storm && len(recent) <= 2 {
+	} else if st.Storm && len(recent) <= DashboardStormRelease {
 		st.Storm = false
 	}
 	urgent := inverted && !st.LastInverted && key != st.LastKey &&
