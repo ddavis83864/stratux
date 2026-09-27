@@ -72,7 +72,7 @@ Subtitle tokens (in fixed order `GPS • 1090 • 978`): `GPS FIX`, `GPS FIX LOW
 
 | Headline / detail | When |
 |---|---|
-| `3D FIX` / `17 SAT` (`12 SAT SBAS`) | fix reported and at least 4 satellites in the solution |
+| `3D FIX` / `17 SAT` (`12 SAT SBAS`) | fix reported and at least 4 satellites in the solution. The count shown has hysteresis: it follows the real count only when it differs by 3 or more, or crosses 0 or the 4-satellite line, because the real count wanders by one or two every minute or so and each wobble would otherwise cost a panel refresh |
 | `FIX` / `3 SAT • LOW` | a fix flag with fewer than 4 satellites (cannot be a 3D solution, so it is not called one) |
 | `NO FIX` / `7 SAT SEEN` or `SEARCHING` | receiver alive, no fix (a lost fix drops the tile within ~8 s: the daemon clears its fix within 3 s, plus one poll) |
 | `DEAD RECK` / `NO SATELLITE FIX` | dead reckoning only |
@@ -147,7 +147,7 @@ bounded to 2 s.
 | Band reception | `/getStatus`: `ES_/UAT_messages_total`, `_messages_last_minute` | totals count *valid decoded* messages (uplinks failing Reed-Solomon are dropped before counting); `UAT` includes traffic and uplinks alike; volatile (lost on daemon restart) |
 | Uplink | `/getTowers`: entries with `Messages_last_minute > 0`; product counters | tower activity is a 60 s window over parsed uplinks; a single tower can flip to 0 during a brief fade (observed in the field) |
 | Weather products | `/getStatus`: `UAT_METAR/TAF/NEXRAD/SIGMET/PIREP/NOTAM/OTHER_total` | **frame counters, not distinct products**: a rebroadcast counts again, NEXRAD counts frames, WINDS counts as TAF, and age is *reception* age, not the age of the weather (a rebroadcast METAR looks new). Only increases are used |
-| Clients | `/getClients`: unique `Ip` among UDP connections whose `SleepFlag` is false | the daemon marks a connection asleep when its ICMP probe gets no answer for 10 s (refreshed ~1 Hz). ICMP liveness only: a phone that answers pings but has no EFB open counts; a locked phone that stops answering does not. `Connected_Users` is **not** used - it counts every ping and pong seen in the last 15 minutes |
+| Clients | `/getClients`: unique `Ip` among UDP connections whose `SleepFlag` is false | the daemon marks a connection asleep when its probe gets no answer for 10 s or an ICMP port-unreachable came back within 5 s (evaluated about once a second). Observed on the bench Pi: a laptop on the network with a UDP listener on 4000 had only its `:4000` connection awake (2000 and 49002 asleep) and counted as one client; with the listener stopped it went to zero within 2 s. So a client counts while something is actually listening on one of the daemon's GDL90 UDP ports - an EFB in the foreground, not merely a device that answers pings. It still cannot say *which* app. `Connected_Users` is **not** used - it counts every ping and pong seen in the last 15 minutes |
 | Clock trust / CPU temp / failed units | `/getHealth`: `Time.State`, `System.CPUTempC`, `System.FailedServices` | as reported by readiness |
 | Power | `/getPowerHealth`: `undervoltageNow`, `throttledNow` | *current*, debounced bits only. `/getHealth`'s `UndervoltageDetected`/`Throttled` are sticky "since boot" and are deliberately not used. The transient-undervoltage investigation is on hold; this only consumes the existing status |
 
@@ -189,7 +189,11 @@ FAQ says after 5; refresh at least every 24 h):
   below 30 s** on this screen;
 * a **storm guard** spaces refreshes at 180 s after 6 refreshes in 10 minutes
   (a flapping input must not wear the panel) and releases after the window
-  drains;
+  drains. The transition *into* an inverted banner (`RECEIVER FAULT` or
+  `NO STATUS DATA`) is exempt (never from the 30 s floor), at most once per
+  5 minutes: a screen that cannot be confirmed current must not sit
+  unchanged for up to 3 minutes. Otherwise a short-lived state can be
+  coalesced away entirely (a 10 s daemon restart may never draw `STARTING`);
 * a **proof-of-life partial refresh** every 10 minutes if nothing changed, so
   the footer time keeps proving the service is alive (6 per hour);
 * at most **5 partial refreshes** between full ones (whatever
@@ -271,8 +275,9 @@ Preview index: `01-startup`, `02-reference`, `03-fully-receiving`,
 * Weather freshness is *reception* age from frame counters; the daemon exposes
   no per-product validity time. `WX CURRENT` means "a weather product frame
   arrived recently", not "every product is current".
-* The client count is ICMP liveness (above), not application-level presence; it
-  cannot say whether ForeFlight is open, and it cannot see TCP/serial/BLE clients.
+* The client count is "something is listening on a GDL90 UDP port and answering probes"
+  (above), not application identity: it cannot say whether that is ForeFlight, and it
+  cannot see TCP/serial/BLE clients. A backgrounded EFB that stops listening drops out.
 * 2D vs 3D fix is not distinguishable from the daemon's status.
 * The Go fonts have a slashed zero; `1090` and `978` read with a slashed 0 on
   the panel. Deliberate and legible.

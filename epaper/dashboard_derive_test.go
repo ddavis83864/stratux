@@ -719,3 +719,38 @@ func TestDeadSourceIsNotMistakenForAFrozenOne(t *testing.T) {
 		t.Errorf("25 s: %v %q", d.Overall, d.Subtitle)
 	}
 }
+
+func TestSatelliteCountHysteresis(t *testing.T) {
+	tr, _ := newRef(t) // 17 satellites
+	at := t0
+	detail := func(sats uint16) string {
+		at = at.Add(5 * time.Second)
+		step(tr, at, func(s *Sample) { s.Status.GPSSatsLocked = sats })
+		return tr.Derive(at, t0).GPS.Detail
+	}
+	// Wobbles of one or two do not change what is shown (and so cost no refresh).
+	for _, n := range []uint16{16, 17, 15, 18, 16, 17} {
+		if d := detail(n); d != "17 SAT" {
+			t.Fatalf("%d satellites shown as %q, want the steady 17 SAT", n, d)
+		}
+	}
+	// A real change of three or more is followed.
+	if d := detail(14); d != "14 SAT" {
+		t.Errorf("14 satellites -> %q", d)
+	}
+	if d := detail(13); d != "14 SAT" {
+		t.Errorf("13 (a wobble from 14) -> %q", d)
+	}
+	// Crossing the usable-solution line always shows the truth.
+	if d := detail(4); d != "4 SAT" {
+		t.Errorf("4 satellites -> %q", d)
+	}
+	d := func() Dashboard {
+		at = at.Add(5 * time.Second)
+		step(tr, at, func(s *Sample) { s.Status.GPSSatsLocked = 3 })
+		return tr.Derive(at, t0)
+	}()
+	if d.GPS.Detail != "3 SAT \u2022 LOW" {
+		t.Errorf("3 satellites -> %+v", d.GPS)
+	}
+}

@@ -214,3 +214,36 @@ func TestDecideDashboardStormGuardReleasesAfterQuiet(t *testing.T) {
 		t.Error("normal 30 s spacing not restored")
 	}
 }
+
+func TestDecideDashboardUrgentTransitionsSkipTheStormGuard(t *testing.T) {
+	// Engage the storm guard with a flapping input.
+	_, st := DecideDashboard(DashPolicyState{}, "s0", false, 30*time.Second, 20, t0)
+	now := t0
+	for i := 1; i <= 8; i++ {
+		now = now.Add(35 * time.Second)
+		_, st = DecideDashboard(st, "s"+string(rune('a'+i)), false, 30*time.Second, 20, now)
+	}
+	if !st.Storm {
+		t.Fatal("setup: storm guard should be engaged")
+	}
+	// An ordinary change 40 s later is held...
+	if k, _ := DecideDashboard(st, "ordinary", false, 30*time.Second, 20, now.Add(40*time.Second)); k != RefreshNone {
+		t.Errorf("ordinary change under the guard = %v", k)
+	}
+	// ...but entering NO STATUS DATA / FAULT (inverted banner) is not.
+	k, st2 := DecideDashboard(st, "nodata", true, 30*time.Second, 20, now.Add(40*time.Second))
+	if k != RefreshFull {
+		t.Errorf("entering an inverted banner under the guard = %v, want an immediate FULL", k)
+	}
+	// It is not repeatable at will: leave and re-enter within 5 minutes and
+	// the guard applies again.
+	_, st3 := DecideDashboard(st2, "ok", false, 30*time.Second, 20, now.Add(40*time.Second+180*time.Second))
+	if k, _ := DecideDashboard(st3, "fault-again", true, 30*time.Second, 20, now.Add(40*time.Second+180*time.Second+40*time.Second)); k != RefreshNone {
+		t.Errorf("second urgent entry inside %v = %v, want it held by the guard", DashboardUrgentSpacing, k)
+	}
+	// The 30 s floor still applies to an urgent entry.
+	_, base := DecideDashboard(DashPolicyState{}, "a", false, 30*time.Second, 20, t0)
+	if k, _ := DecideDashboard(base, "b", true, 30*time.Second, 20, t0.Add(10*time.Second)); k != RefreshNone {
+		t.Errorf("urgent entry inside the 30 s floor = %v", k)
+	}
+}

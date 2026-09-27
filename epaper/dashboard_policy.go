@@ -26,6 +26,10 @@ import "time"
 //     refreshes have happened inside DashboardStormWindow (a flapping
 //     input must not wear the panel), and (c) caps partial refreshes at
 //     DashboardMaxPartials between full ones.
+//     The one exception: the transition *into* an inverted banner (a fault or
+//     NO STATUS DATA) is urgent - a screen that cannot be confirmed current
+//     must not sit unchanged for up to 180 s - and skips the storm guard (never
+//     the 30 s floor), at most once per DashboardUrgentSpacing.
 //  5. A refresh is FULL (flashing, ghost-clearing) instead of partial if
 //     fullRefreshEvery partial refreshes have accumulated, if the last full
 //     refresh is older than DashboardFullMaxAge, or if the banner's
@@ -49,6 +53,9 @@ const (
 	// DashboardMaxPartials caps partial refreshes between full ones,
 	// whatever EpaperFullRefreshEvery says (vendor FAQ: 5).
 	DashboardMaxPartials = 5
+	// DashboardUrgentSpacing bounds how often the storm-guard exemption for
+	// entering a fault / no-data banner can be used.
+	DashboardUrgentSpacing = 5 * time.Minute
 )
 
 // DashPolicyState is what DecideDashboard carries between calls (memory
@@ -68,6 +75,8 @@ type DashPolicyState struct {
 	Recent []time.Time
 	// Storm says the storm guard is engaged.
 	Storm bool
+	// LastUrgentAt is when the storm-guard exemption was last used.
+	LastUrgentAt time.Time
 }
 
 // DecideDashboard implements the rules above. inverted says whether the
@@ -102,7 +111,9 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 	} else if st.Storm && len(recent) <= 2 {
 		st.Storm = false
 	}
-	if st.Storm && refreshInterval < DashboardStormSpacing {
+	urgent := inverted && !st.LastInverted && key != st.LastKey &&
+		(st.LastUrgentAt.IsZero() || now.Sub(st.LastUrgentAt) >= DashboardUrgentSpacing)
+	if st.Storm && !urgent && refreshInterval < DashboardStormSpacing {
 		refreshInterval = DashboardStormSpacing
 	}
 	changed := key != st.LastKey
@@ -117,6 +128,9 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 	full := st.Partials >= fullEvery || now.Sub(st.LastFullAt) >= DashboardFullMaxAge || inverted != st.LastInverted
 	st.LastKey, st.LastInverted, st.LastRefreshAt, st.NotBefore = key, inverted, now, time.Time{}
 	st.Recent = append(st.Recent, now)
+	if urgent {
+		st.LastUrgentAt = now
+	}
 	if full {
 		st.Partials, st.LastFullAt = 0, now
 		return RefreshFull, st

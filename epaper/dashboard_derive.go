@@ -178,6 +178,13 @@ type Tracker struct {
 	upMs         int64
 	upAdvancedAt time.Time
 
+	// satsShown is the satellite count the GPS tile displays. The real count
+	// wanders by one or two every minute or so; redrawing the panel for each
+	// wobble would spend refreshes on noise, so the shown count only follows
+	// the real one when it differs by three or more, or crosses zero or the
+	// four-satellite line that separates a usable solution from a poor one.
+	satsShown uint16
+
 	uatLastAt, esLastAt time.Time
 	wxLastAt            time.Time
 	uplinkLastAt        time.Time
@@ -219,6 +226,7 @@ func (t *Tracker) Observe(s Sample) {
 				t.uplinkLastAt = at
 			}
 		}
+		t.satsShown = shownSats(t.satsShown, st.GPSSatsLocked, !t.haveEP[epStatus])
 		t.status = st
 		t.okAt[epStatus] = at
 		t.haveEP[epStatus] = true
@@ -250,6 +258,21 @@ func (t *Tracker) StatusAge(now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	return now.Sub(t.okAt[epStatus]), true
+}
+
+// shownSats applies the satellite-count hysteresis described on satsShown.
+func shownSats(shown, actual uint16, first bool) uint16 {
+	if first {
+		return actual
+	}
+	diff := int(actual) - int(shown)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff >= 3 || (actual == 0) != (shown == 0) || (actual >= 4) != (shown >= 4) {
+		return actual
+	}
+	return shown
 }
 
 func (t *Tracker) resetHistory() {
@@ -496,7 +519,7 @@ func (t *Tracker) gpsTile(st StatusData) (Tile, string) {
 		}
 		switch {
 		case st.GPSSatsLocked >= 4:
-			tile.Headline, tile.Detail, tile.Level = "3D FIX", fmt.Sprintf("%d SAT%s", st.GPSSatsLocked, sbas), LevelOK
+			tile.Headline, tile.Detail, tile.Level = "3D FIX", fmt.Sprintf("%d SAT%s", t.satsShown, sbas), LevelOK
 			return tile, "GPS FIX"
 		case st.GPSSatsLocked > 0:
 			// The daemon's fix flag cannot tell 2D from 3D; fewer than
