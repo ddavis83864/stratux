@@ -166,7 +166,7 @@ bounded to 2 s.
 | Band reception | `/getStatus`: `ES_/UAT_messages_total`, `_messages_last_minute` | totals count *valid decoded* messages (uplinks failing Reed-Solomon are dropped before counting); `UAT` includes traffic and uplinks alike; volatile (lost on daemon restart) |
 | Uplink | `/getTowers`: entries with `Messages_last_minute > 0`; product counters | tower activity is a 60 s window over parsed uplinks; a single tower can flip to 0 during a brief fade (observed in the field) |
 | Weather products | `/getStatus`: `UAT_METAR/TAF/NEXRAD/SIGMET/PIREP/NOTAM/OTHER_total` | **frame counters, not distinct products**: a rebroadcast counts again, NEXRAD counts frames, WINDS counts as TAF, and age is *reception* age, not the age of the weather (a rebroadcast METAR looks new). Only increases are used |
-| Clients | `/getClients`: unique `Ip` among UDP connections whose `SleepFlag` is false | the daemon marks a connection asleep when its probe gets no answer for 10 s or an ICMP port-unreachable came back within 5 s (evaluated about once a second). Observed on the bench Pi: a laptop on the network with a UDP listener on 4000 had only its `:4000` connection awake (2000 and 49002 asleep) and counted as one client; with the listener stopped it went to zero within 2 s. So a client counts while something is actually listening on one of the daemon's GDL90 UDP ports - an EFB in the foreground. It still cannot say *which* app. A device that answers pings but has nothing listening (a laptop, a phone with the EFB closed) is flipped awake for ~5 s of every ~30 s by the daemon, so presence is judged over a **45 s hold**: a client counts until it has not been seen awake for 45 s. (Without the hold the footer, and so the panel, flapped 0 <-> 1 every 30 s on the bench: 22 material changes in the first five minutes of a boot, most of them this.) `Connected_Users` is **not** used - it counts every ping and pong seen in the last 15 minutes |
+| Clients | `/getClients`: unique `Ip` among UDP connections whose `SleepFlag` is false | the daemon marks a connection asleep when its probe gets no answer for 10 s or an ICMP port-unreachable came back within 5 s (evaluated about once a second) - this project's own pre-existing tracking (`main/network.go`), not this dashboard's. Observed on the bench Pi in one session: a laptop with a UDP listener on port 4000 counted as one client, and stopping the listener cleared it within seconds. Observed in a **later** session: the same daemon signal instead stayed "awake" for several minutes after the listener stopped, apparently because the daemon only re-evaluates a connection when it has something to send it - i.e. this upstream signal can also go stale, not just flap. Presence is judged over a **45 s hold** (a client counts until not seen awake for 45 s) to smooth the flapping case (bench: without it, 22 material changes in the first five minutes of one boot, most of them this) - the hold cannot fix the staleness case. The client count is therefore a best-effort, sometimes-laggy indicator, never real-time truth. `Connected_Users` is **not** used - it counts every ping and pong seen in the last 15 minutes |
 | Clock trust / CPU temp / failed units | `/getHealth`: `Time.State`, `System.CPUTempC`, `System.FailedServices` | as reported by readiness |
 | Power | `/getPowerHealth`: `undervoltageNow`, `throttledNow` | *current*, debounced bits only. `/getHealth`'s `UndervoltageDetected`/`Throttled` are sticky "since boot" and are deliberately not used. The transient-undervoltage investigation is on hold; this only consumes the existing status |
 
@@ -420,10 +420,12 @@ see "Physical validation" below for whether that retest happened and its result.
   no per-product validity time. `WX RX RECENT` means "a weather-product frame
   was decoded recently" - not that any product is current, that a cache is
   populated, that GDL90 0x07 was delivered, or that an EFB shows weather.
-* The client count is Wi-Fi presence: devices the daemon considers awake (something
-  listening on a GDL90 UDP port, or answering probes without an unreachable reply, held
-  for 45 s). It is not application identity and not GDL90 delivery, and it cannot see
-  TCP/serial/BLE clients.
+* The client count is Wi-Fi presence, held for 45 s, but the underlying signal is the
+  daemon's own pre-existing ping/pong/ICMP-unreachable tracking, which a later bench
+  session found can itself stay stale (reporting a device awake for several minutes
+  after it stops listening) as well as flap briefly - see the mapping table above. It
+  is not application identity, not GDL90 delivery, not always current, and it cannot
+  see TCP/serial/BLE clients.
 * 2D vs 3D fix is not distinguishable from the daemon's status.
 * The Go fonts have a slashed zero; `1090` and `978` read with a slashed 0 on
   the panel. Deliberate and legible.
