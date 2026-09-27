@@ -30,9 +30,14 @@ frames enlarged for reading.)*
 3. **Never stale-but-live.** E-paper keeps its image, so the panel actively
    shows `NO STATUS DATA` (and every tile `UNKNOWN`) when current data cannot
    be confirmed, instead of leaving the last good frame up.
-4. **One bit, no shading.** State is carried by words and glyphs (a fault
-   `X`, a warning triangle, a `?`), a thicker border, and an inverted
-   (white-on-black) banner for the two worst states. Nothing depends on grey.
+4. **One bit, no shading, no large solid fills.** State is carried by words
+   and glyphs (a fault `X`, a warning triangle, a `?`) and border weight - a
+   thicker border for degraded, a double-stroked border for the two worst
+   states. Nothing depends on grey, and nothing fills a large area solid
+   black: an earlier design inverted the whole banner to white-on-black for
+   the two worst states, but that large a fill visibly ghosted on the bench
+   panel and two refresh-policy mitigations did not fix it (see "Physical
+   validation" below) - the design was changed instead of the hardware.
 5. **Truthful about what is unknown.** An unavailable client count reads
    `CLIENTS UNKNOWN`; an untrusted clock is never shown as a time of day.
 
@@ -59,8 +64,8 @@ nothing is drawn clipped, and a test proves it for every state.
 | `RECEIVER ONLINE` | The Stratux service is up and answering with current data, no subsystem tile is failing or warning, and no device-health warning is active. **It does not mean GPS, both radios, FIS-B or any client is working** - the tiles and subtitle say what is. | broadcast pictogram |
 | `STARTING` | The daemon's own uptime is under 90 s (or the display service is waiting for its first reading). Subsystems not up yet read `STARTING`, not failed - and a band that reads "disabled" during this period (the daemon has not evaluated its radios yet; seen for ~90 s on the bench) reads `STARTING` too. | hourglass |
 | `RECEIVER DEGRADED` | Online, but something needs attention: GPS has no fix or only dead reckoning, a fix with fewer than 4 satellites, a status source unavailable, or an active power/thermal/service warning. | warning triangle, heavy border |
-| `RECEIVER FAULT` | A receiver is missing or its decoder is not running (GPS receiver disconnected, 1090 or 978 radio not detected, SDR conflict/ambiguity). | inverted banner, `X` |
-| `NO STATUS DATA` | Current data cannot be confirmed: `/getStatus` has been unreachable for more than 20 s, or it answers but its uptime has stopped advancing for 15 s (the daemon's status loop is wedged). Every tile is `UNKNOWN`. | inverted banner, `?` |
+| `RECEIVER FAULT` | A receiver is missing or its decoder is not running (GPS receiver disconnected, 1090 or 978 radio not detected, SDR conflict/ambiguity). | double-stroked border, `X` |
+| `NO STATUS DATA` | Current data cannot be confirmed: `/getStatus` has been unreachable for more than 20 s, or it answers but its uptime has stopped advancing for 15 s (the daemon's status loop is wedged). Every tile is `UNKNOWN`. | double-stroked border, `?` |
 
 Subtitle tokens (in fixed order `GPS • 1090 • 978`): `GPS FIX`, `GPS FIX LOW`,
 `NO GPS FIX`, `GPS DR ONLY`, `GPS OFFLINE`; `1090|978 ACTIVE`, `QUIET`,
@@ -207,28 +212,18 @@ FAQ says after 5; refresh at least every 24 h):
   drained to 2 or fewer. (Measured on the bench panel: a normal boot uses 5-6
   refreshes in its first four minutes, so a lower threshold engaged the guard
   on every boot and held real changes back for minutes.) A flip of the banner
-  between normal and inverted (`RECEIVER FAULT` / `NO STATUS DATA` appearing
-  **or clearing**) is exempt (never from the 30 s floor), at most 4 times per
-  10 minutes: a screen that cannot be confirmed current - or that still shows
-  an alarm that has passed - must not sit unchanged for up to 3 minutes.
-  Otherwise a short-lived state can be coalesced away entirely (a 10 s daemon
-  restart may never draw `STARTING`);
+  between normal and **severe** (`RECEIVER FAULT` / `NO STATUS DATA`
+  appearing **or clearing**) is exempt (never from the 30 s floor), at most 4
+  times per 10 minutes: a screen that cannot be confirmed current - or that
+  still shows an alarm that has passed - must not sit unchanged for up to 3
+  minutes. Otherwise a short-lived state can be coalesced away entirely (a
+  10 s daemon restart may never draw `STARTING`);
 * a **proof-of-life partial refresh** every 10 minutes if nothing changed, so
   the footer time keeps proving the service is alive (6 per hour);
 * at most **5 partial refreshes** between full ones (whatever
-  `EpaperFullRefreshEvery` says), and a full refresh at least every 4 h;
-* **every refresh is full while the banner is inverted** (`RECEIVER FAULT` /
-  `NO STATUS DATA`), not only the flip into or out of it, **and is preceded by
-  a Clear()** (a genuine blank, full-refresh baseline - the same step the
-  driver already does at panel init/page-switch time, and the owner confirmed
-  it redraws clean). Found on the bench in two rounds: (1) a content-only
-  change while still inverted - the "NO DATA FOR ..." bucket advancing - was
-  drawn as a *partial* refresh and left the whole screen visibly ghosted;
-  marking every refresh full while inverted did not fully fix it - (2) even a
-  *full* refresh straight onto existing panel content was not enough for the
-  banner's large solid black fill (confirmed by owner re-test); a plain page
-  switch (Init -> Clear -> draw) on the very same panel redrew clean, so every
-  full refresh while inverted now reuses that same Clear-first sequence.
+  `EpaperFullRefreshEvery` says), and a full refresh at least every 4 h, and
+  whenever the banner flips between normal and severe (a large content change
+  deserves a clean refresh, whatever else changed);
 * refreshes never overlap (single goroutine; the poller runs separately and a
   hung request cannot delay a decision), and a failed panel update is reported
   in the service health and retried once per interval, not once per poll.
@@ -345,7 +340,7 @@ The panel *content* for these was not looked at by a person.
 | GDL90 (passive client) | full message mix (0x00 heartbeat 60/min, 0x0A, 0x0B, 0x14, 0x4C, 0x53, 0x65, 0xCC) at normal rates, same IDs as the pre-install baseline |
 
 **Not validated on hardware (only by tests and previews):** the boot-splash ->
-dashboard hand-over as seen by eye, the inverted `NO STATUS DATA` / `RECEIVER
+dashboard hand-over as seen by eye, the `NO STATUS DATA` / `RECEIVER
 FAULT` banners and every warning/degraded/fault look, GPS fix loss and recovery,
 978 radio removal and reconnection, FIS-B states (there is no live uplink on the
 bench: `NO UPLINK` is what the panel showed; the other states were exercised
@@ -358,7 +353,7 @@ not run. No simulated telemetry was sent to the daemon, ForeFlight or any live d
 1. The storm guard engaged on every boot (6 refreshes in 10 minutes) and held real
    changes back for minutes: threshold raised to 10 in 10 minutes.
 2. It could equally delay `NO STATUS DATA`: flips of the banner into or out of
-   the inverted state are exempt (never from the 30 s floor), at most 4 per 10 minutes.
+   a severe state are exempt (never from the 30 s floor), at most 4 per 10 minutes.
 3. After a daemon restart (uptime falls to near zero) the "frozen status loop" check
    misread the first reading as frozen: any change of uptime now counts as life.
 4. A configuration change that re-initialised the panel left the refresh policy
@@ -376,6 +371,48 @@ and rolled back with `could not write disable marker: open
 reported success; the SD card showed no I/O errors, the Pi stayed on the previous
 build); a retry of the identical package succeeded. That is the existing OTA
 overlay-handling path, unrelated to this change, and was not investigated further.
+
+## Ghosting investigation and design change (bench Pi, session 2)
+
+During the "NO STATUS DATA + recovery" acceptance check (owner watching the panel,
+daemon stopped/restarted per the usual supervised outage procedure), the owner
+reported the panel showing "doubled images... cluttered" - confirmed on follow-up
+as ghosting (faint remnants of the previous frame visible under the new one),
+affecting the whole screen. This was a real defect, reproduced and root-caused
+before any further sign-off, not waved past:
+
+1. **First fix attempt** (commit `17ee3df0`): every refresh was forced full while
+   the banner was inverted (previously it could still be partial after the first
+   one). Owner-retested: **ghosting still present**.
+2. **Second fix attempt** (commit `5826446c`): every full refresh onto the
+   inverted banner was preceded by a genuine `Clear()` (a blank, full-refresh
+   baseline) - the same step already proven clean by a plain page switch on the
+   same panel. Owner-retested a third time: **ghosting still present**.
+3. **Isolation test**: with the panel still showing dashboard-induced ghosting,
+   the page was switched to the legacy plain-text status page (no code change,
+   just `EpaperPage=overview`) and the *same* daemon-outage procedure was not
+   needed to observe it - the switch itself is a full Init -> Clear -> draw
+   cycle. Owner-confirmed: **the legacy page redrew clean**. This isolates the
+   defect to the dashboard's own content (the shared panel driver and the panel
+   itself are not the problem) - specifically, the large solid black fill the
+   inverted banner used, which is exactly the kind of content the legacy text
+   pages never draw.
+4. **Actual fix**: the renderer no longer fills the banner solid at all for
+   `RECEIVER FAULT` / `NO STATUS DATA` (`dashboard_render.go`'s `banner()`).
+   Severity is carried by border weight instead - a double-stroked border for
+   these two states, matching the existing "no shading, state carried by words
+   and glyphs" design rule rather than fighting the hardware to make a large
+   fill work. The refresh-policy mitigations from attempts 1 and 2 (forcing every
+   refresh full while severe, and the `Clear()`-first step) are removed along
+   with the trigger they were compensating for; a normal-vs-severe *flip* still
+   gets a prompt full refresh (unrelated to the fill and unaffected by any of
+   this).
+
+This is recorded as a defect that reached an owner-witnessed hardware check, was
+reproduced on request rather than assumed, needed two failed mitigations before
+the actual (content-level, not policy-level) cause was isolated by a targeted
+comparison test, and is not claimed fixed here without a further owner retest -
+see "Physical validation" below for whether that retest happened and its result.
 
 ## Known limitations
 

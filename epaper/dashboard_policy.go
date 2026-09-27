@@ -26,26 +26,28 @@ import "time"
 //     (10) refreshes have happened inside DashboardStormWindow (a flapping
 //     input must not wear the panel), and (c) caps partial refreshes at
 //     DashboardMaxPartials between full ones.
-//     The one exception: a flip of the big banner between normal and
-//     inverted (a fault or NO STATUS DATA appearing - or clearing) is
-//     urgent: a screen that cannot be confirmed current, or that shows an
-//     alarm that has passed, must not sit unchanged for up to 180 s. Urgent
-//     refreshes skip the storm guard (never the 30 s floor), at most
+//     The one exception: a flip of the banner between normal and severe
+//     (a fault or NO STATUS DATA appearing - or clearing) is urgent: a
+//     screen that cannot be confirmed current, or that shows an alarm that
+//     has passed, must not sit unchanged for up to 180 s. Urgent refreshes
+//     skip the storm guard (never the 30 s floor), at most
 //     DashboardUrgentMax per DashboardStormWindow, so an outage and its
 //     recovery both show promptly while a flapping fault cannot bypass the
 //     guard.
-//  5. Ghosting-critical content: the inverted (fault / NO STATUS DATA) banner
-//     is a large solid black fill, and a *partial* refresh's weaker waveform
-//     visibly ghosts on a fill that size (seen on the bench panel: a
-//     content-only change - the "NO DATA FOR ..." bucket advancing - drawn
-//     partial while still inverted left the whole screen looking smudged/
-//     doubled). Every refresh while the current frame is inverted is
-//     therefore always FULL, not only the transition into or out of it.
-//  6. A refresh is FULL (flashing, ghost-clearing) instead of partial if
+//  5. A refresh is FULL (flashing, ghost-clearing) instead of partial if
 //     fullRefreshEvery partial refreshes have accumulated, if the last full
-//     refresh is older than DashboardFullMaxAge, or if the banner's
-//     black/white inversion changed (a large-area polarity change ghosts
-//     badly on a partial waveform).
+//     refresh is older than DashboardFullMaxAge, or if the banner flipped
+//     between normal and severe.
+//
+// An earlier revision of rule 5 also forced every refresh full for as long
+// as the banner stayed severe, and (in epaper_main) did a full hardware
+// Clear() before each one - both were mitigations for a large solid-black
+// "inverted" banner fill that the renderer used for FAULT/NO STATUS DATA at
+// the time. Owner-witnessed on the bench panel, neither mitigation actually
+// fixed the ghosting a fill that size caused; the renderer no longer fills
+// the banner solid at all (severity is carried by border weight instead -
+// see dashboard_render.go's banner()), which removes the trigger, so this
+// policy no longer needs to compensate for it.
 const (
 	// DashboardHeartbeat: the longest a healthy, unchanging dashboard goes
 	// without a refresh (6 per hour, negligible wear).
@@ -82,7 +84,7 @@ const (
 // only; nothing is written to disk).
 type DashPolicyState struct {
 	LastKey       string
-	LastInverted  bool
+	LastSevere    bool
 	LastRefreshAt time.Time
 	LastFullAt    time.Time
 	Partials      int // since the last full refresh
@@ -99,14 +101,17 @@ type DashPolicyState struct {
 	Urgent []time.Time
 }
 
-// DecideDashboard implements the rules above. inverted says whether the
-// current frame has an inverted (white-on-black) banner.
-func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInterval time.Duration, fullEvery int, now time.Time) (RefreshKind, DashPolicyState) {
+// DecideDashboard implements the rules above. severe says whether the
+// current frame's banner is one of the two most serious states (FAULT or
+// NO STATUS DATA) - a flip of this flag always gets a prompt full refresh
+// (rule 4), but it no longer implies anything about how the frame is
+// rendered (see the package-level doc comment).
+func DecideDashboard(st DashPolicyState, key string, severe bool, refreshInterval time.Duration, fullEvery int, now time.Time) (RefreshKind, DashPolicyState) {
 	if now.Before(st.NotBefore) {
 		return RefreshNone, st
 	}
 	if !st.Has {
-		return RefreshFull, DashPolicyState{LastKey: key, LastInverted: inverted, LastRefreshAt: now, LastFullAt: now, Has: true, Recent: []time.Time{now}}
+		return RefreshFull, DashPolicyState{LastKey: key, LastSevere: severe, LastRefreshAt: now, LastFullAt: now, Has: true, Recent: []time.Time{now}}
 	}
 	if refreshInterval < DashboardMinInterval {
 		refreshInterval = DashboardMinInterval
@@ -138,7 +143,7 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 		}
 	}
 	st.Urgent = urgentRecent
-	urgent := inverted != st.LastInverted && key != st.LastKey && len(urgentRecent) < DashboardUrgentMax
+	urgent := severe != st.LastSevere && key != st.LastKey && len(urgentRecent) < DashboardUrgentMax
 	if st.Storm && !urgent && refreshInterval < DashboardStormSpacing {
 		refreshInterval = DashboardStormSpacing
 	}
@@ -151,8 +156,8 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 		return RefreshNone, st
 	}
 
-	full := st.Partials >= fullEvery || now.Sub(st.LastFullAt) >= DashboardFullMaxAge || inverted != st.LastInverted || inverted
-	st.LastKey, st.LastInverted, st.LastRefreshAt, st.NotBefore = key, inverted, now, time.Time{}
+	full := st.Partials >= fullEvery || now.Sub(st.LastFullAt) >= DashboardFullMaxAge || severe != st.LastSevere
+	st.LastKey, st.LastSevere, st.LastRefreshAt, st.NotBefore = key, severe, now, time.Time{}
 	st.Recent = append(st.Recent, now)
 	if urgent {
 		st.Urgent = append(st.Urgent, now)

@@ -95,26 +95,25 @@ func TestDecideDashboardMaxFullAgeAndInversion(t *testing.T) {
 			t.Fatalf("heartbeat kinds = %v, want %v", kinds, want)
 		}
 	}
-	// A polarity change of the big banner is always a full refresh, and so
-	// is every later refresh while it stays inverted (ghosting on the large
-	// solid fill - see TestDecideDashboardStaysFullWhileInverted).
+	// A flip of the banner between normal and severe is always a full
+	// refresh (both directions), but a later change while it STAYS severe
+	// is an ordinary partial (there is no longer a large solid fill to
+	// protect against - see the package doc comment's history note).
 	k, st2 := DecideDashboard(st, "fault", true, iv, 200, now.Add(time.Minute))
 	if k != RefreshFull {
-		t.Errorf("banner inversion = %v, want FULL", k)
+		t.Errorf("severity flip = %v, want FULL", k)
 	}
 	k, _ = DecideDashboard(st2, "fault2", true, iv, 200, now.Add(2*time.Minute))
-	if k != RefreshFull {
-		t.Errorf("change while still inverted = %v, want FULL", k)
+	if k != RefreshPartial {
+		t.Errorf("change while still severe = %v, want PARTIAL", k)
 	}
-	// Leaving inverted (from st2, which IS inverted) is also a polarity
-	// flip: full. Once back to normal, later changes are partial again.
 	k, st4 := DecideDashboard(st2, "recovered", false, iv, 200, now.Add(3*time.Minute))
 	if k != RefreshFull {
-		t.Errorf("leaving inverted = %v, want FULL", k)
+		t.Errorf("leaving severe = %v, want FULL", k)
 	}
 	k, _ = DecideDashboard(st4, "ok-again", false, iv, 200, now.Add(4*time.Minute))
 	if k != RefreshPartial {
-		t.Errorf("normal change after leaving inverted = %v, want PARTIAL", k)
+		t.Errorf("normal change after leaving severe = %v, want PARTIAL", k)
 	}
 }
 
@@ -295,28 +294,8 @@ func TestDecideDashboardNormalStartupDoesNotEngageTheStormGuard(t *testing.T) {
 	}
 }
 
-// Found on the bench: a NO STATUS DATA frame is a large solid black fill;
-// drawing a subsequent content-only change (the "NO DATA FOR ..." bucket
-// advancing) as a partial refresh left visible whole-screen ghosting. Every
-// refresh must be full while the banner is inverted, not only the flip
-// into or out of it.
-func TestDecideDashboardStaysFullWhileInverted(t *testing.T) {
-	iv := 30 * time.Second
-	_, st := DecideDashboard(DashPolicyState{}, "online", false, iv, 20, t0)
-	// Enter NO STATUS DATA: urgent, full (already covered elsewhere).
-	k, st2 := DecideDashboard(st, "nodata-20s", true, iv, 20, t0.Add(40*time.Second))
-	if k != RefreshFull {
-		t.Fatalf("entering inverted = %v", k)
-	}
-	// The bucket text changes (still inverted, still a material change,
-	// nowhere near the partial cap or the max full age): must still be FULL.
-	k, st3 := DecideDashboard(st2, "nodata-1min", true, iv, 20, t0.Add(75*time.Second))
-	if k != RefreshFull {
-		t.Fatalf("content-only change while still inverted = %v, want FULL (ghosting risk)", k)
-	}
-	// And again, once more.
-	k, _ = DecideDashboard(st3, "nodata-5min", true, iv, 20, t0.Add(110*time.Second))
-	if k != RefreshFull {
-		t.Fatalf("second content-only change while still inverted = %v, want FULL", k)
-	}
-}
+// A rendering-level fix (dashboard_render.go's banner() no longer fills the
+// banner solid for FAULT/NO STATUS DATA) replaced an earlier policy-level
+// mitigation that forced every refresh full for as long as the banner
+// stayed severe; that policy behavior is gone (see
+// TestDecideDashboardMaxFullAgeAndInversion, "change while still severe").

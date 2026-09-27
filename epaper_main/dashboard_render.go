@@ -125,21 +125,27 @@ func (p *painter) header(d epaper.Dashboard) {
 	fillRect(p.img, image.Rect(dashMargin, headerRuleY, dashW-dashMargin, headerRuleY+2), inkBlack)
 }
 
+// banner never fills a large area solid black. An earlier design inverted
+// the whole banner (white on black) for RECEIVER FAULT / NO STATUS DATA;
+// owner-witnessed on the bench panel (three rounds, including two refresh-
+// policy fixes - always-full-while-inverted, then Clear()-before-every-
+// redraw), that large a solid fill visibly ghosts on this panel regardless
+// of refresh policy. Severity is carried by border weight instead: a
+// double-stroked border for the two most serious states, a single thicker
+// one for degraded, matching this design's own "no shading, state carried by
+// words and glyphs" rule (see the doc's Design rules) rather than fighting
+// the hardware to make a large fill work.
 func (p *painter) banner(d epaper.Dashboard) {
-	inverted := d.Overall == epaper.OverallFault || d.Overall == epaper.OverallNoData
 	x0, y0, x1, y1 := dashMargin, bannerTop, dashW-dashMargin, bannerBot
-	fg, bg := uint8(inkBlack), uint8(inkWhite)
-	if inverted {
-		fg, bg = inkWhite, inkBlack
-		fillRoundRect(p.img, x0, y0, x1, y1, 7, inkBlack)
-	} else {
-		thick := 2
-		if d.Overall == epaper.OverallDegraded {
-			thick = 3
-		}
-		strokeRoundRect(p.img, x0, y0, x1, y1, 7, thick, inkBlack)
+	switch d.Overall {
+	case epaper.OverallFault, epaper.OverallNoData:
+		strokeRoundRect(p.img, x0, y0, x1, y1, 7, 3, inkBlack)
+		strokeRoundRect(p.img, x0+5, y0+5, x1-5, y1-5, 4, 2, inkBlack)
+	case epaper.OverallDegraded:
+		strokeRoundRect(p.img, x0, y0, x1, y1, 7, 3, inkBlack)
+	default:
+		strokeRoundRect(p.img, x0, y0, x1, y1, 7, 2, inkBlack)
 	}
-	_ = bg
 
 	const isz = 46
 	iy := y0 + (y1-y0-isz)/2
@@ -151,16 +157,16 @@ func (p *painter) banner(d epaper.Dashboard) {
 	case epaper.OverallDegraded:
 		blitIcon(p.img, iconWarn(isz, 0.11), x0+14, iy, isz, false)
 	case epaper.OverallFault:
-		blitIcon(p.img, iconFault(isz), x0+14, iy, isz, true)
+		blitIcon(p.img, iconFault(isz), x0+14, iy, isz, false)
 	default:
-		blitIcon(p.img, iconUnknown(isz), x0+14, iy, isz, true)
+		blitIcon(p.img, iconUnknown(isz), x0+14, iy, isz, false)
 	}
 
 	tx := x0 + 14 + isz + 14
 	box := image.Rect(tx, y0+6, x1-12, y0+44)
-	p.text("banner", styleBanner, d.OverallTxt, box, y0+40, false, fg, 0.66, 20)
+	p.text("banner", styleBanner, d.OverallTxt, box, y0+40, false, inkBlack, 0.66, 20)
 	sub := image.Rect(tx, y0+46, x1-12, y1-6)
-	p.text("subtitle", styleSubtitle, d.Subtitle, sub, y1-11, false, fg, 0.72, 9)
+	p.text("subtitle", styleSubtitle, d.Subtitle, sub, y1-11, false, inkBlack, 0.72, 9)
 }
 
 func (p *painter) tile(t epaper.Tile, x, y int, icon *vcanvas) {
