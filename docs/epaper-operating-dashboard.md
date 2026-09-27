@@ -97,7 +97,17 @@ Subtitle tokens (in fixed order `GPS • 1090 • 978`): `GPS FIX`, `GPS FIX LOW
 For 978 the **live** `UATRadio_connected` flag (external low-power UAT radio)
 decides the hardware side; otherwise the SDR assignment/decoder fields do.
 
-**FIS-B WX** - distinguishes the five things that are easy to confuse.
+**FIS-B WX** - reports *reception by this unit's 978 radio*, and nothing more.
+
+> **What this tile does not say.** A rising FIS-B product counter proves that
+> uplink frames carrying weather-product IDs were decoded. It does **not**
+> prove a populated rolling cache, weather that is fresh or usable, GDL90 0x07
+> delivery to any client, or that ForeFlight (or any EFB) is displaying
+> weather. No state on this screen says or implies "weather available" or
+> "weather current"; the headlines describe what the radio did (`WX RX ...`),
+> and a test guards the wording. Live FIS-B acceptance (populated cache,
+> current products, 0x07 delivery, EFB weather) is a separate gate, PR #15's,
+> and is not affected by this screen.
 
 | Headline / detail | Meaning |
 |---|---|
@@ -106,23 +116,27 @@ decides the hardware side; otherwise the SDR assignment/decoder fields do.
 | `NO UPLINK` / `AWAITING GROUND STATION` | no ground-station uplink seen (reference state) |
 | `NO UPLINK` / `NONE IN LAST MIN` | towers have been heard earlier, none in the last minute |
 | `UPLINK LOST` / `LAST <5 MIN AGO` | an uplink was seen this run and has been silent more than 2 min |
-| `UPLINK` / `NO WX PRODUCTS YET` | ground station heard, no weather product frame decoded yet |
-| `UPLINK` or `NO UPLINK NOW` / `WX AGE UNKNOWN` | products were decoded before the display service began watching; their age cannot be known, so they are **not** shown as current |
-| `WX CURRENT` / `NEWEST <2 MIN AGO` | a weather product frame decoded within 5 min |
-| `WX AGING` | newest weather frame 5-15 min old |
-| `WX STALE` | newest weather frame more than 15 min old (uplink still being heard does not change this) |
+| `UPLINK` / `NO WX FRAMES YET` | ground station heard, no weather-product frame decoded yet |
+| `UPLINK` or `NO UPLINK NOW` / `RX AGE UNKNOWN` | product frames were decoded before the display service began watching; when is unknowable, so no recency is claimed |
+| `WX RX RECENT` / `LAST FRAME <2 MIN AGO` | a weather-product frame was decoded within the last 5 min |
+| `WX RX AGING` / `LAST FRAME <15 MIN AGO` | newest such frame 5-15 min old |
+| `WX RX STALE` / `LAST FRAME <30 MIN AGO` | newest such frame more than 15 min old (uplink still being heard does not change this) |
 | `UNKNOWN` / `UPLINK STATUS ?` | tower data unavailable |
 
-Weather is judged from METAR, TAF (includes winds aloft), NEXRAD, SIGMET and
-PIREP product frames; NOTAM and "Other" frames prove an uplink but not
-weather. The tile is driven by *live* counter increases only - it never
-reads, and so can never present, cached weather.
+Frames are METAR, TAF (includes winds aloft), NEXRAD, SIGMET and PIREP product
+counters; NOTAM and "Other" frames prove an uplink but not weather. The tile is
+driven by *live* counter increases only - it never reads a cache, so it cannot
+present cached weather - and the age is the age of the newest *frame*, not of
+any weather (a rebroadcast METAR looks new).
 
 ## Footer
 
-* **Clients**: `NO CLIENTS CONNECTED`, `1 CLIENT CONNECTED`,
-  `N CLIENTS CONNECTED`, or `CLIENTS UNKNOWN` when `/getClients` is
-  unavailable. See the limitation below.
+* **Clients**: `NO CLIENTS ON WI-FI`, `1 CLIENT ON WI-FI`,
+  `N CLIENTS ON WI-FI`, or `CLIENTS UNKNOWN` when `/getClients` is
+  unavailable: devices on the Stratux Wi-Fi that the daemon currently
+  considers awake (mapping table below). This is network presence only - not
+  that any of them is receiving GDL90, that an EFB is running, or that it shows
+  anything - and the wording deliberately does not say "connected".
 * **Update time**: `UPDATED 12:42Z` (UTC) **only** when `/getHealth` reports
   the clock trusted (`GNSS_SYNCED` / `NETWORK_SYNCED`); otherwise
   `UPDATED UP 01:04` (hours:minutes since Stratux started - the Pi has no
@@ -166,7 +180,7 @@ displays.
 | Startup grace | 90 s of daemon uptime | radios and GPS legitimately take that long |
 | Band `ACTIVE` | message in last 60 s | the daemon's own receiving window (`receivingFreshness`) |
 | Uplink recent | 2 min | ground stations transmit about once a second; rides through a fade without flapping |
-| Weather `CURRENT` / `AGING` / `STALE` | 5 / 15 min | FIS-B products repeat every ~5 min (METAR, radar, SIGMET) to ~10 min (TAF, winds, PIREP, NOTAM) |
+| Weather-frame reception `RECENT` / `AGING` / `STALE` | 5 / 15 min | FIS-B products repeat every ~5 min (METAR, radar, SIGMET) to ~10 min (TAF, winds, PIREP, NOTAM) |
 | `HOT` warning | CPU >= 80 C | the Pi begins thermal throttling at 80 C |
 
 Ages are shown as coarse bounds (`<2`, `<5`, `<15`, `<30`, `<1 HR`, `1 HR+`)
@@ -222,7 +236,7 @@ unchanged; the dashboard's first frame is its `STARTING` screen.
 | 978 radio unplugged / replugged | `NO RADIO` + FIS-B `NO RECEIVER` + `RECEIVER FAULT`; back to `CONNECTED` on reconnect |
 | GPS fix lost / regained | `NO FIX` + `DEGRADED`; back to `3D FIX` |
 | First 978 message | `CONNECTED / NO MESSAGES YET` -> `ACTIVE` |
-| FIS-B arrives / stops | `UPLINK` -> `WX CURRENT` -> `WX AGING` -> `WX STALE` |
+| FIS-B arrives / stops | `UPLINK` -> `WX RX RECENT` -> `WX RX AGING` -> `WX RX STALE` |
 | Client connects / disconnects | footer count changes (a material change) |
 | Panel disconnected | `epaperd` reports `NOT_DETECTED` in its health as before; nothing else is affected |
 | Renderer/poller bug | recovered per cycle; reported as an error category, never a crash |
@@ -274,6 +288,21 @@ Preview index: `01-startup`, `02-reference`, `03-fully-receiving`,
 `04-no-gps-fix`, `05-978-disconnected`, `06-fisb-stale`,
 `07-status-unavailable`, `08-health-warning`, `09-uplink-no-products`,
 `10-clock-untrusted`, `11-1090-down-fault`, `12-worst-case-text`.
+
+## Acceptance aids (read-only, isolated)
+
+* `epaperd -preview-png FILE` shows a 400 x 300 PNG on the panel once and exits
+  (Init -> Clear -> full refresh -> Sleep, then releases SPI/GPIO). It exists so an
+  owner can review warning / degraded / fault / no-data frames that cannot be produced
+  safely on a live unit: feed it the goldens in `epaper_main/testdata/dashboard/`.
+  It touches only the panel - it reads nothing from and sends nothing to the Stratux
+  daemon, GDL90 or any EFB - and, like `-splash`, refuses to run while the
+  `stratux_epaper` service owns the panel (stop the service first, or pass
+  `-splash-force`). Uses `-splash-panel` / `-splash-rotation` (0 or 180). Afterwards
+  `systemctl start stratux_epaper` redraws the live dashboard from scratch.
+* `EPAPER_LIVE_URL=http://192.168.10.1 go test ./epaper_main -run TestLiveDashboardFromDevice -v`
+  renders what the panel should show from a real daemon's APIs (GETs only);
+  `EPAPER_LIVE_WATCH=<seconds>` with `TestLiveWatchDashboard` logs each material change.
 
 ## Physical validation (bench Pi, 2026-09-27)
 
@@ -340,12 +369,14 @@ overlay-handling path, unrelated to this change, and was not investigated furthe
 
 ## Known limitations
 
-* Weather freshness is *reception* age from frame counters; the daemon exposes
-  no per-product validity time. `WX CURRENT` means "a weather product frame
-  arrived recently", not "every product is current".
-* The client count is "something is listening on a GDL90 UDP port and answering probes"
-  (above), not application identity: it cannot say whether that is ForeFlight, and it
-  cannot see TCP/serial/BLE clients. A backgrounded EFB that stops listening drops out.
+* The FIS-B tile is *reception* age from frame counters; the daemon exposes
+  no per-product validity time. `WX RX RECENT` means "a weather-product frame
+  was decoded recently" - not that any product is current, that a cache is
+  populated, that GDL90 0x07 was delivered, or that an EFB shows weather.
+* The client count is Wi-Fi presence: devices the daemon considers awake (something
+  listening on a GDL90 UDP port, or answering probes without an unreachable reply, held
+  for 45 s). It is not application identity and not GDL90 delivery, and it cannot see
+  TCP/serial/BLE clients.
 * 2D vs 3D fix is not distinguishable from the daemon's status.
 * The Go fonts have a slashed zero; `1090` and `978` read with a slashed 0 on
   the panel. Deliberate and legible.

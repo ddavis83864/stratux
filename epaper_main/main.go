@@ -63,6 +63,7 @@ func main() {
 	splashForce := flag.Bool("splash-force", false, "with -splash: skip the check that the epaperd service is not running")
 	splashBoot := flag.Bool("splash-boot", false, "boot mode: render the ARS splash once if EpaperEnabled in the config file says so, then exit (run by stratux_epaper_splash.service)")
 	splashShutdown := flag.Bool("splash-shutdown", false, "shutdown mode: on an orderly power-off or halt (never a reboot or a plain service stop), render the ARS splash once if EpaperEnabled in the config file says so, then exit (run by stratux_epaper_shutdown.service)")
+	previewPNG := flag.String("preview-png", "", "acceptance aid: show this 400x300 PNG on the panel once and exit (needs the epaperd service stopped, or -splash-force); uses -splash-panel and -splash-rotation; see docs/epaper-operating-dashboard.md")
 	bootConfig := flag.String("splash-config", defaultBootConfigPath, "with -splash-boot or -splash-shutdown: stratux.conf to read EpaperEnabled/EpaperPanel/EpaperRotation from")
 	flag.Parse()
 
@@ -76,6 +77,10 @@ func main() {
 
 	if *splashBoot {
 		os.Exit(runSplashBootCommand(*bootConfig))
+	}
+
+	if *previewPNG != "" {
+		os.Exit(runPreviewCommand(*previewPNG, *splashPanel, *splashRotation, *splashForce))
 	}
 
 	if *splashOnce {

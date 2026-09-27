@@ -92,7 +92,7 @@ func TestDashSourceParsesRealPiPayloads(t *testing.T) {
 	if d.Overall != epaper.OverallOnline || d.GPS.Headline != "3D FIX" || d.GPS.Detail != "14 SAT" ||
 		d.ES.Headline != "QUIET" && d.ES.Headline != "ACTIVE" ||
 		d.UAT.Headline != "CONNECTED" || d.UAT.Detail != "NO MESSAGES YET" ||
-		d.FISB.Headline != "NO UPLINK" || d.Clients != "NO CLIENTS CONNECTED" {
+		d.FISB.Headline != "NO UPLINK" || d.Clients != "NO CLIENTS ON WI-FI" {
 		t.Errorf("real payloads -> %+v", d)
 	}
 }

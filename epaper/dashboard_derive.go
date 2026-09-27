@@ -491,11 +491,11 @@ func (t *Tracker) Derive(now, wall time.Time) Dashboard {
 		}
 		switch n {
 		case 0:
-			d.Clients = "NO CLIENTS CONNECTED"
+			d.Clients = "NO CLIENTS ON WI-FI"
 		case 1:
-			d.Clients = "1 CLIENT CONNECTED"
+			d.Clients = "1 CLIENT ON WI-FI"
 		default:
-			d.Clients = fmt.Sprintf("%d CLIENTS CONNECTED", n)
+			d.Clients = fmt.Sprintf("%d CLIENTS ON WI-FI", n)
 		}
 	} else {
 		d.Clients = "CLIENTS UNKNOWN"
@@ -671,6 +671,12 @@ func (t *Tracker) uatTile(now time.Time, st StatusData) (Tile, string) {
 	return t.bandTile(now, "978 UAT", "978", st.UAT, uatHW(st.UAT), t.uatLastAt, "MESSAGES RECEIVED")
 }
 
+// fisbTile reports FIS-B *reception*, and nothing more. A rising product
+// counter proves that uplink frames carrying weather-product IDs were
+// decoded; it does not prove a populated cache, weather that is fresh or
+// usable, GDL90 0x07 delivery to any client, or that an EFB shows weather.
+// So no state here says "weather available/current": the headlines say what
+// the radio did ("WX RX RECENT" = a product frame was decoded recently).
 func (t *Tracker) fisbTile(now time.Time, st StatusData, uat Tile, towersFresh bool) Tile {
 	tile := Tile{Label: "FIS-B WX"}
 	switch uat.Level {
@@ -689,22 +695,22 @@ func (t *Tracker) fisbTile(now time.Time, st StatusData, uat Tile, towersFresh b
 
 	switch {
 	case wxSeen && wxAge <= t.th.WXCurrentWithin:
-		tile.Headline, tile.Detail, tile.Level = "WX CURRENT", "NEWEST "+agoText(wxAge), LevelOK
+		tile.Headline, tile.Detail, tile.Level = "WX RX RECENT", "LAST FRAME "+agoText(wxAge), LevelIdle
 	case wxSeen && wxAge <= t.th.WXAgingWithin:
-		tile.Headline, tile.Detail, tile.Level = "WX AGING", "NEWEST "+agoText(wxAge), LevelWarn
+		tile.Headline, tile.Detail, tile.Level = "WX RX AGING", "LAST FRAME "+agoText(wxAge), LevelWarn
 	case wxSeen:
-		tile.Headline, tile.Detail, tile.Level = "WX STALE", "NEWEST "+agoText(wxAge), LevelWarn
+		tile.Headline, tile.Detail, tile.Level = "WX RX STALE", "LAST FRAME "+agoText(wxAge), LevelWarn
 	case st.Products.weather() > 0:
 		// Products were decoded before this display service started
 		// watching; their age is unknowable, so they are not shown as
 		// current - and not as stale either.
 		if uplinkNow {
-			tile.Headline, tile.Detail, tile.Level = "UPLINK", "WX AGE UNKNOWN", LevelIdle
+			tile.Headline, tile.Detail, tile.Level = "UPLINK", "RX AGE UNKNOWN", LevelIdle
 		} else {
-			tile.Headline, tile.Detail, tile.Level = "NO UPLINK NOW", "WX AGE UNKNOWN", LevelIdle
+			tile.Headline, tile.Detail, tile.Level = "NO UPLINK NOW", "RX AGE UNKNOWN", LevelIdle
 		}
 	case uplinkNow:
-		tile.Headline, tile.Detail, tile.Level = "UPLINK", "NO WX PRODUCTS YET", LevelIdle
+		tile.Headline, tile.Detail, tile.Level = "UPLINK", "NO WX FRAMES YET", LevelIdle
 	case !towersFresh:
 		tile.Headline, tile.Detail, tile.Level = "UNKNOWN", "UPLINK STATUS ?", LevelUnknown
 	case !t.uplinkLastAt.IsZero():

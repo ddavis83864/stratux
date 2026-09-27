@@ -74,7 +74,7 @@ func TestReferenceState(t *testing.T) {
 	if d.Subtitle != "GPS FIX • 1090 ACTIVE • 978 NO MSGS" {
 		t.Errorf("subtitle = %q", d.Subtitle)
 	}
-	if d.Clients != "1 CLIENT CONNECTED" {
+	if d.Clients != "1 CLIENT ON WI-FI" {
 		t.Errorf("clients = %q", d.Clients)
 	}
 	if d.Version != "2.0.0~rc2 b26686c" {
@@ -317,7 +317,7 @@ func TestFISBTransitions(t *testing.T) {
 
 	// A ground station is heard (tower active), but no product decoded.
 	d = obs(5*time.Second, func(s *Sample) { s.Towers = &TowerData{Active: 1, Known: 1} })
-	if d.FISB.Headline != "UPLINK" || d.FISB.Detail != "NO WX PRODUCTS YET" {
+	if d.FISB.Headline != "UPLINK" || d.FISB.Detail != "NO WX FRAMES YET" {
 		t.Errorf("uplink seen, no products: %+v", d.FISB)
 	}
 	// Only non-weather products (NOTAM/Other) decoded: still no weather.
@@ -325,7 +325,7 @@ func TestFISBTransitions(t *testing.T) {
 		s.Towers = &TowerData{Active: 1, Known: 1}
 		s.Status.Products = ProductTotals{NOTAM: 2, Other: 3}
 	})
-	if d.FISB.Headline != "UPLINK" || d.FISB.Detail != "NO WX PRODUCTS YET" {
+	if d.FISB.Headline != "UPLINK" || d.FISB.Detail != "NO WX FRAMES YET" {
 		t.Errorf("non-weather products must not read as weather: %+v", d.FISB)
 	}
 	// Weather products arrive.
@@ -333,41 +333,41 @@ func TestFISBTransitions(t *testing.T) {
 		s.Towers = &TowerData{Active: 1, Known: 1}
 		s.Status.Products = ProductTotals{METAR: 4, NEXRAD: 20, NOTAM: 2, Other: 3}
 	})
-	if d.FISB.Headline != "WX CURRENT" || d.FISB.Level != LevelOK || d.FISB.Detail != "NEWEST <2 MIN AGO" {
+	if d.FISB.Headline != "WX RX RECENT" || d.FISB.Level != LevelIdle || d.FISB.Detail != "LAST FRAME <2 MIN AGO" {
 		t.Errorf("current: %+v", d.FISB)
 	}
 	products := ProductTotals{METAR: 4, NEXRAD: 20, NOTAM: 2, Other: 3}
 	quiet := func(s *Sample) { s.Status.Products = products } // no further products, no tower
 	// Four minutes later: still inside one cycle.
 	d = obs(4*time.Minute, quiet)
-	if d.FISB.Headline != "WX CURRENT" || d.FISB.Detail != "NEWEST <5 MIN AGO" {
+	if d.FISB.Headline != "WX RX RECENT" || d.FISB.Detail != "LAST FRAME <5 MIN AGO" {
 		t.Errorf("4 min: %+v", d.FISB)
 	}
 	// Seven minutes: aging.
 	d = obs(3*time.Minute, quiet)
-	if d.FISB.Headline != "WX AGING" || d.FISB.Level != LevelWarn {
+	if d.FISB.Headline != "WX RX AGING" || d.FISB.Level != LevelWarn {
 		t.Errorf("7 min: %+v", d.FISB)
 	}
 	// Past fifteen minutes: stale, and never labeled current.
 	d = obs(9*time.Minute, quiet)
-	if d.FISB.Headline != "WX STALE" || d.FISB.Detail != "NEWEST <30 MIN AGO" {
+	if d.FISB.Headline != "WX RX STALE" || d.FISB.Detail != "LAST FRAME <30 MIN AGO" {
 		t.Errorf("16 min: %+v", d.FISB)
 	}
 	// Even with the tower still being heard, no new products means the
 	// weather stays stale.
 	d = obs(5*time.Second, func(s *Sample) { s.Status.Products = products; s.Towers = &TowerData{Active: 1, Known: 1} })
-	if d.FISB.Headline != "WX STALE" {
+	if d.FISB.Headline != "WX RX STALE" {
 		t.Errorf("uplink without new products: %+v", d.FISB)
 	}
 	// Fresh products bring it back.
 	products.METAR++
 	d = obs(5*time.Second, quiet)
-	if d.FISB.Headline != "WX CURRENT" {
+	if d.FISB.Headline != "WX RX RECENT" {
 		t.Errorf("recovered: %+v", d.FISB)
 	}
 	// FIS-B staleness alone is information, not a receiver problem.
 	d = obs(20*time.Minute, quiet)
-	if d.FISB.Headline != "WX STALE" || d.Overall != OverallOnline {
+	if d.FISB.Headline != "WX RX STALE" || d.Overall != OverallOnline {
 		t.Errorf("stale weather changed the banner: %v", d.Overall)
 	}
 }
@@ -400,14 +400,14 @@ func TestFISBAgeUnknownWhenWatchingStartsLate(t *testing.T) {
 		s.Towers = &TowerData{Active: 0, Known: 1}
 	})
 	d := tr.Derive(t0, t0)
-	if d.FISB.Headline != "NO UPLINK NOW" || d.FISB.Detail != "WX AGE UNKNOWN" {
+	if d.FISB.Headline != "NO UPLINK NOW" || d.FISB.Detail != "RX AGE UNKNOWN" {
 		t.Errorf("late start, no uplink: %+v", d.FISB)
 	}
 	step(tr, t0.Add(5*time.Second), func(s *Sample) {
 		s.Status.Products = ProductTotals{METAR: 21, NEXRAD: 108}
 		s.Towers = &TowerData{Active: 2, Known: 2}
 	})
-	if d := tr.Derive(t0.Add(5*time.Second), t0); d.FISB.Headline != "UPLINK" || d.FISB.Detail != "WX AGE UNKNOWN" {
+	if d := tr.Derive(t0.Add(5*time.Second), t0); d.FISB.Headline != "UPLINK" || d.FISB.Detail != "RX AGE UNKNOWN" {
 		t.Errorf("late start, uplink: %+v", d.FISB)
 	}
 	// The first observed increase makes the age known.
@@ -415,7 +415,7 @@ func TestFISBAgeUnknownWhenWatchingStartsLate(t *testing.T) {
 		s.Status.Products = ProductTotals{METAR: 22, NEXRAD: 108}
 		s.Towers = &TowerData{Active: 2, Known: 2}
 	})
-	if d := tr.Derive(t0.Add(10*time.Second), t0); d.FISB.Headline != "WX CURRENT" {
+	if d := tr.Derive(t0.Add(10*time.Second), t0); d.FISB.Headline != "WX RX RECENT" {
 		t.Errorf("after first delta: %+v", d.FISB)
 	}
 }
@@ -432,7 +432,7 @@ func TestDaemonRestartForgetsOldHistory(t *testing.T) {
 		s.Status.Products = ProductTotals{METAR: 6}
 		s.Towers = &TowerData{Active: 1, Known: 1}
 	})
-	if d := tr.Derive(at, t0); d.FISB.Headline != "WX CURRENT" {
+	if d := tr.Derive(at, t0); d.FISB.Headline != "WX RX RECENT" {
 		t.Fatalf("precondition: %+v", d.FISB)
 	}
 	// The daemon restarts: uptime and every counter go back to (near) zero.
@@ -445,7 +445,7 @@ func TestDaemonRestartForgetsOldHistory(t *testing.T) {
 		s.Towers = &TowerData{}
 	})
 	d := tr.Derive(at, t0)
-	if d.FISB.Headline == "WX CURRENT" || d.FISB.Headline == "WX AGING" || d.FISB.Headline == "WX STALE" {
+	if d.FISB.Headline == "WX RX RECENT" || d.FISB.Headline == "WX RX AGING" || d.FISB.Headline == "WX RX STALE" {
 		t.Errorf("weather from before the restart is still presented: %+v", d.FISB)
 	}
 	if d.Overall != OverallStarting {
@@ -539,7 +539,7 @@ func TestAuxiliarySourceFailureIsPartialNotFatal(t *testing.T) {
 	at = at.Add(5 * time.Second)
 	step(tr, at, nil)
 	d = tr.Derive(at, t0)
-	if d.Clients != "1 CLIENT CONNECTED" || len(d.Warnings) != 0 || d.Overall != OverallOnline {
+	if d.Clients != "1 CLIENT ON WI-FI" || len(d.Warnings) != 0 || d.Overall != OverallOnline {
 		t.Errorf("recovered: %q %v %v", d.Clients, d.Warnings, d.Overall)
 	}
 }
@@ -552,20 +552,20 @@ func TestClientCountChanges(t *testing.T) {
 		step(tr, at, func(s *Sample) { s.Clients = ClientsOf(n) })
 		return tr.Derive(at, t0)
 	}
-	if d := poll(2); d.Clients != "2 CLIENTS CONNECTED" {
+	if d := poll(2); d.Clients != "2 CLIENTS ON WI-FI" {
 		t.Errorf("2 awake -> %q", d.Clients)
 	}
-	if d := poll(1); d.Clients != "2 CLIENTS CONNECTED" {
+	if d := poll(1); d.Clients != "2 CLIENTS ON WI-FI" {
 		t.Errorf("one of two goes quiet, still inside the hold: %q", d.Clients)
 	}
 	// After the hold time with nobody awake, everyone has gone.
 	for i := 0; i < 10; i++ {
 		poll(0)
 	}
-	if d := tr.Derive(at, t0); d.Clients != "NO CLIENTS CONNECTED" {
+	if d := tr.Derive(at, t0); d.Clients != "NO CLIENTS ON WI-FI" {
 		t.Errorf("all quiet past the hold -> %q", d.Clients)
 	}
-	if d := poll(1); d.Clients != "1 CLIENT CONNECTED" {
+	if d := poll(1); d.Clients != "1 CLIENT ON WI-FI" {
 		t.Errorf("a client returns -> %q", d.Clients)
 	}
 }
@@ -592,15 +592,15 @@ func TestFlappingClientIsOneSteadyClient(t *testing.T) {
 			keys[tr.Derive(at, t0).Clients] = true
 		}
 	}
-	if len(keys) != 1 || !keys["1 CLIENT CONNECTED"] {
-		t.Errorf("a flapping client produced footers %v, want a steady '1 CLIENT CONNECTED'", keys)
+	if len(keys) != 1 || !keys["1 CLIENT ON WI-FI"] {
+		t.Errorf("a flapping client produced footers %v, want a steady '1 CLIENT ON WI-FI'", keys)
 	}
 	// When it really leaves, the footer follows within the hold time.
 	for i := 0; i < 12; i++ {
 		at = at.Add(5 * time.Second)
 		step(tr, at, func(s *Sample) { s.Clients = ClientsOf(0) })
 	}
-	if got := tr.Derive(at, t0).Clients; got != "NO CLIENTS CONNECTED" {
+	if got := tr.Derive(at, t0).Clients; got != "NO CLIENTS ON WI-FI" {
 		t.Errorf("a minute after the last sighting: %q", got)
 	}
 }
@@ -704,7 +704,7 @@ func TestMaterialKeyIgnoresOnlyTheFooterTime(t *testing.T) {
 		t.Error("a tile change must be material")
 	}
 	e := a
-	e.Clients = "2 CLIENTS CONNECTED"
+	e.Clients = "2 CLIENTS ON WI-FI"
 	if a.MaterialKey() == e.MaterialKey() {
 		t.Error("a client count change must be material")
 	}
@@ -888,5 +888,55 @@ func TestBandsNotYetEvaluatedReadStartingNotDisabled(t *testing.T) {
 	d = tr.Derive(at, t0)
 	if d.ES.Headline != "OFF" || d.UAT.Headline != "OFF" || d.FISB.Headline != "OFF" {
 		t.Errorf("after the grace period a disabled band must say OFF: %+v %+v %+v", d.ES, d.UAT, d.FISB)
+	}
+}
+
+// A rising FIS-B product counter proves uplink frames were decoded. It does
+// not prove a populated cache, fresh or usable weather, GDL90 0x07 delivery or
+// EFB weather, so no screen state may say or imply that weather is available.
+// (PR #15's live FIS-B acceptance is a separate, open gate.)
+func TestFISBTileNeverClaimsWeatherIsAvailable(t *testing.T) {
+	tr, _ := newRef(t)
+	at := t0
+	products := ProductTotals{}
+	var texts []string
+	record := func(d Dashboard) {
+		texts = append(texts, d.FISB.Headline+" | "+d.FISB.Detail+" | "+d.Subtitle+" | "+d.OverallTxt)
+	}
+	drive := func(dt time.Duration, tower bool) {
+		at = at.Add(dt)
+		p := products
+		step(tr, at, func(s *Sample) {
+			s.Status.Products = p
+			if tower {
+				s.Towers = &TowerData{Active: 1, Known: 1}
+			}
+		})
+		record(tr.Derive(at, t0))
+	}
+	drive(5*time.Second, false) // none
+	drive(5*time.Second, true)  // uplink
+	for i := 1; i <= 3; i++ {   // products arrive
+		products.METAR += 4
+		products.NEXRAD += 30
+		drive(5*time.Second, true)
+	}
+	for _, dt := range []time.Duration{4 * time.Minute, 4 * time.Minute, 10 * time.Minute, 30 * time.Minute} {
+		drive(dt, false) // then they stop: aging, stale
+	}
+	banned := []string{"CURRENT", "AVAILABLE", "READY", "FRESH", "USABLE", "DELIVER", "FOREFLIGHT", "CACHE"}
+	for _, s := range texts {
+		for _, b := range banned {
+			if strings.Contains(strings.ToUpper(s), b) {
+				t.Errorf("FIS-B/overall text %q contains %q", s, b)
+			}
+		}
+	}
+	// And the receiving states must state that it is reception.
+	seen := strings.Join(texts, "\n")
+	for _, want := range []string{"WX RX RECENT", "WX RX AGING", "WX RX STALE", "LAST FRAME"} {
+		if !strings.Contains(seen, want) {
+			t.Errorf("never produced %q; got:\n%s", want, seen)
+		}
 	}
 }
