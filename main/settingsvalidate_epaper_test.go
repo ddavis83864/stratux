@@ -26,12 +26,13 @@ func TestValidateSettingsValue_EpaperPanel(t *testing.T) {
 
 // TestValidateSettingsValue_EpaperPage mirrors epaper.Normalize's own
 // rule: empty string means "use the default page" (always valid); any
-// other value must be one of the three real supported pages.
+// other value must be one of the real supported pages.
 func TestValidateSettingsValue_EpaperPage(t *testing.T) {
 	cases := []struct {
 		val     interface{}
 		wantErr bool
 	}{
+		{"dashboard", false},
 		{"overview", false},
 		{"receivers", false},
 		{"health", false},

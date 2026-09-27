@@ -1,0 +1,134 @@
+{
+ "192.168.10.101:2000": {
+  "Conn": {},
+  "Ip": "192.168.10.101",
+  "Port": 2000,
+  "Capability": 8,
+  "LastPingResponse": "0001-01-01T01:20:45.23Z",
+  "LastPongResponse": "0001-01-01T01:20:45.23Z",
+  "LastUnreachable": "0001-01-01T01:20:46.26Z",
+  "SleepFlag": true
+ },
+ "192.168.10.101:4000": {
+  "Conn": {},
+  "Ip": "192.168.10.101",
+  "Port": 4000,
+  "Capability": 5,
+  "LastPingResponse": "0001-01-01T01:20:45.23Z",
+  "LastPongResponse": "0001-01-01T01:20:45.23Z",
+  "LastUnreachable": "0001-01-01T01:20:49.13Z",
+  "SleepFlag": true
+ },
+ "192.168.10.101:49002": {
+  "Conn": {},
+  "Ip": "192.168.10.101",
+  "Port": 49002,
+  "Capability": 18,
+  "LastPingResponse": "0001-01-01T01:20:45.23Z",
+  "LastPongResponse": "0001-01-01T01:20:45.23Z",
+  "LastUnreachable": "0001-01-01T01:20:46.26Z",
+  "SleepFlag": true
+ },
+ "192.168.10.102:2000": {
+  "Conn": {},
+  "Ip": "192.168.10.102",
+  "Port": 2000,
+  "Capability": 8,
+  "LastPingResponse": "0001-01-01T02:12:40.07Z",
+  "LastPongResponse": "0001-01-01T02:12:40.07Z",
+  "LastUnreachable": "0001-01-01T02:12:41.42Z",
+  "SleepFlag": true
+ },
+ "192.168.10.102:4000": {
+  "Conn": {},
+  "Ip": "192.168.10.102",
+  "Port": 4000,
+  "Capability": 5,
+  "LastPingResponse": "0001-01-01T02:12:40.07Z",
+  "LastPongResponse": "0001-01-01T02:12:40.07Z",
+  "LastUnreachable": "0001-01-01T02:12:43.06Z",
+  "SleepFlag": true
+ },
+ "192.168.10.102:49002": {
+  "Conn": {},
+  "Ip": "192.168.10.102",
+  "Port": 49002,
+  "Capability": 18,
+  "LastPingResponse": "0001-01-01T02:12:40.07Z",
+  "LastPongResponse": "0001-01-01T02:12:40.07Z",
+  "LastUnreachable": "0001-01-01T02:12:40.42Z",
+  "SleepFlag": true
+ },
+ "192.168.10.103:2000": {
+  "Conn": {},
+  "Ip": "192.168.10.103",
+  "Port": 2000,
+  "Capability": 8,
+  "LastPingResponse": "0001-01-01T01:59:15.16Z",
+  "LastPongResponse": "0001-01-01T01:59:15.16Z",
+  "LastUnreachable": "0001-01-01T01:59:17.23Z",
+  "SleepFlag": true
+ },
+ "192.168.10.103:4000": {
+  "Conn": {},
+  "Ip": "192.168.10.103",
+  "Port": 4000,
+  "Capability": 5,
+  "LastPingResponse": "0001-01-01T01:59:15.16Z",
+  "LastPongResponse": "0001-01-01T01:59:15.16Z",
+  "LastUnreachable": "0001-01-01T01:59:18.23Z",
+  "SleepFlag": true
+ },
+ "192.168.10.103:49002": {
+  "Conn": {},
+  "Ip": "192.168.10.103",
+  "Port": 49002,
+  "Capability": 18,
+  "LastPingResponse": "0001-01-01T01:59:15.16Z",
+  "LastPongResponse": "0001-01-01T01:59:15.16Z",
+  "LastUnreachable": "0001-01-01T01:59:18.23Z",
+  "SleepFlag": true
+ },
+ "192.168.10.104:2000": {
+  "Conn": {},
+  "Ip": "192.168.10.104",
+  "Port": 2000,
+  "Capability": 8,
+  "LastPingResponse": "0001-01-01T02:11:35.11Z",
+  "LastPongResponse": "0001-01-01T02:11:35.11Z",
+  "LastUnreachable": "0001-01-01T02:11:31.22Z",
+  "SleepFlag": true
+ },
+ "192.168.10.104:4000": {
+  "Conn": {},
+  "Ip": "192.168.10.104",
+  "Port": 4000,
+  "Capability": 5,
+  "LastPingResponse": "0001-01-01T02:11:35.11Z",
+  "LastPongResponse": "0001-01-01T02:11:35.11Z",
+  "LastUnreachable": "0001-01-01T02:12:43.53Z",
+  "SleepFlag": true
+ },
+ "192.168.10.104:49002": {
+  "Conn": {},
+  "Ip": "192.168.10.104",
+  "Port": 49002,
+  "Capability": 18,
+  "LastPingResponse": "0001-01-01T02:11:35.11Z",
+  "LastPongResponse": "0001-01-01T02:11:35.11Z",
+  "LastUnreachable": "0001-01-01T02:11:31.22Z",
+  "SleepFlag": true
+ },
+ "6E400001-B5A3-F393-E0A9-E50E24DCCA9E": {
+  "Capability": 8,
+  "UUIDService": "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+  "UUIDGatt": "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+  "Characteristic": {}
+ },
+ "FFE0": {
+  "Capability": 8,
+  "UUIDService": "FFE0",
+  "UUIDGatt": "FFE1",
+  "Characteristic": {}
+ }
+}

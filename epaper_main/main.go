@@ -76,8 +76,9 @@ func main() {
 
 	src := NewStatusSource(*baseURL, 3*time.Second)
 	settingsSrc := NewStatusSource(*baseURL, 3*time.Second)
+	dashSrc := NewDashSource(*baseURL, 2*time.Second)
 
-	run(ctx, src, settingsSrc, *pollInterval, *settingsInterval)
+	run(ctx, src, settingsSrc, dashSrc, *pollInterval, *settingsInterval)
 }
 
 // run is the whole service lifecycle, factored out of main so it can be
@@ -87,11 +88,24 @@ func main() {
 // file, never propagated as a process crash (a real panic anywhere in
 // the refresh path is itself recovered around, one level up, in
 // refreshOnce).
-func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval, settingsInterval time.Duration) {
+func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dashPoller, pollInterval, settingsInterval time.Duration) {
 	cfg := epaper.Config{} // disabled zero value until the first settings poll succeeds
 	var bus *gpioBus
 	var driver PanelDriver
 	var policy epaper.PolicyState
+	// The operating dashboard (docs/epaper-operating-dashboard.md) keeps
+	// its own poller and refresh-policy state; both exist only while the
+	// dashboard page is the one being shown.
+	var dash *dashboardRunner
+	var dpolicy epaper.DashPolicyState
+	stopDash := func() {
+		if dash != nil {
+			dash.Stop()
+			dash = nil
+		}
+		dpolicy = epaper.DashPolicyState{}
+	}
+	defer stopDash()
 	health := epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
 	writeHealth(health)
 
@@ -101,6 +115,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 	defer ticker.Stop()
 
 	shutdown := func() {
+		stopDash()
 		if driver != nil {
 			lines := append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine})
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
@@ -131,6 +146,9 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 					driver, bus = nil, nil
 					policy = epaper.PolicyState{}
 				}
+				if newCfg.Page != cfg.Page || newCfg.Panel != cfg.Panel || newCfg.Rotation != cfg.Rotation || newCfg.Enabled != cfg.Enabled {
+					stopDash()
+				}
 				cfg = newCfg
 			}
 		}
@@ -140,6 +158,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 			writeHealth(health)
 			continue
 		}
+		useDash := dashboardSelected(cfg)
 
 		if driver == nil {
 			var err error
@@ -182,11 +201,22 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, pollInterval
 				driver, bus = nil, nil
 				continue
 			}
-			startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
-			_ = driver.Update(ctx, Render(startupLines, w, h, cfg.Rotation), true)
+			// The dashboard's first frame IS its startup screen (STARTING,
+			// then live state), so it needs no separate text frame.
+			if !useDash {
+				startupLines := append(epaper.StartupLines(), epaper.Line{Text: epaper.DisclaimerLine})
+				_ = driver.Update(ctx, Render(startupLines, w, h, cfg.Rotation), true)
+			}
 		}
 
-		health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
+		if useDash {
+			if dash == nil {
+				dash = startDashboardRunner(ctx, dashSrc, epaper.DefaultThresholds(), dashboardPollInterval, time.Now)
+			}
+			health = refreshDashboard(ctx, driver, dash, cfg, &dpolicy, health, time.Now())
+		} else {
+			health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
+		}
 		writeHealth(health)
 	}
 }

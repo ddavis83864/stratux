@@ -1,0 +1,15 @@
+{
+ "System": {
+  "State": "READY",
+  "Version": "2.0.0~rc2",
+  "Commit": "b26686c752b9d4d288359b03766531c808cd305e",
+  "CPUTempC": 56.47800064086914,
+  "Throttled": false,
+  "UndervoltageDetected": false,
+  "FailedServices": null
+ },
+ "Time": {
+  "State": "GNSS_SYNCED",
+  "Source": "gnss"
+ }
+}

@@ -23,6 +23,7 @@ function EpaperCtrl($rootScope, $scope, $state, $http, $interval) {
 		{value: 'waveshare-4.2in-v2', label: 'Waveshare 4.2" V2 (400x300, Rev2.2, 8-pin SPI)'}
 	];
 	$scope.pages = [
+		{value: 'dashboard', label: 'Operating dashboard - GPS, 1090, 978, FIS-B weather, clients (400x300 landscape)'},
 		{value: 'overview', label: 'Overview - version, readiness, GPS/time trust, storage/overlay'},
 		{value: 'receivers', label: 'Receivers - 978/1090/GDL90/traffic count'},
 		{value: 'health', label: 'Health - AHRS/baro/fan/power/temperature'}
@@ -52,7 +53,7 @@ function EpaperCtrl($rootScope, $scope, $state, $http, $interval) {
 				EpaperRotation: s.EpaperRotation || 0,
 				EpaperRefreshIntervalSeconds: s.EpaperRefreshIntervalSeconds || 15,
 				EpaperFullRefreshEvery: s.EpaperFullRefreshEvery || 20,
-				EpaperPage: s.EpaperPage || 'overview'
+				EpaperPage: s.EpaperPage || (s.EpaperPanel === 'waveshare-4.2in-v2' ? 'dashboard' : 'overview')
 			};
 			$scope.SettingsError = '';
 		}, function () {

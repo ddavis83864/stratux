@@ -1,0 +1,282 @@
+# E-paper operating dashboard (400 x 300)
+
+> **A supplemental status surface, not a flight instrument.** This screen is
+> not a certified display, not an annunciator, not a weather source and not a
+> substitute for your EFB. Whether it is enabled, working, stale or absent has
+> no effect on 978/1090 reception, GDL90 output, AHRS, GPS or anything else
+> Stratux does. See the disclaimer in
+> [waveshare-epaper-display.md](waveshare-epaper-display.md).
+
+The dashboard is the normal operating screen for the Waveshare 4.2" V2 panel
+(`waveshare-4.2in-v2`, 400 x 300, landscape). It answers, at a glance and
+without a phone: *is the receiver up, do I have a GPS fix, is each radio
+connected and hearing anything, is weather uplink arriving, and is anything
+connected to it.*
+
+![reference state](img/epaper-dashboard/02-reference@3x.png)
+
+*(Native 400 x 300 previews of every state are in
+[img/epaper-dashboard/](img/epaper-dashboard/); the `@3x` files are the same
+frames enlarged for reading.)*
+
+## Design rules
+
+1. **Derived, never canned.** Every word on the screen is chosen from live
+   subsystem state. The banner's subtitle is built from the very tokens the
+   tiles are built from, so it cannot say something a tile contradicts.
+2. **Quiet is not broken.** No messages in a minute is `QUIET`, never a
+   failure. A fault is only declared from hardware/decoder state (radio not
+   detected, decoder not running, GPS receiver gone), never from silence.
+3. **Never stale-but-live.** E-paper keeps its image, so the panel actively
+   shows `NO STATUS DATA` (and every tile `UNKNOWN`) when current data cannot
+   be confirmed, instead of leaving the last good frame up.
+4. **One bit, no shading.** State is carried by words and glyphs (a fault
+   `X`, a warning triangle, a `?`), a thicker border, and an inverted
+   (white-on-black) banner for the two worst states. Nothing depends on grey.
+5. **Truthful about what is unknown.** An unavailable client count reads
+   `CLIENTS UNKNOWN`; an untrusted clock is never shown as a time of day.
+
+## Screen layout
+
+| Region | Content |
+|---|---|
+| Header | Brand mark, `ARS STRATUX`, the **running** version and short build from `/getStatus` (`2.0.0~rc2 b26686c`; `VERSION ?` until the first reading), and active device-health warnings as inverted chips (`! UNDERVOLT`, `! THROTTLED`, `! HOT 83C`, `! SVC FAIL`, `! DATA`), as many as fit |
+| Banner | Overall state, large, with a state pictogram; subtitle derived from the tiles |
+| Tiles (2 x 2) | GPS, 1090 ADS-B, 978 UAT, FIS-B WX: label, large state word, small detail line, pictogram, and a level glyph in the corner when not healthy |
+| Footer | Connected-client count (left); `UPDATED hh:mmZ` or `UPDATED UP hh:mm` (right) |
+
+Rendering is 1-bit and deterministic (`epaper_main/dashboard_*.go`): integer
+geometry for rules and borders, 4x-supersampled vector pictograms, and the
+BSD-licensed Go fonts (already part of `golang.org/x/image`; no new
+dependency, no font file to ship) squeezed horizontally to give the condensed
+look. Text is fitted to its box (squeeze, then shrink, then trim with `.`):
+nothing is drawn clipped, and a test proves it for every state.
+
+## Overall banner
+
+| Banner | Meaning | Look |
+|---|---|---|
+| `RECEIVER ONLINE` | The Stratux service is up and answering with current data, no subsystem tile is failing or warning, and no device-health warning is active. **It does not mean GPS, both radios, FIS-B or any client is working** - the tiles and subtitle say what is. | broadcast pictogram |
+| `STARTING` | The daemon's own uptime is under 90 s (or the display service is waiting for its first reading). Subsystems not up yet read `STARTING`, not failed. | hourglass |
+| `RECEIVER DEGRADED` | Online, but something needs attention: GPS has no fix or only dead reckoning, a fix with fewer than 4 satellites, a status source unavailable, or an active power/thermal/service warning. | warning triangle, heavy border |
+| `RECEIVER FAULT` | A receiver is missing or its decoder is not running (GPS receiver disconnected, 1090 or 978 radio not detected, SDR conflict/ambiguity). | inverted banner, `X` |
+| `NO STATUS DATA` | Current data cannot be confirmed: `/getStatus` has been unreachable for more than 20 s, or it answers but its uptime has stopped advancing for 15 s (the daemon's status loop is wedged). Every tile is `UNKNOWN`. | inverted banner, `?` |
+
+Subtitle tokens (in fixed order `GPS • 1090 • 978`): `GPS FIX`, `GPS FIX LOW`,
+`NO GPS FIX`, `GPS DR ONLY`, `GPS OFFLINE`; `1090|978 ACTIVE`, `QUIET`,
+`NO MSGS`, `DOWN`, `OFF`, `STARTING`.
+
+## Tiles
+
+**GPS** - from `GPS_solution`, `GPS_connected`, `GPS_satellites_locked/seen`.
+
+| Headline / detail | When |
+|---|---|
+| `3D FIX` / `17 SAT` (`12 SAT SBAS`) | fix reported and at least 4 satellites in the solution |
+| `FIX` / `3 SAT • LOW` | a fix flag with fewer than 4 satellites (cannot be a 3D solution, so it is not called one) |
+| `NO FIX` / `7 SAT SEEN` or `SEARCHING` | receiver alive, no fix (a lost fix drops the tile within ~8 s: the daemon clears its fix within 3 s, plus one poll) |
+| `DEAD RECK` / `NO SATELLITE FIX` | dead reckoning only |
+| `NO GPS` / `DISCONNECTED` | receiver gone (fault) |
+
+> **2D vs 3D.** Stratux derives its fix flag from the NMEA GGA quality field,
+> which cannot distinguish a 2D from a 3D fix (the daemon itself labels quality 1
+> "3D GPS"). The tile therefore shows `3D FIX` only with >= 4 satellites in the
+> solution and never claims a dimension it cannot know.
+
+**1090 ADS-B / 978 UAT** - *connected* and *receiving* are separate concepts.
+
+| Headline / detail | When |
+|---|---|
+| `OFF` / `DISABLED IN SETTINGS` | band disabled |
+| `NO RADIO` / `NOT DETECTED` | enabled, but no radio/SDR bound (or ambiguous/conflicted assignment) - fault |
+| `NOT RUNNING` / `DECODER STOPPED` | SDR assigned but its decoder is not running - fault |
+| `CONNECTED` / `NO MESSAGES YET` | hardware up, nothing received yet this run (the reference state for 978) |
+| `ACTIVE` / `TRAFFIC RECEIVED` (`MESSAGES RECEIVED`) | a valid message in the last 60 s |
+| `QUIET` / `LAST MSG <5 MIN AGO` or `NONE IN LAST MIN` | hardware up, nothing in the last minute - never a fault |
+
+For 978 the **live** `UATRadio_connected` flag (external low-power UAT radio)
+decides the hardware side; otherwise the SDR assignment/decoder fields do.
+
+**FIS-B WX** - distinguishes the five things that are easy to confuse.
+
+| Headline / detail | Meaning |
+|---|---|
+| `OFF` / `978 DISABLED` | 978 disabled |
+| `NO RECEIVER` / `978 RADIO DOWN` | the 978 receiver is faulted (fault) |
+| `NO UPLINK` / `AWAITING GROUND STATION` | no ground-station uplink seen (reference state) |
+| `NO UPLINK` / `NONE IN LAST MIN` | towers have been heard earlier, none in the last minute |
+| `UPLINK LOST` / `LAST <5 MIN AGO` | an uplink was seen this run and has been silent more than 2 min |
+| `UPLINK` / `NO WX PRODUCTS YET` | ground station heard, no weather product frame decoded yet |
+| `UPLINK` or `NO UPLINK NOW` / `WX AGE UNKNOWN` | products were decoded before the display service began watching; their age cannot be known, so they are **not** shown as current |
+| `WX CURRENT` / `NEWEST <2 MIN AGO` | a weather product frame decoded within 5 min |
+| `WX AGING` | newest weather frame 5-15 min old |
+| `WX STALE` | newest weather frame more than 15 min old (uplink still being heard does not change this) |
+| `UNKNOWN` / `UPLINK STATUS ?` | tower data unavailable |
+
+Weather is judged from METAR, TAF (includes winds aloft), NEXRAD, SIGMET and
+PIREP product frames; NOTAM and "Other" frames prove an uplink but not
+weather. The tile is driven by *live* counter increases only - it never
+reads, and so can never present, cached weather.
+
+## Footer
+
+* **Clients**: `NO CLIENTS CONNECTED`, `1 CLIENT CONNECTED`,
+  `N CLIENTS CONNECTED`, or `CLIENTS UNKNOWN` when `/getClients` is
+  unavailable. See the limitation below.
+* **Update time**: `UPDATED 12:42Z` (UTC) **only** when `/getHealth` reports
+  the clock trusted (`GNSS_SYNCED` / `NETWORK_SYNCED`); otherwise
+  `UPDATED UP 01:04` (hours:minutes since Stratux started - the Pi has no
+  battery-backed clock, so an unsynced wall clock is never shown). The time is
+  stamped when the frame is composed, and is not itself a reason to refresh.
+
+## Telemetry mapping and limitations
+
+Only the daemon's existing, read-only JSON endpoints are used, over
+`http://127.0.0.1`. Nothing is added to the daemon, nothing is written to the
+aviation data path, and no simulated telemetry is ever sent to it (fixtures
+exist only in the tests). Polled every 5 s, all endpoints concurrently, each
+bounded to 2 s.
+
+| Shown | Endpoint : field | Authority and limitation |
+|---|---|---|
+| Version / build | `/getStatus`: `Version`, `Build` | the running daemon's own; build shortened to 7 characters |
+| Daemon alive | `/getStatus`: `Uptime` (ms) | advanced once a second by the daemon's status loop; a frozen value means a wedged loop |
+| GPS state | `/getStatus`: `GPS_solution`, `GPS_connected`, `GPS_satellites_locked`, `_seen` | `GPS_solution` is recomputed every second and the fix flag is cleared 3 s after the last valid fix; no 2D/3D distinction (above) |
+| 1090 hardware | `/getStatus`: `ES_Enabled/_Detected/_Assigned/_DecoderRunning/_Ambiguous/_Conflict` | SDR assignment state |
+| 978 hardware | `/getStatus`: `UATRadio_connected` (live), else `UAT_Enabled/_Detected/_Assigned/_DecoderRunning/_Ambiguous/_Conflict` | `UAT_ExternallySatisfied` is assignment-time and deliberately not used |
+| Band reception | `/getStatus`: `ES_/UAT_messages_total`, `_messages_last_minute` | totals count *valid decoded* messages (uplinks failing Reed-Solomon are dropped before counting); `UAT` includes traffic and uplinks alike; volatile (lost on daemon restart) |
+| Uplink | `/getTowers`: entries with `Messages_last_minute > 0`; product counters | tower activity is a 60 s window over parsed uplinks; a single tower can flip to 0 during a brief fade (observed in the field) |
+| Weather products | `/getStatus`: `UAT_METAR/TAF/NEXRAD/SIGMET/PIREP/NOTAM/OTHER_total` | **frame counters, not distinct products**: a rebroadcast counts again, NEXRAD counts frames, WINDS counts as TAF, and age is *reception* age, not the age of the weather (a rebroadcast METAR looks new). Only increases are used |
+| Clients | `/getClients`: unique `Ip` among UDP connections whose `SleepFlag` is false | the daemon marks a connection asleep when its ICMP probe gets no answer for 10 s (refreshed ~1 Hz). ICMP liveness only: a phone that answers pings but has no EFB open counts; a locked phone that stops answering does not. `Connected_Users` is **not** used - it counts every ping and pong seen in the last 15 minutes |
+| Clock trust / CPU temp / failed units | `/getHealth`: `Time.State`, `System.CPUTempC`, `System.FailedServices` | as reported by readiness |
+| Power | `/getPowerHealth`: `undervoltageNow`, `throttledNow` | *current*, debounced bits only. `/getHealth`'s `UndervoltageDetected`/`Throttled` are sticky "since boot" and are deliberately not used. The transient-undervoltage investigation is on hold; this only consumes the existing status |
+
+The dashboard does not use the FIS-B diagnostic cache (PR #15, not part of
+this build's display path), and has no access to GDL90 or to what any EFB
+displays.
+
+## Freshness thresholds
+
+| Quantity | Threshold | Why |
+|---|---|---|
+| `/getStatus` unreachable | 20 s -> `NO STATUS DATA` | four missed 5 s polls |
+| Daemon status loop frozen | 15 s of readings with no uptime advance -> `NO STATUS DATA` | the loop ticks at 1 Hz; 15 s is unambiguous |
+| Secondary source unavailable | 30 s -> its data becomes unknown and a `! DATA` chip shows | a failed side endpoint must not declare the receiver failed |
+| Startup grace | 90 s of daemon uptime | radios and GPS legitimately take that long |
+| Band `ACTIVE` | message in last 60 s | the daemon's own receiving window (`receivingFreshness`) |
+| Uplink recent | 2 min | ground stations transmit about once a second; rides through a fade without flapping |
+| Weather `CURRENT` / `AGING` / `STALE` | 5 / 15 min | FIS-B products repeat every ~5 min (METAR, radar, SIGMET) to ~10 min (TAF, winds, PIREP, NOTAM) |
+| `HOT` warning | CPU >= 80 C | the Pi begins thermal throttling at 80 C |
+
+Ages are shown as coarse bounds (`<2`, `<5`, `<15`, `<30`, `<1 HR`, `1 HR+`)
+so a displayed age never forces a refresh by ticking; only crossing a bucket
+does. All comparisons use a monotonic clock, so a wall-clock step (for example
+the GPS time sync) cannot move any window.
+
+## Refresh behavior
+
+The panel is refreshed by `epaper.DecideDashboard` (pure, unit-tested), not by
+polls. Following Waveshare's manual for this module (refresh no more often than
+every 180 s in continuous use; a full refresh after several partial ones, its
+FAQ says after 5; refresh at least every 24 h):
+
+* the first frame is a **full** refresh;
+* a **material change** (any visible word, glyph, count or warning - *not* the
+  footer time) refreshes once the interval has passed, **coalesced**: changes
+  arriving faster are folded into the next allowed refresh, which shows the
+  state as it then is;
+* the interval is `EpaperRefreshIntervalSeconds` (default 15) but **never
+  below 30 s** on this screen;
+* a **storm guard** spaces refreshes at 180 s after 6 refreshes in 10 minutes
+  (a flapping input must not wear the panel) and releases after the window
+  drains;
+* a **proof-of-life partial refresh** every 10 minutes if nothing changed, so
+  the footer time keeps proving the service is alive (6 per hour);
+* at most **5 partial refreshes** between full ones (whatever
+  `EpaperFullRefreshEvery` says), a full refresh when the banner flips between
+  normal and inverted (a large polarity change ghosts on a partial waveform),
+  and a full refresh at least every 4 h;
+* refreshes never overlap (single goroutine; the poller runs separately and a
+  hung request cannot delay a decision), and a failed panel update is reported
+  in the service health and retried once per interval, not once per poll.
+
+Boot splash, shutdown splash and the "Safe to remove power" screen are
+unchanged; the dashboard's first frame is its `STARTING` screen.
+
+## Failure and recovery matrix
+
+| Event | Screen |
+|---|---|
+| Daemon restart | uptime/counters go backwards: all history dropped; `STARTING` until 90 s; weather from the old run is never shown |
+| Status source down / wedged | `NO STATUS DATA` after 20 s / 15 s; recovers on the next good reading |
+| One secondary source down | affected field unknown (`CLIENTS UNKNOWN`, FIS-B `UNKNOWN`), `! DATA` chip, banner `DEGRADED` |
+| 978 radio unplugged / replugged | `NO RADIO` + FIS-B `NO RECEIVER` + `RECEIVER FAULT`; back to `CONNECTED` on reconnect |
+| GPS fix lost / regained | `NO FIX` + `DEGRADED`; back to `3D FIX` |
+| First 978 message | `CONNECTED / NO MESSAGES YET` -> `ACTIVE` |
+| FIS-B arrives / stops | `UPLINK` -> `WX CURRENT` -> `WX AGING` -> `WX STALE` |
+| Client connects / disconnects | footer count changes (a material change) |
+| Panel disconnected | `epaperd` reports `NOT_DETECTED` in its health as before; nothing else is affected |
+| Renderer/poller bug | recovered per cycle; reported as an error category, never a crash |
+
+## Selecting the dashboard
+
+`EpaperPage` = `dashboard` (Settings > E-paper display > Page). It is the
+default when no page is configured **on the 4.2" V2 panel**; other panels keep
+`overview`. An installation that already has an explicit `EpaperPage`
+(the Settings page saves `overview` when it is opened and saved) keeps it: select
+`Operating dashboard` to switch. The layout targets landscape, so at rotation 90 or
+270, or on the 3.7" panel, `epaperd` shows the legacy text pages instead.
+Rotation 180 is supported (the frame is turned point-symmetrically).
+
+## Deployment
+
+1. Build the `.deb` from CI (arm64) for the PR, verify its SHA-256.
+2. Install through the normal OTA path (`/updateUpload`); the display service
+   restarts with the new `epaperd`.
+3. Choose the page: Settings > E-paper display > `Operating dashboard`, or
+   `POST /setSettings {"EpaperPage":"dashboard"}`.
+4. Confirm: `/getHealth` -> `Epaper` shows `READY`, refresh counters advance.
+
+## Tests
+
+* `epaper/dashboard_derive_test.go` - state derivation and freshness
+  transitions: the reference state, startup, GPS loss and recovery, 1090 quiet
+  vs fault, 978 first message/quiet/disconnect/reconnect/SDR paths, FIS-B
+  sequences (uplink, products, aging, stale, lost, unknown age, restart),
+  source failure and recovery, frozen status loop, secondary-source failure,
+  client count changes, warnings, footer time basis, clock steps.
+* `epaper/dashboard_policy_test.go` - refresh decisions: change-only,
+  coalescing, heartbeat, partial cap, full-refresh cadence and maximum age,
+  banner inversion, interval floor, storm guard, retry hold-off.
+* `epaper_main/dashboardsource_test.go` - parsing of **real payloads captured
+  from the bench Pi** (`testdata/pi-payloads/`), failed/foreign/hung endpoints,
+  the runner and its shutdown.
+* `epaper_main/dashboard_refresh_test.go` - the refresh loop against a fake
+  panel: first frame, no refresh for polls or the clock alone, heartbeat,
+  coalescing, `NO DATA` and recovery, failure/retry, client changes, panic
+  containment.
+* `epaper_main/dashboard_render_test.go` - golden images of 12 states, one-bit
+  output, no clipped or overlapping text, 180-degree symmetry, and that the
+  previews under `docs/img/epaper-dashboard/` are current. Regenerate with
+  `go test ./epaper_main -run TestDashboardGoldenImages -update` after checking
+  the previews by eye.
+
+Preview index: `01-startup`, `02-reference`, `03-fully-receiving`,
+`04-no-gps-fix`, `05-978-disconnected`, `06-fisb-stale`,
+`07-status-unavailable`, `08-health-warning`, `09-uplink-no-products`,
+`10-clock-untrusted`, `11-1090-down-fault`, `12-worst-case-text`.
+
+## Known limitations
+
+* Weather freshness is *reception* age from frame counters; the daemon exposes
+  no per-product validity time. `WX CURRENT` means "a weather product frame
+  arrived recently", not "every product is current".
+* The client count is ICMP liveness (above), not application-level presence; it
+  cannot say whether ForeFlight is open, and it cannot see TCP/serial/BLE clients.
+* 2D vs 3D fix is not distinguishable from the daemon's status.
+* The Go fonts have a slashed zero; `1090` and `978` read with a slashed 0 on
+  the panel. Deliberate and legible.
+* Times the display service cannot know (weather issued before it started
+  watching) are shown as unknown, not guessed.
+* Only 400 x 300 landscape (rotation 0/180); other configurations use the
+  legacy text pages.
