@@ -208,6 +208,10 @@ type Tracker struct {
 	// the real one when it differs by three or more, or crosses zero or the
 	// four-satellite line that separates a usable solution from a poor one.
 	satsShown uint16
+	// seenShown is the same for the "N SAT SEEN" detail while there is no
+	// fix (the count of satellites merely visible wanders far more, and
+	// costs a refresh per wobble); it has no four-satellite line.
+	seenShown uint16
 
 	uatLastAt, esLastAt time.Time
 	wxLastAt            time.Time
@@ -252,7 +256,8 @@ func (t *Tracker) Observe(s Sample) {
 				t.uplinkLastAt = at
 			}
 		}
-		t.satsShown = shownSats(t.satsShown, st.GPSSatsLocked, !t.haveEP[epStatus])
+		t.satsShown = shownSats(t.satsShown, st.GPSSatsLocked, !t.haveEP[epStatus], true)
+		t.seenShown = shownSats(t.seenShown, st.GPSSatsSeen, !t.haveEP[epStatus], false)
 		t.status = st
 		t.okAt[epStatus] = at
 		t.haveEP[epStatus] = true
@@ -298,7 +303,7 @@ func (t *Tracker) StatusAge(now time.Time) (time.Duration, bool) {
 }
 
 // shownSats applies the satellite-count hysteresis described on satsShown.
-func shownSats(shown, actual uint16, first bool) uint16 {
+func shownSats(shown, actual uint16, first, fourLine bool) uint16 {
 	if first {
 		return actual
 	}
@@ -306,7 +311,7 @@ func shownSats(shown, actual uint16, first bool) uint16 {
 	if diff < 0 {
 		diff = -diff
 	}
-	if diff >= 3 || (actual == 0) != (shown == 0) || (actual >= 4) != (shown >= 4) {
+	if diff >= 3 || (actual == 0) != (shown == 0) || (fourLine && (actual >= 4) != (shown >= 4)) {
 		return actual
 	}
 	return shown
@@ -427,10 +432,13 @@ func (t *Tracker) Derive(now, wall time.Time) Dashboard {
 	// is not up yet is "starting", not failed: no fault glyphs for things
 	// that simply have not come up.
 	starting := upDur < t.th.StartupGrace
-	uatDown := uat.Level == LevelFault
+	uatDown := uat.Level == LevelFault || uat.Level == LevelOff
 	if starting {
+		// (A band reads "disabled" until the daemon has evaluated its
+		// radios at startup - seen for ~90 s on the bench - so during the
+		// grace period "off" is also "not known yet", not a setting.)
 		startup := func(tile *Tile, tok *string, name string) {
-			if tile.Level == LevelFault {
+			if tile.Level == LevelFault || tile.Level == LevelOff {
 				tile.Headline, tile.Detail, tile.Level = "STARTING", "NOT READY YET", LevelIdle
 				*tok = name + " STARTING"
 			}
@@ -579,7 +587,7 @@ func (t *Tracker) gpsTile(st StatusData) (Tile, string) {
 	default: // "No Fix", "Unknown", ""
 		detail := "SEARCHING"
 		if st.GPSSatsSeen > 0 {
-			detail = fmt.Sprintf("%d SAT SEEN", st.GPSSatsSeen)
+			detail = fmt.Sprintf("%d SAT SEEN", t.seenShown)
 		}
 		tile.Headline, tile.Detail, tile.Level = "NO FIX", detail, LevelWarn
 		return tile, "NO GPS FIX"

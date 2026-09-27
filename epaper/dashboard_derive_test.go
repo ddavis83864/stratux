@@ -825,3 +825,68 @@ func TestRestartedDaemonIsNotMistakenForAFrozenOne(t *testing.T) {
 		t.Errorf("overall = %v, want STARTING while the new run is under 90 s", d.Overall)
 	}
 }
+
+// Found on the bench: with no fix the "N SAT SEEN" detail wandered between 3
+// and 9 every few seconds, a refresh per wobble.
+func TestSatellitesSeenHysteresis(t *testing.T) {
+	tr := NewTracker(DefaultThresholds(), t0)
+	at := t0
+	show := func(seen uint16) string {
+		step(tr, at, func(s *Sample) {
+			s.Status.GPSSolution, s.Status.GPSSatsLocked, s.Status.GPSSatsSeen = "No Fix", 0, seen
+		})
+		d := tr.Derive(at, t0).GPS.Detail
+		at = at.Add(5 * time.Second)
+		return d
+	}
+	if d := show(4); d != "4 SAT SEEN" {
+		t.Fatalf("first reading = %q", d)
+	}
+	for _, n := range []uint16{3, 5, 4, 6, 5, 3, 6} { // wobble of at most 2 around the shown 4... 6 is +2
+		if d := show(n); d != "4 SAT SEEN" {
+			t.Fatalf("%d seen shown as %q, want the steady 4 SAT SEEN", n, d)
+		}
+	}
+	if d := show(9); d != "9 SAT SEEN" {
+		t.Errorf("a real change (9) = %q", d)
+	}
+	// crossing the four-satellite line is not special for satellites merely seen
+	if d := show(8); d != "9 SAT SEEN" {
+		t.Errorf("8 after 9 = %q", d)
+	}
+	if d := show(7); d != "9 SAT SEEN" {
+		t.Errorf("7 after 9 = %q", d)
+	}
+	if d := show(6); d != "6 SAT SEEN" {
+		t.Errorf("6 (3 below 9) = %q", d)
+	}
+	if d := show(0); d != "SEARCHING" {
+		t.Errorf("0 seen = %q", d)
+	}
+}
+
+// Found on the bench: for the first ~90 s after a boot both bands read
+// "DISABLED IN SETTINGS" (the daemon has not evaluated its radios yet). That
+// must read as starting, not as a configuration choice - but a band that is
+// really disabled must still say so once the daemon is up.
+func TestBandsNotYetEvaluatedReadStartingNotDisabled(t *testing.T) {
+	tr := NewTracker(DefaultThresholds(), t0)
+	off := func(s *Sample) {
+		s.Status.UptimeMs = 30 * 1000
+		s.Status.UAT = BandData{}
+		s.Status.ES = BandData{}
+	}
+	step(tr, t0, off)
+	d := tr.Derive(t0, t0)
+	for _, tile := range []Tile{d.ES, d.UAT, d.FISB} {
+		if tile.Headline != "STARTING" {
+			t.Errorf("tile %q at 30 s uptime = %+v, want STARTING", tile.Label, tile)
+		}
+	}
+	at := t0.Add(2 * time.Minute)
+	step(tr, at, func(s *Sample) { s.Status.UptimeMs = 150 * 1000; s.Status.UAT = BandData{}; s.Status.ES = BandData{} })
+	d = tr.Derive(at, t0)
+	if d.ES.Headline != "OFF" || d.UAT.Headline != "OFF" || d.FISB.Headline != "OFF" {
+		t.Errorf("after the grace period a disabled band must say OFF: %+v %+v %+v", d.ES, d.UAT, d.FISB)
+	}
+}

@@ -57,7 +57,7 @@ nothing is drawn clipped, and a test proves it for every state.
 | Banner | Meaning | Look |
 |---|---|---|
 | `RECEIVER ONLINE` | The Stratux service is up and answering with current data, no subsystem tile is failing or warning, and no device-health warning is active. **It does not mean GPS, both radios, FIS-B or any client is working** - the tiles and subtitle say what is. | broadcast pictogram |
-| `STARTING` | The daemon's own uptime is under 90 s (or the display service is waiting for its first reading). Subsystems not up yet read `STARTING`, not failed. | hourglass |
+| `STARTING` | The daemon's own uptime is under 90 s (or the display service is waiting for its first reading). Subsystems not up yet read `STARTING`, not failed - and a band that reads "disabled" during this period (the daemon has not evaluated its radios yet; seen for ~90 s on the bench) reads `STARTING` too. | hourglass |
 | `RECEIVER DEGRADED` | Online, but something needs attention: GPS has no fix or only dead reckoning, a fix with fewer than 4 satellites, a status source unavailable, or an active power/thermal/service warning. | warning triangle, heavy border |
 | `RECEIVER FAULT` | A receiver is missing or its decoder is not running (GPS receiver disconnected, 1090 or 978 radio not detected, SDR conflict/ambiguity). | inverted banner, `X` |
 | `NO STATUS DATA` | Current data cannot be confirmed: `/getStatus` has been unreachable for more than 20 s, or it answers but its uptime has stopped advancing for 15 s (the daemon's status loop is wedged). Every tile is `UNKNOWN`. | inverted banner, `?` |
@@ -74,7 +74,7 @@ Subtitle tokens (in fixed order `GPS • 1090 • 978`): `GPS FIX`, `GPS FIX LOW
 |---|---|
 | `3D FIX` / `17 SAT` (`12 SAT SBAS`) | fix reported and at least 4 satellites in the solution. The count shown has hysteresis: it follows the real count only when it differs by 3 or more, or crosses 0 or the 4-satellite line, because the real count wanders by one or two every minute or so and each wobble would otherwise cost a panel refresh |
 | `FIX` / `3 SAT • LOW` | a fix flag with fewer than 4 satellites (cannot be a 3D solution, so it is not called one) |
-| `NO FIX` / `7 SAT SEEN` or `SEARCHING` | receiver alive, no fix (a lost fix drops the tile within ~8 s: the daemon clears its fix within 3 s, plus one poll) |
+| `NO FIX` / `7 SAT SEEN` (hysteresis as above, without the 4-satellite line) or `SEARCHING` | receiver alive, no fix (a lost fix drops the tile within ~8 s: the daemon clears its fix within 3 s, plus one poll) |
 | `DEAD RECK` / `NO SATELLITE FIX` | dead reckoning only |
 | `NO GPS` / `DISCONNECTED` | receiver gone (fault) |
 
