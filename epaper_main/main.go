@@ -42,6 +42,17 @@ import (
 	"github.com/stratux/stratux/epaper"
 )
 
+// The hardware seams of run(), overridable so the service lifecycle can be
+// exercised in tests with a fake panel and no GPIO.
+var (
+	openBusFn   = openGPIOBus
+	closeBusFn  = closeGPIOBus
+	newDriverFn = newPanelDriver
+	// writeHealthFn publishes the service's self-reported health (the
+	// /run status file); tests capture it instead.
+	writeHealthFn = writeHealth
+)
+
 func main() {
 	baseURL := flag.String("baseurl", "http://127.0.0.1", "base URL of the main Stratux daemon's HTTP API")
 	pollInterval := flag.Duration("poll", 5*time.Second, "how often to sample status and consider a refresh")
@@ -107,7 +118,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 	}
 	defer stopDash()
 	health := epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
-	writeHealth(health)
+	writeHealthFn(health)
 
 	lastSettingsPoll := time.Time{}
 
@@ -124,7 +135,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 			_ = driver.Sleep()
 		}
 		if bus != nil {
-			closeGPIOBus()
+			closeBusFn()
 		}
 	}
 
@@ -142,9 +153,12 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 			if ok && newCfg != cfg {
 				if driver != nil {
 					_ = driver.Sleep()
-					closeGPIOBus()
+					closeBusFn()
 					driver, bus = nil, nil
 					policy = epaper.PolicyState{}
+					// The panel is about to be re-initialised and cleared:
+					// the dashboard owes it a fresh first (full) frame.
+					dpolicy = epaper.DashPolicyState{}
 				}
 				if newCfg.Page != cfg.Page || newCfg.Panel != cfg.Panel || newCfg.Rotation != cfg.Rotation || newCfg.Enabled != cfg.Enabled {
 					stopDash()
@@ -155,17 +169,17 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 
 		if !cfg.Enabled {
 			health = epaper.Health{State: epaper.StateDisabled, UpdatedAt: time.Now()}
-			writeHealth(health)
+			writeHealthFn(health)
 			continue
 		}
 		useDash := dashboardSelected(cfg)
 
 		if driver == nil {
 			var err error
-			bus, err = openGPIOBus(cfg.GPIO)
+			bus, err = openBusFn(cfg.GPIO)
 			if err != nil {
 				health = errorHealth(health, epaper.ErrorGPIOOpen)
-				writeHealth(health)
+				writeHealthFn(health)
 				continue
 			}
 			// The driver is always constructed with the panel's fixed
@@ -179,12 +193,12 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 			// rotation is applied separately, in Render below, using the
 			// logical (w, h) dimensions for drawing.
 			nativeW, nativeH := epaper.NativeDimensions(cfg.Panel)
-			driver = newPanelDriver(cfg.Panel, bus, nativeW, nativeH)
+			driver = newDriverFn(cfg.Panel, bus, nativeW, nativeH)
 			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
 			if err := driver.Init(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
-				writeHealth(health)
-				closeGPIOBus()
+				writeHealthFn(health)
+				closeBusFn()
 				driver, bus = nil, nil
 				continue
 			}
@@ -196,8 +210,8 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 			// papered over by drawing content on top of it.
 			if err := driver.Clear(ctx); err != nil {
 				health = errorHealth(health, classifyInitError(err))
-				writeHealth(health)
-				closeGPIOBus()
+				writeHealthFn(health)
+				closeBusFn()
 				driver, bus = nil, nil
 				continue
 			}
@@ -217,7 +231,7 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 		} else {
 			health = refreshOnce(ctx, driver, statusSrc, cfg, &policy, health)
 		}
-		writeHealth(health)
+		writeHealthFn(health)
 	}
 }
 
