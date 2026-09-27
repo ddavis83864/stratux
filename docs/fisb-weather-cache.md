@@ -1472,14 +1472,16 @@ UAT recording (`TraceLog`) and **no** replayable artifact. The Stratux was later
 contents (if any) and logs from that session must be assumed lost. Six screenshots of the Stratux web UI (Status, Traffic, Weather, Towers, from a phone
 browser; the displayed clocks are 4:08 and 4:41, local, no zone) were taken by the owner. They are kept, with SHA-256 verification against their
 manifest, in a private evidence directory outside Git (`stratux-fisb-2026-09-26-field`, archive SHA-256
-`eadce06403c8c4e67ccc7552d7c97bdfe77e333fb61f9377f3768fbde775c7fd`). **No ForeFlight or iPad mini screenshot exists in that archive**; the
-ForeFlight observation below rests on the owner's account alone.
+`eadce06403c8c4e67ccc7552d7c97bdfe77e333fb61f9377f3768fbde775c7fd`). **That archive has no ForeFlight image.** A separate one-image addendum (`addendum-foreflight/`, archive SHA-256
+`bb56d436f2316425edf36daa9192bc484608624708d0d9fa808a69dcccdb4c41`; ForeFlight on the iPad, clock 4:08 PM Sat Sep 26, zone not shown) shows
+ForeFlight Maps with traffic (N408LF, FDX3954, ICE664 - the same callsigns as the Stratux Traffic page), and, in the image, "No Data",
+"Stratux: No Towers" and "Radar not available" - no weather. It is the only ForeFlight image; there is none for the ~60 min point.
 
 | Time (approx.) | Observation from the dashboard screenshots |
 | --- | --- |
 | ~30 min (Stratux uptime 0:30:40) | 151 UAT frames, current UAT 4 messages (peak 36), 1 tower; METAR/TAF/NEXRAD/PIREP/SIGMET/NOTAM all 0, Other 3 |
 | ~60 min (Stratux uptime 1:03:53) | 444 UAT frames; product statistics METAR 21, TAF 6, NEXRAD 108, NOTAM 8, Other 67 (PIREP 0, SIGMET 0); tower count 0 |
-| throughout | 1090 receiver receiving traffic; GPS 3D fix (3.6 m, then 3.0 m); the Stratux Traffic page listed targets (no source-band column); traffic shown in ForeFlight (iPad mini) is the owner's account only, no image; the build shown is `b26686c752` |
+| throughout | 1090 receiver receiving traffic; GPS 3D fix (3.6 m, then 3.0 m); the Stratux Traffic page listed targets (no source-band column); traffic shown in ForeFlight (iPad) at 4:08 PM, with "No Data" / "Stratux: No Towers" / "Radar not available" and no weather on the map (addendum image; the band is not identifiable); the build shown is `b26686c752` |
 | at both points | Stratux Weather page: "Connected", "Watching (0)", "Recent Reports (0)" - at the ~30 min point (all weather counters 0) and again at the ~60 min point, the same displayed minute as the screenshot with 21 METARs |
 
 **Classification of this evidence**
@@ -1487,7 +1489,7 @@ ForeFlight observation below rests on the owner's account alone.
 - Live 978 MHz reception: **confirmed** (444 UAT frames; the product counters below advance only for decoded uplinks).
 - Weather-related counter activity: **observed**.
 - Rolling-cache population, current product freshness, Weather-page delivery, GDL90 weather (0x07) delivery and ForeFlight weather reception:
-  **unverified**. In particular nothing here shows that weather reached ForeFlight, and whether the cache was enabled during this session is unknown (the last
+  **unverified**. In particular nothing here shows that weather reached ForeFlight (the only ForeFlight image, at the ~30 min point when every weather counter was still 0, shows none), and whether the cache was enabled during this session is unknown (the last
   documented state, at the end of the 2026-09-25 verification, is the default *disabled*; it was not re-read on 2026-09-26).
 
 ### Read-only review of the status paths (no code was changed)
@@ -1548,7 +1550,8 @@ Everything below is from reading this branch (`92427fd3`); nothing was run on th
 4. The empty Weather page is explained by page-open timing plus the default watch list (open it before/while reports arrive; set `WatchList` to local stations).
 5. ForeFlight's targets came from the 1090 receiver; and whether ForeFlight received 0x07 weather at all.
 6. The cache was disabled during the session (so it could not have populated).
-7. A header-position glitch could create a phantom tower (the code does not check the header's position-valid flag).
+7. ForeFlight showed "Stratux: No Towers" at 4:08 while the Stratux Towers page listed one tower (11 messages last minute): whether uplinks were not delivered or held for that client, ForeFlight applies its own criterion, or it is snapshot timing is not established.
+8. A header-position glitch could create a phantom tower (the code does not check the header's position-valid flag).
 
 ### Smallest evidence set for the next live session
 
