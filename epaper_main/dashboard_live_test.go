@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,5 +44,39 @@ func TestLiveDashboardFromDevice(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(out, "live.png"), pngBytes(t, img), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestLiveWatchDashboard (opt-in: EPAPER_LIVE_URL and EPAPER_LIVE_WATCH=<seconds>)
+// polls the real daemon every 5 s for that long and logs every change of the
+// dashboard's material state, with what changed - used to understand which
+// inputs cost panel refreshes (for example during a boot). Read-only.
+func TestLiveWatchDashboard(t *testing.T) {
+	url := os.Getenv("EPAPER_LIVE_URL")
+	secs := os.Getenv("EPAPER_LIVE_WATCH")
+	if url == "" || secs == "" {
+		t.Skip("EPAPER_LIVE_URL / EPAPER_LIVE_WATCH not set")
+	}
+	var total int
+	fmt.Sscanf(secs, "%d", &total)
+	src := NewDashSource(url, 2*time.Second)
+	start := time.Now()
+	tr := epaper.NewTracker(epaper.DefaultThresholds(), start)
+	line := func(d epaper.Dashboard) string {
+		return fmt.Sprintf("%s | GPS %s/%s | 1090 %s/%s | 978 %s/%s | WX %s/%s | %s | warn=%d",
+			d.OverallTxt, d.GPS.Headline, d.GPS.Detail, d.ES.Headline, d.ES.Detail, d.UAT.Headline, d.UAT.Detail,
+			d.FISB.Headline, d.FISB.Detail, d.Clients, len(d.Warnings))
+	}
+	var last string
+	changes := 0
+	for time.Since(start) < time.Duration(total)*time.Second {
+		tr.Observe(src.Poll(context.Background(), time.Now))
+		d := tr.Derive(time.Now(), time.Now())
+		if k := d.MaterialKey(); k != last {
+			changes++
+			t.Logf("%s +%3ds #%d %s", time.Now().UTC().Format("15:04:05"), int(time.Since(start).Seconds()), changes, line(d))
+			last = k
+		}
+		time.Sleep(5 * time.Second)
 	}
 }

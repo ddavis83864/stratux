@@ -48,6 +48,12 @@ type Thresholds struct {
 	// weather itself - see the limitations in the doc.
 	WXCurrentWithin time.Duration
 	WXAgingWithin   time.Duration
+	// ClientHold: a client counts as connected until it has not been seen
+	// awake for this long. The daemon flaps a device that answers pings but
+	// has no app listening (awake ~5 s in ~30 s); 45 s rides through that
+	// without a panel refresh per flap, and a real departure still shows
+	// within a minute.
+	ClientHold time.Duration
 	// TempWarnC: CPU temperature at or above which a HOT warning shows
 	// (the Raspberry Pi starts to throttle at 80 C).
 	TempWarnC float64
@@ -64,6 +70,7 @@ func DefaultThresholds() Thresholds {
 		UplinkRecent:        120 * time.Second,
 		WXCurrentWithin:     5 * time.Minute,
 		WXAgingWithin:       15 * time.Minute,
+		ClientHold:          45 * time.Second,
 		TempWarnC:           80,
 	}
 }
@@ -121,10 +128,25 @@ type TowerData struct {
 	Known  int // every tower heard since the daemon started
 }
 
-// ClientData is what one successful /getClients read yields: the unique
-// network clients currently answering the daemon's liveness probes.
+// ClientData is what one successful /getClients read yields: the addresses
+// of the network clients the daemon currently considers awake. A device on
+// the network with nothing listening on the GDL90 port answers pings but
+// draws an ICMP port-unreachable, so the daemon flips it awake for a few
+// seconds out of every ~30 (seen on the bench with a laptop); presence is
+// therefore judged over a hold time (Thresholds.ClientHold), not from one
+// reading.
 type ClientData struct {
-	Responding int
+	AwakeIPs []string
+}
+
+// ClientsOf returns ClientData with n distinct synthetic addresses, for
+// tests and fixtures.
+func ClientsOf(n int) *ClientData {
+	c := &ClientData{}
+	for i := 1; i <= n; i++ {
+		c.AwakeIPs = append(c.AwakeIPs, fmt.Sprintf("192.0.2.%d", i))
+	}
+	return c
 }
 
 // PowerData is what one successful /getPowerHealth read yields: the
@@ -171,9 +193,11 @@ type Tracker struct {
 	health  HealthData
 	towers  TowerData
 	clients ClientData
-	power   PowerData
-	okAt    [epCount]time.Time
-	haveEP  [epCount]bool
+	// clientSeen is when each client address was last seen awake.
+	clientSeen map[string]time.Time
+	power      PowerData
+	okAt       [epCount]time.Time
+	haveEP     [epCount]bool
 
 	upMs         int64
 	upAdvancedAt time.Time
@@ -246,6 +270,17 @@ func (t *Tracker) Observe(s Sample) {
 	}
 	if s.Clients != nil {
 		t.clients = *s.Clients
+		if t.clientSeen == nil {
+			t.clientSeen = map[string]time.Time{}
+		}
+		for _, ip := range s.Clients.AwakeIPs {
+			t.clientSeen[ip] = at
+		}
+		for ip, seen := range t.clientSeen { // forget long-gone addresses
+			if at.Sub(seen) > 10*t.th.ClientHold {
+				delete(t.clientSeen, ip)
+			}
+		}
 		t.okAt[epClients], t.haveEP[epClients] = at, true
 	}
 	if s.Power != nil {
@@ -440,13 +475,19 @@ func (t *Tracker) Derive(now, wall time.Time) Dashboard {
 
 	// ---- clients ----
 	if auxOK(epClients) {
-		switch t.clients.Responding {
+		n := 0
+		for _, seen := range t.clientSeen {
+			if now.Sub(seen) <= t.th.ClientHold {
+				n++
+			}
+		}
+		switch n {
 		case 0:
 			d.Clients = "NO CLIENTS CONNECTED"
 		case 1:
 			d.Clients = "1 CLIENT CONNECTED"
 		default:
-			d.Clients = fmt.Sprintf("%d CLIENTS CONNECTED", t.clients.Responding)
+			d.Clients = fmt.Sprintf("%d CLIENTS CONNECTED", n)
 		}
 	} else {
 		d.Clients = "CLIENTS UNKNOWN"

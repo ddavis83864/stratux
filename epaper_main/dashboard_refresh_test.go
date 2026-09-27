@@ -78,7 +78,7 @@ func (h *harness) poll(mutate func(*epaper.Sample)) {
 	st := baseStatus()
 	st.UptimeMs += int64(h.now.Sub(fx0) / time.Millisecond)
 	s := epaper.Sample{At: h.now, Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"},
-		Towers: &epaper.TowerData{}, Clients: &epaper.ClientData{Responding: 1}, Power: &epaper.PowerData{}}
+		Towers: &epaper.TowerData{}, Clients: epaper.ClientsOf(1), Power: &epaper.PowerData{}}
 	if mutate != nil {
 		mutate(&s)
 	}
@@ -262,13 +262,19 @@ func TestRefreshClientCountChangeIsMaterial(t *testing.T) {
 	h.poll(nil)
 	h.tick()
 	h.advance(40 * time.Second)
-	h.poll(func(s *epaper.Sample) { s.Clients = &epaper.ClientData{Responding: 2} })
+	h.poll(func(s *epaper.Sample) { s.Clients = epaper.ClientsOf(2) })
 	h.tick()
 	if len(h.drv.updates) != 2 {
 		t.Fatalf("client connect did not refresh: %d", len(h.drv.updates))
 	}
 	h.advance(40 * time.Second)
-	h.poll(func(s *epaper.Sample) { s.Clients = &epaper.ClientData{Responding: 0} })
+	h.poll(func(s *epaper.Sample) { s.Clients = epaper.ClientsOf(0) })
+	h.tick()
+	if len(h.drv.updates) != 2 {
+		t.Fatalf("a client that just went quiet must be held for its hold time, got %d updates", len(h.drv.updates))
+	}
+	h.advance(60 * time.Second) // past the 45 s hold
+	h.poll(func(s *epaper.Sample) { s.Clients = epaper.ClientsOf(0) })
 	h.tick()
 	if len(h.drv.updates) != 3 {
 		t.Fatalf("client disconnect did not refresh: %d", len(h.drv.updates))
@@ -336,7 +342,7 @@ func TestRefreshNoDataAndRecoveryAreBothPromptUnderTheStormGuard(t *testing.T) {
 		st := baseStatus()
 		st.UptimeMs = int64(h.now.Sub(restartAt)/time.Millisecond) + 2000
 		h.snap.tr.Observe(epaper.Sample{At: h.now, Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"},
-			Towers: &epaper.TowerData{}, Clients: &epaper.ClientData{Responding: 1}, Power: &epaper.PowerData{}})
+			Towers: &epaper.TowerData{}, Clients: epaper.ClientsOf(1), Power: &epaper.PowerData{}})
 		h.tick()
 		h.advance(5 * time.Second)
 	}

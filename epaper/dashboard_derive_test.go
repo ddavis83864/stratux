@@ -32,7 +32,7 @@ func refSample(at time.Time) Sample {
 		Status:  &st,
 		Health:  &HealthData{CPUTempC: 55, TimeState: "GNSS_SYNCED"},
 		Towers:  &TowerData{},
-		Clients: &ClientData{Responding: 1},
+		Clients: ClientsOf(1),
 		Power:   &PowerData{},
 	}
 }
@@ -545,18 +545,63 @@ func TestAuxiliarySourceFailureIsPartialNotFatal(t *testing.T) {
 }
 
 func TestClientCountChanges(t *testing.T) {
-	tr, _ := newRef(t)
+	tr, _ := newRef(t) // the reference reading has one client awake
 	at := t0
-	for _, c := range []struct {
-		n    int
-		want string
-	}{{0, "NO CLIENTS CONNECTED"}, {1, "1 CLIENT CONNECTED"}, {2, "2 CLIENTS CONNECTED"}, {0, "NO CLIENTS CONNECTED"}} {
+	poll := func(n int) Dashboard {
 		at = at.Add(5 * time.Second)
-		n := c.n
-		step(tr, at, func(s *Sample) { s.Clients = &ClientData{Responding: n} })
-		if d := tr.Derive(at, t0); d.Clients != c.want {
-			t.Errorf("%d clients -> %q, want %q", n, d.Clients, c.want)
+		step(tr, at, func(s *Sample) { s.Clients = ClientsOf(n) })
+		return tr.Derive(at, t0)
+	}
+	if d := poll(2); d.Clients != "2 CLIENTS CONNECTED" {
+		t.Errorf("2 awake -> %q", d.Clients)
+	}
+	if d := poll(1); d.Clients != "2 CLIENTS CONNECTED" {
+		t.Errorf("one of two goes quiet, still inside the hold: %q", d.Clients)
+	}
+	// After the hold time with nobody awake, everyone has gone.
+	for i := 0; i < 10; i++ {
+		poll(0)
+	}
+	if d := tr.Derive(at, t0); d.Clients != "NO CLIENTS CONNECTED" {
+		t.Errorf("all quiet past the hold -> %q", d.Clients)
+	}
+	if d := poll(1); d.Clients != "1 CLIENT CONNECTED" {
+		t.Errorf("a client returns -> %q", d.Clients)
+	}
+}
+
+// Found on the bench panel: a laptop that answers pings but has nothing
+// listening on the GDL90 port is flipped awake for ~5 s out of every ~30 by the
+// daemon. Counting each reading made the footer (and so the panel) flap
+// 0 <-> 1 every 30 s. The hold time makes it one steady client.
+func TestFlappingClientIsOneSteadyClient(t *testing.T) {
+	tr := NewTracker(DefaultThresholds(), t0)
+	keys := map[string]bool{}
+	at := t0
+	for i := 0; i < 120; i++ { // ten minutes of 5 s polls
+		at = at.Add(5 * time.Second)
+		awake := i%6 == 0 // awake one reading in six: ~5 s of every 30 s
+		step(tr, at, func(s *Sample) {
+			if awake {
+				s.Clients = ClientsOf(1)
+			} else {
+				s.Clients = ClientsOf(0)
+			}
+		})
+		if i >= 6 { // once seen, it must read the same every time
+			keys[tr.Derive(at, t0).Clients] = true
 		}
+	}
+	if len(keys) != 1 || !keys["1 CLIENT CONNECTED"] {
+		t.Errorf("a flapping client produced footers %v, want a steady '1 CLIENT CONNECTED'", keys)
+	}
+	// When it really leaves, the footer follows within the hold time.
+	for i := 0; i < 12; i++ {
+		at = at.Add(5 * time.Second)
+		step(tr, at, func(s *Sample) { s.Clients = ClientsOf(0) })
+	}
+	if got := tr.Derive(at, t0).Clients; got != "NO CLIENTS CONNECTED" {
+		t.Errorf("a minute after the last sighting: %q", got)
 	}
 }
 

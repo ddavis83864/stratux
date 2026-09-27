@@ -77,8 +77,8 @@ func TestDashSourceParsesRealPiPayloads(t *testing.T) {
 	// Every client in the capture was asleep, and two BLE entries have no
 	// address at all: nobody is connected right now, whatever the daemon's
 	// 15-minute "recent clients" counter (12 here) says.
-	if smp.Clients.Responding != 0 {
-		t.Errorf("clients responding = %d, want 0", smp.Clients.Responding)
+	if len(smp.Clients.AwakeIPs) != 0 {
+		t.Errorf("clients awake = %v, want none", smp.Clients.AwakeIPs)
 	}
 	if smp.Power.UndervoltageNow || smp.Power.ThrottledNow {
 		t.Errorf("power = %+v", smp.Power)
@@ -116,8 +116,8 @@ func TestDashSourceCountsUniqueRespondingClients(t *testing.T) {
 	s := piServer(t, map[string]func(http.ResponseWriter, *http.Request){
 		"getClients": func(w http.ResponseWriter, r *http.Request) { w.Write(body) },
 	})
-	if n := poll(t, s, 2*time.Second).Clients.Responding; n != 2 {
-		t.Errorf("responding = %d, want 2 unique addresses", n)
+	if ips := poll(t, s, 2*time.Second).Clients.AwakeIPs; len(ips) != 2 || ips[0] != "192.168.10.101" || ips[1] != "192.168.10.102" {
+		t.Errorf("awake = %v, want the 2 unique addresses", ips)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestRunnerPollsAndDerivesThenStops(t *testing.T) {
 		st := baseStatus()
 		st.UptimeMs += int64(n) * 5000
 		return epaper.Sample{At: now(), Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"},
-			Towers: &epaper.TowerData{}, Clients: &epaper.ClientData{Responding: 1}, Power: &epaper.PowerData{}}
+			Towers: &epaper.TowerData{}, Clients: epaper.ClientsOf(1), Power: &epaper.PowerData{}}
 	}}
 	r := startDashboardRunner(context.Background(), src, epaper.DefaultThresholds(), 20*time.Millisecond, time.Now)
 	deadline := time.Now().Add(2 * time.Second)

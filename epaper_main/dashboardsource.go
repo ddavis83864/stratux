@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -192,15 +193,18 @@ func (s *DashSource) Poll(ctx context.Context, now func() time.Time) epaper.Samp
 			return
 		}
 		seen := map[string]bool{}
+		var ips []string
 		for _, c := range m {
 			// Only UDP network clients carry an address; a connection
 			// counts while the daemon's own liveness probe (ICMP ping/pong,
 			// refreshed about once a second) says it is not asleep.
-			if c.Ip != "" && !c.SleepFlag {
+			if c.Ip != "" && !c.SleepFlag && !seen[c.Ip] {
 				seen[c.Ip] = true
+				ips = append(ips, c.Ip)
 			}
 		}
-		clients = &epaper.ClientData{Responding: len(seen)}
+		sort.Strings(ips)
+		clients = &epaper.ClientData{AwakeIPs: ips}
 	})
 	run(func() {
 		var w wirePower

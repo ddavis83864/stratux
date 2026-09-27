@@ -39,7 +39,7 @@ func dashSample(n int, mutate func(i int, s *epaper.Sample)) epaper.Dashboard {
 			At: at, Status: &st,
 			Health:  &epaper.HealthData{CPUTempC: 56, TimeState: "GNSS_SYNCED"},
 			Towers:  &epaper.TowerData{},
-			Clients: &epaper.ClientData{Responding: 1},
+			Clients: epaper.ClientsOf(1),
 			Power:   &epaper.PowerData{},
 		}
 		if mutate != nil {
@@ -66,7 +66,7 @@ func allFixtures() []dashFixture {
 			s.Status.GPSConnected, s.Status.GPSSolution, s.Status.GPSSatsLocked = false, "Disconnected", 0
 			s.Status.UAT.ExternalConnected = false
 			s.Status.ES.Detected, s.Status.ES.Total, s.Status.ES.LastMinute = false, 0, 0
-			s.Clients = &epaper.ClientData{}
+			s.Clients = epaper.ClientsOf(0)
 		}))
 
 	add("02-reference", "the reference state: GPS 3D fix, 1090 receiving, 978 connected with no messages, FIS-B no uplink",
@@ -78,7 +78,7 @@ func allFixtures() []dashFixture {
 			s.Status.UAT.Total, s.Status.UAT.LastMinute = uint64(100+10*i), 12
 			s.Status.Products = epaper.ProductTotals{METAR: uint32(3 * i), TAF: uint32(i), NEXRAD: uint32(20 * i), NOTAM: 2, Other: 5}
 			s.Towers = &epaper.TowerData{Active: 1, Known: 1}
-			s.Clients = &epaper.ClientData{Responding: 2}
+			s.Clients = epaper.ClientsOf(2)
 		}))
 
 	add("04-no-gps-fix", "GPS receiver present but no fix",
@@ -104,7 +104,7 @@ func allFixtures() []dashFixture {
 		func() epaper.Dashboard {
 			tr := epaper.NewTracker(epaper.DefaultThresholds(), fx0)
 			st := baseStatus()
-			tr.Observe(epaper.Sample{At: fx0, Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"}, Towers: &epaper.TowerData{}, Clients: &epaper.ClientData{Responding: 1}, Power: &epaper.PowerData{}})
+			tr.Observe(epaper.Sample{At: fx0, Status: &st, Health: &epaper.HealthData{TimeState: "GNSS_SYNCED"}, Towers: &epaper.TowerData{}, Clients: epaper.ClientsOf(1), Power: &epaper.PowerData{}})
 			return tr.Derive(fx0.Add(90*time.Second), time.Date(2026, 9, 26, 12, 42, 0, 0, time.UTC))
 		}())
 
@@ -136,7 +136,7 @@ func allFixtures() []dashFixture {
 				p = epaper.ProductTotals{METAR: uint32(i / 20), NEXRAD: uint32(i / 2)}
 			}
 			s.Status.Products = p
-			s.Clients = &epaper.ClientData{Responding: 12}
+			s.Clients = epaper.ClientsOf(12)
 			s.Power = &epaper.PowerData{ThrottledNow: true}
 			s.Health.CPUTempC = 81
 			s.Health.FailedServices = []string{"stratux_ais"}
