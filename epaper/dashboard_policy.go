@@ -34,7 +34,14 @@ import "time"
 //     DashboardUrgentMax per DashboardStormWindow, so an outage and its
 //     recovery both show promptly while a flapping fault cannot bypass the
 //     guard.
-//  5. A refresh is FULL (flashing, ghost-clearing) instead of partial if
+//  5. Ghosting-critical content: the inverted (fault / NO STATUS DATA) banner
+//     is a large solid black fill, and a *partial* refresh's weaker waveform
+//     visibly ghosts on a fill that size (seen on the bench panel: a
+//     content-only change - the "NO DATA FOR ..." bucket advancing - drawn
+//     partial while still inverted left the whole screen looking smudged/
+//     doubled). Every refresh while the current frame is inverted is
+//     therefore always FULL, not only the transition into or out of it.
+//  6. A refresh is FULL (flashing, ghost-clearing) instead of partial if
 //     fullRefreshEvery partial refreshes have accumulated, if the last full
 //     refresh is older than DashboardFullMaxAge, or if the banner's
 //     black/white inversion changed (a large-area polarity change ghosts
@@ -144,7 +151,7 @@ func DecideDashboard(st DashPolicyState, key string, inverted bool, refreshInter
 		return RefreshNone, st
 	}
 
-	full := st.Partials >= fullEvery || now.Sub(st.LastFullAt) >= DashboardFullMaxAge || inverted != st.LastInverted
+	full := st.Partials >= fullEvery || now.Sub(st.LastFullAt) >= DashboardFullMaxAge || inverted != st.LastInverted || inverted
 	st.LastKey, st.LastInverted, st.LastRefreshAt, st.NotBefore = key, inverted, now, time.Time{}
 	st.Recent = append(st.Recent, now)
 	if urgent {

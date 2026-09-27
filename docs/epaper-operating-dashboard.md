@@ -216,9 +216,14 @@ FAQ says after 5; refresh at least every 24 h):
 * a **proof-of-life partial refresh** every 10 minutes if nothing changed, so
   the footer time keeps proving the service is alive (6 per hour);
 * at most **5 partial refreshes** between full ones (whatever
-  `EpaperFullRefreshEvery` says), a full refresh when the banner flips between
-  normal and inverted (a large polarity change ghosts on a partial waveform),
-  and a full refresh at least every 4 h;
+  `EpaperFullRefreshEvery` says), and a full refresh at least every 4 h;
+* **every refresh is full while the banner is inverted** (`RECEIVER FAULT` /
+  `NO STATUS DATA`), not only the flip into or out of it: the inverted banner
+  is a large solid black fill, and a partial refresh's weaker waveform
+  visibly ghosts on a fill that size. (Found on the bench: a content-only
+  change while still inverted - the "NO DATA FOR ..." bucket advancing - was
+  drawn as a partial refresh and left the whole screen looking smudged and
+  doubled; every refresh while inverted is now full.)
 * refreshes never overlap (single goroutine; the poller runs separately and a
   hung request cannot delay a decision), and a failed panel update is reported
   in the service health and retried once per interval, not once per poll.
