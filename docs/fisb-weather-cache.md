@@ -1575,3 +1575,121 @@ Recordings, in order of value:
 How they separate the questions: valid uplink reception = raw trace lines plus `UAT_messages_total` deltas and `/getTowers`; product assembly = the
 offline decode of the trace against the product counters; cache updates = cache status/inventory (enabled beforehand); client delivery = 0x07 in the
 GDL90 recording and the `NetworkData*` deltas - never the ForeFlight display alone.
+
+## Field session, 2026-09-27: live 978 MHz reception, gate-by-gate result
+
+**Status of the live-acceptance gate: still OPEN.** This session recorded real ground-station uplinks with the cache enabled and produced the
+first genuine cross-restart persistence evidence, but the two criteria this PR's own body names as required before a merge decision - live FIS-B
+reception *and* a ForeFlight session - are only half settled: reception, yes; ForeFlight, still unwitnessed.
+
+**Session facts:** capture window 2026-09-27T23:48:50Z-2026-09-28T00:13:50Z; reception burst 23:55:39-~00:08:18 (~13 min), flat/zero outside it.
+`UAT_messages_total` +182 (413->595). Product counter deltas: METAR +10, TAF +21, NEXRAD +218, PIREP +1, NOTAM +14, OTHER +101, SIGMET +0. Decoded
+`/weather` websocket messages: 32 (WINDS 13, METAR 10, TAF 8, PIREP 1). GDL90 0x07 uplink recorder: 160 CRC-valid records, 0 CRC-bad, 81 distinct
+real frames. FIS-B cache inventory across the window: 358 (23:48:50, baseline) -> 438 (23:57:12) -> 539 (00:08:03, peak) -> 477 (00:13:01, window
+end) -> 477 (00:29:27, final) - the 539->477 drop (-62) matches the live-reported `lastCleanupCount: 62` at `00:11:17Z`, an ordinary age-based
+eviction, not data loss. Final inventory: 477 entries (405 `nexrad_tile` + 72 `text`), `persistenceEnabled: true`, `maxEntries: 2000` (23.9% full).
+One brief `health=DEGRADED` period (00:11:31Z-00:12:01Z, ~45 s) with `undervoltageNow: False` throughout, recovered to `READY` - recorded only; the
+separate, deferred transient-undervoltage investigation was not reopened.
+
+### Gate results
+
+| Gate | Name | Status | Detail |
+| --- | --- | --- | --- |
+| G1 | Multiple real CRC-valid uplink frames | **PASS** | 81 distinct real CRC-valid 438-byte 0x07 frames from the Stratux; 0 bad-CRC kept separately. |
+| G2 | Recorder files, counts, sequence, limits, SHA-256 | **PASS** | All checks passed. |
+| G3 | Timestamps | **PASS** | All 160 timestamps inside the capture window, monotonic, spread over 6 UTC minutes. |
+| G4 | Observed ground station (header vs. `/getTowers`) | **NOT PROVEN** | See below - left unchanged, not waived. |
+| G5 | Saved payload read back locally | **PASS** | Header parsed (`app_data_valid=True`, slot 17); 4 frames, 410/424 bytes consumed. |
+| G6 | Simultaneous snapshots, towers, decoded `/weather` | **PASS** | 96 snapshots cover 99% of the window; 32 decoded `/weather` messages captured. |
+| G7 | FIS-B product coverage | **PASS** | Core products present: METAR, TAF, NEXRAD, PIREP; absent: SIGMET/AIRMET. |
+| G8 | Second-device evidence mirror | **PASS** | Independent second-USB mirror of the `evidence/` tree (19 files, made before this addendum existed), 0 mismatches, verified three times. |
+| - | ForeFlight weather receipt | **UNKNOWN** | Not witnessed. Required by this PR's own stated merge criteria (see below); no code or gate result changes this. |
+| - | Persistence across a real restart | **PASS** (text-class only) | See "Persistence" below; `nexrad_tile`-class persistence remains untested, not failed. |
+
+**G4, in detail - left NOT PROVEN, not waived, with an explicit proposed rule clarification for review.** The captured uplink header's decoded
+lat/lon (47.80029, -116.889) is close to Stratux's own cached tower coordinate (47.800291, -116.888995), but `position_valid` reads `0` on
+**all 160/160 records**, across all 32 slot IDs, from a single `tisb_site_id`. Independent hand-decoding of the header bytes matched the field
+tool's own parser exactly, and both match the bit layout of `mutability/dump978` (the reference UAT decoder this codebase's own vendored
+`dump978/uat_decode.c` is forked from), which decodes lat/lon unconditionally but documents *why* it still tracks validity separately:
+`/* Even with position_valid = 0, there seems to be plausible data here. Decode it always. */`. That is exactly the rule this gate already applies,
+so **no change to G4's pass/fail rule is warranted** - a numeric near-match under `position_valid=0` should not be credited, on the same rationale
+the reference implementation itself documents.
+
+Separately, direct reading of this branch's own code (`uatparse/uatparse.go`'s `DecodeUplink`) confirms `position_valid`, `utc_coupled`, `slot_id`,
+and `tisb_site_id` are **commented-out dead code** here - only `Lat`/`Lon` are decoded and stored, unconditionally, with no validity gate at all -
+and neither `fisbcache`, its capture path (`main/fisbcachecapture.go`), nor the GDL90 send path (`main/gen_gdl90.go`'s `relayMessage`) ever
+reference position validity, `Lat`, or `Lon` in any cache/product/delivery decision. **Proposed clarification for review (not applied
+unilaterally): reclassify G4 in the acceptance framework as an optional station-location corroboration check, not a criterion this PR's cache
+function depends on** - the technical rationale is the two findings above (a code-confirmed independence, plus an authoritative-reference-backed
+reason to keep its current strict rule). This is a documentation/classification proposal only; G4's own recorded result stays NOT PROVEN pending
+that review, and nothing here credits the near-match as a pass. What would resolve G4 on its own existing rule: a future capture where a station
+transmits `position_valid=1`, or independent non-header corroboration of this transmitter's physical location (a site visit or a public facility
+record - `tisb_site_id` is a 4-bit local slot identifier, not a lookup key).
+
+**TAF persistence-candidate correction.** The imported analysis states "seven were captured" between `sourceTimeUtc` 23:20:00Z-23:24:00Z:
+`TAF KPIH, KSUN, KTWF, KJAC, KPAE, KEUL, KCTB`. A direct recount of the same cited inventory file finds **12**, not 7: the same seven plus
+`KBLI, KEAT, KEKS, KHLN, KONO`. All 12 were `CACHED_FRESH` at capture time. This is a correction to the external analysis, credited here rather
+than silently carried forward, and it is the 12 used below.
+
+**Replay result - loopback/downstream only, re-confirmed.** The isolated offline replay (`offline_replay_test.py`, bound only to
+`127.0.0.1:42978`, no listener left bound afterward) found 160/160 records' independently recomputed SHA-256 matching the saved value, and
+160/160 frames round-tripped byte-identical over a real loopback UDP socket with plausible inter-arrival timing preserved. This proves the saved
+GDL90 payloads are byte-correct and resendable to a generic downstream client. **It is not a raw 978 MHz/FEC decode replay** (the frames were
+already decoded by the external UAT radio and Stratux before capture) **and not evidence of what ForeFlight displayed** on 2026-09-27 (no
+ForeFlight or EFB client was involved). Nothing from this evidence was ever injected into the live Stratux daemon or a production network.
+
+### Persistence across a real restart (Phase 3, performed 2026-09-28)
+
+The live Pi (build `7d66a7f7`, joined continuously since before the field session - confirmed via `uptime -s`, which pre-dated the field
+session's own start, so the still-72-entry-matching cache observed on first inspection was **not** persistence evidence, just an unbroken
+in-memory process) was given a genuine, controlled restart: `sudo systemctl restart stratux`, confirmed by reading `initFISBCache`/
+`fisbCacheStartupRecovery` (`main/fisbcacherun.go`) to exercise the real disk-recovery path without a full device reboot.
+
+- **Pre-restart** (2026-09-28T01:09:08Z): 72 entries, all `productClass: "text"` (the 405 `nexrad_tile` entries from the field session had already
+  aged out/been evicted in the intervening ~55 minutes, as expected - NEXRAD refreshes on the order of minutes).
+- **Restart issued** 01:10:57Z; recovered to `Overall: READY`, `Uptime_s: 11` within ~13 s (well under the 30 s startup-recovery timeout); cache
+  back to `state: LIVE, totalEntries: 72` almost immediately, `cleanupRuns: 1` (reset, as expected for a fresh process).
+- **Identity/content result: PASS for the text class.** 72/72 identities matched, 0 missing, 0 new; `sourceTimeUtc` and `receivedAtUtc` were
+  byte-identical pre- and post-restart for every entry, including all 12 TAF candidates above. `nexrad_tile`-class persistence remains
+  **untested** (none were still live to test), not failed - a future test needs a restart performed within minutes of a NEXRAD-bearing burst.
+- **Distinct finding, not folded into the PASS above: a real `SizeBytes` defect, found and fixed this session.** Every one of the 72 recovered
+  entries reported a larger `sizeBytes` than it had at live admission (e.g. `TAF KCTB`: 126 -> 448), a near-constant +320..+326 byte inflation,
+  not proportional. Root cause: `fisbcache/schema.go`'s `DecodePersistedEntry` set `SizeBytes` from `len(raw)` - the entire persisted JSON record
+  (schema version, origin marker, identity, timestamps, checksum, and payload) - while live admission (`main/fisbcacherun.go`) and every other
+  call site (`Store.TotalBytes`, the byte-budget checks in `retention.go`/`fisbcachereserve.go`) use the decoded payload's own length only. This
+  silently inflated reported cache size and made the byte-budget eviction/admission checks more aggressive than configured, purely as an artifact
+  of a restart having occurred - and was not caught by the existing `TestInvariant_CommittedBytesAndEntriesNeverExceedConfiguredMaximum`, which
+  exercises fresh admission only, never disk recovery. **Fixed**: `DecodePersistedEntry` now derives `SizeBytes` from the decoded payload
+  (`len(p.Payload)`), matching admission semantics; `Entry.SizeBytes`'s own doc comment now states the intended meaning explicitly. Covered by a
+  new focused test, `TestDecodePersistedEntry_SizeBytesMatchesLiveAdmission` (`fisbcache/schema_test.go`), which fails loudly if this regresses.
+  `go test ./fisbcache/...` and `go test ./fisbcache/... -race` both pass on the fix.
+
+### ForeFlight weather receipt - required, still UNKNOWN
+
+This PR's own status text states plainly: "Live FIS-B / ForeFlight acceptance still required before a merge decision" - so this is not an
+optional nicety, and it stays **UNKNOWN**, not assumed or waived. No iPad/ForeFlight observation was reported during the 2026-09-27 burst. The
+2026-09-27 iPad screenshots (uploaded to ChatGPT, not this USB mirror) remain **PENDING transfer and hashing**, tracked separately from the field
+mirror; their visible times (reported ~4:40-4:49 PM PDT) precede the captured burst (23:55:39 UTC =~ 4:55 PM PDT), so even once transferred they
+would not by themselves establish ForeFlight weather receipt *during* the burst - at most, connection/traffic state beforehand.
+
+**Same-minute procedure for the next live session** (adopted from the imported analysis, §5, not rewritten): during a future reception window,
+take one iPad screenshot of ForeFlight's ADS-B/weather status *and* one Stratux `/getStatus`+`/getHealth` snapshot within the same UTC minute,
+while a GDL90 uplink capture runs concurrently - so the iPad, the Stratux snapshot, and the raw uplink capture share one citable timestamp.
+
+### Evidence and import
+
+Field mirror (20 files + manifest), PR15 analysis (2 files), and the transfer handoff (1 file) were imported from USB to a private,
+outside-Git directory (`/home/ddavis/acceptance-evidence/stratux-fisb-usb-import-20260928/`, mode 700), verified by the mirror's own
+`MIRROR-SHA256SUMS.txt` **plus** an independent from-scratch hash recompute (20/20 match), with destination hashes independently recomputed
+again after copying (24/24 match) and the USB originals confirmed unchanged before unmounting. **Evidentiary gap, reported not assumed:** no
+independent transfer-hash manifest exists on the USB for the analysis or handoff documents - only a narrative claim inside the handoff itself;
+their as-received hashes are recorded as a baseline for a future cross-check, not treated as verified. The persistence-test snapshots above are
+saved alongside it (`persistence-check/`, mode 700). No private capture file, iPad image, credential, or device-specific log from any of this is
+committed to Git.
+
+### Merge decision
+
+**PR #15 stays open.** Both criteria this PR's own body names as required - live FIS-B reception and a ForeFlight session - are only half
+resolved: reception is now demonstrated (this session), ForeFlight remains UNKNOWN. G4 stays NOT PROVEN (a proposed reclassification is offered
+above for review, not applied). The iPad transfer is PENDING and does not block this repository-side analysis. This field session, on its own,
+is not full PR #15 acceptance and does not justify merging to close an open gate.
