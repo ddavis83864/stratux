@@ -37,6 +37,40 @@
 	</div>
 
 	<div class="panel panel-default">
+		<div class="panel-heading"><span class="panel_label">Restart</span></div>
+		<div class="panel-body">
+			<p class="small text-muted">
+				Restarts the device. This will interrupt your Stratux connection for
+				about a minute while it reboots. It is blocked while an update or a
+				configuration restore is in progress, and any active recording is
+				flushed and closed first.
+			</p>
+
+			<div ng-show="Restart.done">
+				<p class="text-success">Restart confirmed - the device is restarting now.</p>
+			</div>
+
+			<div ng-hide="Restart.done">
+				<p class="small text-danger" ng-show="Restart.error">{{Restart.error}}</p>
+
+				<div ng-hide="Restart.token">
+					<button class="btn btn-warning" ng-click="prepareRestart()" ng-disabled="Restart.busy">
+						{{Restart.busy ? 'Preparing...' : 'Restart'}}
+					</button>
+				</div>
+
+				<div ng-show="Restart.token" class="well well-sm">
+					<p class="text-warning"><strong>This will interrupt your Stratux connection.</strong> Any active recording will be stopped and finalized first. The device will reconnect on its own once it has rebooted.</p>
+					<button class="btn btn-warning" ng-click="confirmRestart()" ng-disabled="Restart.busy">
+						{{Restart.busy ? 'Restarting...' : 'Confirm Restart'}}
+					</button>
+					<button class="btn btn-default" ng-click="cancelRestart()" ng-disabled="Restart.busy">Cancel</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="panel panel-default">
 		<div class="panel-heading"><span class="panel_label">Shutdown</span></div>
 		<div class="panel-body">
 			<p class="small text-muted">

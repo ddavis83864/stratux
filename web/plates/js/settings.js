@@ -513,18 +513,12 @@ function SettingsCtrl($rootScope, $scope, $state, $location, $window, $http) {
 		}
 	};
 
-	$scope.postShutdown = function () {
-		$window.location.href = "/";
-		$location.path('/home');
-		$http.post(URL_SHUTDOWN).
-		then(function (response) {
-			// do nothing
-			// $scope.$apply();
-		}, function (response) {
-			// do nothing
-		});
-	};
-
+	// postReboot is still used by the "reboot required by a setting
+	// change" prompt (modalRebootRequired in settings.html) - the
+	// standalone Reboot/Shutdown buttons that used to live in this page's
+	// Commands panel were removed in favor of the Power page's confirmed
+	// flows (web/plates/power.html); postShutdown had no other caller and
+	// was removed along with its button.
 	$scope.postReboot = function () {
 		$window.location.href = "/";
 		$location.path('/home');
