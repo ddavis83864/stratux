@@ -1462,6 +1462,11 @@ func managementInterface() {
 	// docs/fisb-weather-cache.md.
 	http.HandleFunc("/getFISBCacheStatus", handleGetFISBCacheStatusRequest)
 	http.HandleFunc("/getFISBCacheInventory", handleGetFISBCacheInventoryRequest)
+	// getFISBCachePayload is a Weather-page-only addition (see
+	// main/fisbcachepayload.go's own doc comment): best-effort readback of
+	// one entry's actual decoded content, sourced from its persisted file
+	// when persistence is enabled - never from a new in-memory store.
+	http.HandleFunc("/getFISBCachePayload", handleGetFISBCachePayloadRequest)
 	http.HandleFunc("/getFISBCacheSettings", handleGetFISBCacheSettingsRequest)
 	http.HandleFunc("/setFISBCacheSettings", handleSetFISBCacheSettingsRequest)
 	http.HandleFunc("/prepareFISBCachePurge", handlePrepareFISBCachePurgeRequest)
