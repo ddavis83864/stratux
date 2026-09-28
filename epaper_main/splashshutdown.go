@@ -190,12 +190,21 @@ func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeo
 	fmt.Fprintf(out, "shutdown splash: power-off in progress (%s)\n", strings.Join(jobs, ", "))
 	if pause > 0 {
 		fmt.Fprintf(out, "shutdown splash: pausing %s so the operational renderer's \"safe to remove power\" screen can actually be seen before it is cleared\n", pause)
-		select {
-		case <-time.After(pause):
-		case <-ctx.Done():
-			// Timeout or a second signal arrived - don't make a bounded,
-			// cosmetic pause the reason systemd has to SIGKILL this unit.
-		}
+		// Deliberately unconditional (time.Sleep, not a ctx-cancellable
+		// select): a first attempt made this pause cut-shortable by
+		// ctx.Done(), reasoning that a bounded, cosmetic wait should
+		// never be why systemd has to SIGKILL this unit. Physical
+		// testing (two owner-recorded, frame-differenced real
+		// shutdowns) showed that reasoning was wrong in practice - the
+		// pause was being cut short to well under a second, consistent
+		// with systemd's own very-late shutdown signal sweep (sent to
+		// any processes still running as poweroff approaches) reaching
+		// this process during the wait and firing ctx.Done()
+		// immediately. 3 seconds is short enough, and every timeout in
+		// this unit generous enough (60s TimeoutStopSec, 45s
+		// shutdownSplashTimeout), that sleeping through that signal
+		// here is the correct, deliberate choice - not an oversight.
+		time.Sleep(pause)
 	}
 
 	fmt.Fprintln(out, "shutdown splash: drawing the ARS splash")

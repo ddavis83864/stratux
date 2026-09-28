@@ -397,7 +397,14 @@ func TestRunSplashShutdown_ZeroPauseSkipsWaitingEntirely(t *testing.T) {
 // The pause must never survive past the run's own deadline or a second
 // signal - a cosmetic, bounded wait must not be why systemd has to
 // SIGKILL this unit.
-func TestRunSplashShutdown_PauseIsCancelledByContext(t *testing.T) {
+// Issue #43 round 2: physical testing showed a first version of this
+// pause, which was cut short by context cancellation, actually being cut
+// short to well under a second in real shutdowns - consistent with
+// systemd's own very-late shutdown signal sweep reaching this process
+// during the wait. The pause is now deliberately unconditional
+// (time.Sleep, not a ctx-aware select) - this test pins that down, so a
+// future change cannot silently reintroduce the cancellable version.
+func TestRunSplashShutdown_PauseIsNotCutShortByContextCancellation(t *testing.T) {
 	bus := &fakeBus{}
 	open := func(epaper.GPIOMapping) (Bus, func(), error) { return bus, func() {}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
@@ -405,13 +412,13 @@ func TestRunSplashShutdown_PauseIsCancelledByContext(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel()
 	}()
+	const pause = 150 * time.Millisecond
 	var o, e bytes.Buffer
 	start := time.Now()
-	code := runSplashShutdown(ctx, writeConf(t, cfg42), absentStatus(t), time.Minute, time.Hour, open, jobsFn(poweroffJobs(t), nil, new(int)), &o, &e)
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("an hour-long pause was not cut short by context cancellation: took %v", took)
+	runSplashShutdown(ctx, writeConf(t, cfg42), absentStatus(t), time.Minute, pause, open, jobsFn(poweroffJobs(t), nil, new(int)), &o, &e)
+	if took := time.Since(start); took < pause {
+		t.Errorf("context was cancelled at ~20ms but the run only took %v - the %v pause was cut short, reintroducing issue #43's round-2 regression", took, pause)
 	}
-	_ = code // the run continues (and draws) once the pause is cut short - only the wait itself is bounded by ctx
 }
 
 func TestSafeToRemovePowerPauseIsReasonable(t *testing.T) {
