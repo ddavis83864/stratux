@@ -107,23 +107,68 @@ restart, differing only in the UI's confirmation count (one explicit confirmatio
 shutdown's two) and the final command (`IssueReboot` instead of `IssuePowerOff`) - see
 "Restart" below.
 
-**Update (Web UI power-control consolidation):** the pre-existing, single-call `POST
-/shutdown` and `POST /reboot` (`handleShutdownRequest`/`handleRebootRequest` in
-`main/managementinterface.go`) used to be completely unaffected by this feature - deliberately
-left alone, on the theory that any existing client might depend on their exact original
-behavior. That changed: the Settings page's own standalone Reboot/Shutdown buttons (the only
-UI callers of those two endpoints for an operator-initiated action) have been removed in favor
-of this page, and both endpoints now run through the *exact same* `otaNotBusyPrecondition`/
-`configBackupNotBusyPrecondition`/`gracefulShutdown`/`markSessionClosed` functions this
-confirmed flow uses - a stale browser tab, a script, or any other caller of the legacy
-endpoints can no longer bypass the OTA/restore-busy check or skip the recording-flush/SDR-
-shutdown sequence the confirmed flow already enforced. They remain reachable (not removed) for
-compatibility - in particular, `POST /reboot` is still called directly by the Settings page's
-own "a setting you just changed requires a reboot" prompt, which has no confirmation-token
-flow of its own and does not need one (the setting has already been explicitly changed by the
-operator). Neither legacy endpoint gained the two-step/token-based interactive confirmation -
-they have no confirmation UI of their own to gate - only the same *safety* checks the confirmed
-flow already had.
+The pre-existing, single-call `POST /shutdown` and `POST /reboot` predate this feature and are
+now fully retired (return `410 Gone`, perform no action) rather than merely precondition-gated -
+see "Legacy endpoint retirement" below for the full trace of why an intermediate, gated-but-
+unconfirmed version of those two endpoints was itself still a genuine confirmation bypass.
+
+## Legacy endpoint retirement
+
+An earlier revision of this feature left `POST /shutdown` and `POST /reboot`
+(`handleShutdownRequest`/`handleRebootRequest` in `main/managementinterface.go`) reachable "for
+compatibility," gated only by the same `otaNotBusyPrecondition`/`configBackupNotBusyPrecondition`
+checks the confirmed flows use. A review correctly identified that this was still a genuine
+confirmation bypass: neither an OTA-busy check nor a config-restore-busy check is a substitute
+for a server-issued, single-use confirmation token. A single POST to either endpoint - forged,
+replayed, or sent by a stale browser tab that still had the old page loaded - would shut the
+device down or reboot it immediately, with no record that an operator had actually confirmed
+anything. Gating an action on unrelated system state is not the same thing as confirming that a
+human meant to trigger it.
+
+**The trace, exhaustively, by direct code inspection (not assumed):**
+
+- `POST /shutdown`: **zero** remaining callers anywhere in this repository. Its one-time UI
+  caller (Settings' standalone Shutdown button, and the `postShutdown()` function behind it) was
+  already removed by the earlier Web UI consolidation. `URL_SHUTDOWN` (`web/js/main.js`) had
+  become an unused constant.
+- `POST /reboot`: **exactly one** remaining caller - the Settings page's "a setting you just
+  changed requires a reboot" prompt (`modalRebootRequired` in `web/plates/settings.html`,
+  formerly calling `postReboot()` in `web/plates/js/settings.js`). That caller had no
+  server-issued confirmation of its own: a client-side modal is UI state, not server state: it
+  proves nothing to the server about whether a human actually clicked it, versus a request
+  replayed or forged after the fact.
+- The OTA install state machine (`main/ota.go`) calls `delayReboot()`/`doReboot()` directly, in
+  two places (after requesting overlay-disable during a normal install, and during automatic
+  rollback recovery) - **never through the HTTP `/reboot` endpoint**. This is a legitimate,
+  narrowly-scoped, already-authorized internal caller: the reboot it performs is one step of an
+  update the operator already explicitly uploaded and the device already hash-verified (or that
+  same update's own automatic rollback), not a second, separate action needing its own
+  confirmation. It was never reachable through the browser-facing endpoint in the first place,
+  and nothing about this retirement changes it.
+- No script, cron job, systemd unit, or other non-interactive integration anywhere in this
+  repository calls either HTTP endpoint (`debian/stratux-pre-start.sh`, the one place a reboot is
+  triggered outside the Go binary, runs the bare shell `reboot` command directly - never HTTP).
+
+**Disposition:**
+
+- `handleShutdownRequest` and `handleRebootRequest` now perform **no action at all**, under any
+  precondition state, for any HTTP method: both unconditionally return `410 Gone` with a JSON
+  body pointing to the confirmed flow (`POST /requestShutdown`+`/confirmShutdown`, or
+  `POST /requestReboot`+`/confirmReboot`). They are kept registered (not deleted) so an old
+  client gets an explicit, actionable explanation instead of an ambiguous bare 404.
+  `main/managementinterface_test.go`'s `TestHandle{Shutdown,Reboot}Request_NeverActs_
+  RegardlessOfPreconditionState` prove this response is identical whether OTA/config-restore is
+  busy or idle - there is no remaining conditional path in either handler that could ever reach a
+  real `systemctl` command.
+- The Settings "reboot required" prompt now goes through the confirmed flow directly:
+  `SettingsCtrl.confirmRequiredReboot()` (`web/plates/js/settings.js`) calls
+  `POST /requestReboot`, then `POST /confirmReboot` with the returned token, as a direct result of
+  the modal's own "Reboot" click - the same server-issued, short-lived, single-use,
+  boot-session-bound token the Power page's Restart action uses, not a second, separate
+  confirmation step. The modal now shows a busy state and surfaces a blocked precondition as an
+  error instead of silently doing nothing (its previous behavior on a rejected request).
+  `doReboot()`/`delayReboot()` are untouched and keep serving the OTA state machine exactly as
+  before.
 
 ## The previous-session marker
 
@@ -192,8 +237,8 @@ of this page; Settings now links here instead.
 | GET | `/getRebootStatus` | Current controlled-reboot stage |
 | POST | `/requestReboot` | Preconditions + issue a confirmation token |
 | POST | `/confirmReboot` | Consume the token, flush, sync, reboot |
-| POST | `/shutdown` | Legacy, single-call, no confirmation UI of its own - kept for compatibility, now precondition-checked and flushed identically to the confirmed flow (see "The controlled-shutdown flow" above) |
-| POST | `/reboot` | Legacy, single-call - still used by the Settings page's "reboot required by a setting change" prompt; same precondition/flush treatment as `/shutdown` |
+| POST | `/shutdown` | **Retired** - always `410 Gone`, no action, no remaining caller (see "Legacy endpoint retirement" above) |
+| POST | `/reboot` | **Retired** - always `410 Gone`, no action, no remaining caller; the Settings "reboot required" prompt now uses `/requestReboot`+`/confirmReboot` directly |
 
 `/getPowerHealth` never reports a battery percentage, a runtime estimate, or anything about
 an outstanding shutdown/reboot token. `/confirmShutdown`/`/confirmReboot` and the diagnostics/
@@ -230,13 +275,17 @@ Managers' tokens never cross-accept each other's), the session-marker's atomic r
 conservative-wording assertions, and the HTTP layer (every endpoint's method guard,
 malformed/missing-field bodies, and the end-to-end request → confirm → marked-clean flow).
 
-The legacy `/shutdown` and `/reboot` endpoints have no injectable executor (they call
-`exec.Command` directly, unlike the confirmed flows), so `main/managementinterface_test.go`
-can only exercise their new *blocked* path automatically (a real OTA-busy state written via
-`ota.SaveState`, and a real configuration-restore-busy state) - proving the precondition gate
-itself works without ever risking a real `systemctl` invocation from a test run. Their
-unblocked/success path is not, and cannot safely be, covered by an automated test; that
-remains a manual, physical-device step (see the checklist below).
+The legacy `/shutdown` and `/reboot` endpoints are retired - they no longer call
+`exec.Command` at all, under any state. `main/managementinterface_test.go`'s
+`TestHandle{Shutdown,Reboot}Request_NeverActs_RegardlessOfPreconditionState` prove the `410`
+response is identical whether a real OTA-busy state (written via `ota.SaveState`) or a real
+configuration-restore-busy state is active versus idle, and
+`TestHandleShutdownAndRebootRequest_AnyMethodNeverActs` proves it for every HTTP method - there
+is no remaining conditional path in either handler that could ever reach a real `systemctl`
+command, so this is a full, not merely a blocked-path, proof for these two routes. The confirmed
+flows' own success paths (both shutdown and reboot) are exercised end-to-end against a fake
+`power.Executor` in `main/powerapi_test.go` - real hardware commands are never invoked by any
+automated test; that remains a manual, physical-device step (see the checklist below).
 
 ## Hardware-validation checklist (prepared, not executed)
 
@@ -274,16 +323,15 @@ feature's own introducing PR explicitly reserves that work for - not a substitut
     check 7.
 11. Confirm the Settings page no longer shows standalone Reboot/Shutdown buttons, that its
     "Power page" link works, and that changing a setting that requires a reboot (e.g.
-    Persistent Logging) still shows its own "reboot required" prompt and reboots successfully
-    via `postReboot()`/`POST /reboot`.
-12. With a real OTA update or configuration restore in progress, confirm both legacy endpoints
-    (`POST /shutdown`, `POST /reboot`) refuse the action (`409`) rather than proceeding - the
-    physical-device counterpart to the automated blocked-path tests in
-    `main/managementinterface_test.go`. This is the one behavior this feature's own earlier
-    draft explicitly left unverified for `/shutdown` (see "The controlled-shutdown flow"
-    above's "Update" note) - now that it is no longer left unaffected, it needs confirming.
-13. With neither an OTA update nor a configuration restore in progress, confirm `POST
-    /shutdown` and `POST /reboot` still work end-to-end (they are kept reachable for
-    compatibility, not merely gated) - a real device power-off and a real device reboot,
-    physically confirmed, each via a direct call to the endpoint rather than the Power page's
-    UI.
+    Persistent Logging) still shows its own "reboot required" prompt, that clicking its
+    "Reboot" button actually reboots the device (physical confirmation) via the confirmed
+    flow (`confirmRequiredReboot()` → `POST /requestReboot` → `POST /confirmReboot`), and that
+    the prompt surfaces a blocked-precondition error (rather than silently doing nothing) if a
+    reboot is attempted mid-OTA.
+12. With a real OTA update or configuration restore in progress, and again while idle, confirm
+    a direct `POST /shutdown` and a direct `POST /reboot` both return `410 Gone` and the device
+    neither powers off nor reboots in any of those four cases - the physical-device counterpart
+    to `main/managementinterface_test.go`'s `TestHandle{Shutdown,Reboot}Request_NeverActs_
+    RegardlessOfPreconditionState`. This closes the confirmation-bypass a review correctly
+    identified in this feature's own earlier draft, where those two endpoints were reachable
+    and precondition-gated but not confirmation-gated (see "Legacy endpoint retirement" above).

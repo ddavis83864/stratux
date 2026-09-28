@@ -105,12 +105,19 @@ Deletes all AHRS log files.
 ### System Control
 
 #### `POST /reboot`
-Reboots the Raspberry Pi.
+**Retired - performs no action.** Always returns `410 Gone`. Reboot the Pi through the
+confirmed flow instead: `POST /requestReboot` then `POST /confirmReboot` - see
+[Power and Controlled Shutdown](#power-and-controlled-shutdown) below. (This endpoint used to
+reboot immediately with no confirmation step at all; a review found that a bypass even after an
+intermediate fix that merely gated it on system busy-state, since gating on unrelated state is
+not the same as confirming a human meant to trigger it - see
+[power-shutdown-resilience.md](power-shutdown-resilience.md)'s "Legacy endpoint retirement".)
 
 #### `POST /shutdown`
-Shuts down the Raspberry Pi immediately, with no confirmation step. See
-[Power and Controlled Shutdown](#power-and-controlled-shutdown) below for a manual,
-two-step confirmed alternative that also flushes an active recording first.
+**Retired - performs no action.** Always returns `410 Gone`, for the same reason and history as
+`/reboot` above. Shut the Pi down through the confirmed flow instead: `POST /requestShutdown`
+then `POST /confirmShutdown` - see [Power and Controlled Shutdown](#power-and-controlled-shutdown)
+below, which also flushes an active recording first.
 
 #### `POST /restart`
 Restarts the Stratux software without rebooting the Pi.
@@ -218,10 +225,11 @@ validation, confirmation-token, and rollback design.
 
 Power/thermal-health reporting built on the Raspberry Pi's own `get_throttled` signal
 (no battery percentage or runtime estimate - this hardware has no trustworthy source for
-either), plus a manual, two-step confirmed shutdown flow, separate from the pre-existing
-unconfirmed `POST /shutdown` above. See
-[power-shutdown-resilience.md](power-shutdown-resilience.md) for the full design, including
-the throttle-bit meaning table and the previous-session marker's conservative wording.
+either), plus two manual, confirmed action flows - these are the *only* supported way to shut
+the device down or reboot it: the legacy `POST /shutdown`/`POST /reboot` above are retired and
+perform no action. See [power-shutdown-resilience.md](power-shutdown-resilience.md) for the
+full design, including the throttle-bit meaning table, the previous-session marker's
+conservative wording, and the "Legacy endpoint retirement" trace.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -229,6 +237,9 @@ the throttle-bit meaning table and the previous-session marker's conservative wo
 | `/getShutdownStatus` | GET | Current controlled-shutdown stage (`idle`/`confirmation_required`/`shutdown_requested`/`flushing`/`ready_to_power_off`/`command_issued`/`failed`). |
 | `/requestShutdown` | POST | Step 1: checked preconditions (no active OTA update or configuration restore), then issues a short-lived, single-use confirmation token. `200` with `{token, expiresAtMonotonic}`; `409` if blocked. |
 | `/confirmShutdown` | POST | Step 2: `{"token": "..."}` - flushes (stops and finalizes any active recording), syncs, responds, then powers the device off. `200` only after the response is sent; `400` invalid/expired/reused token; `409` a precondition newly failed since step 1. |
+| `/getRebootStatus` | GET | Current controlled-reboot stage - same stage vocabulary as `/getShutdownStatus`, against an independent reboot-specific token. |
+| `/requestReboot` | POST | Same preconditions and token shape as `/requestShutdown`, for a reboot instead. `200` with `{token, expiresAtMonotonic}`; `409` if blocked. |
+| `/confirmReboot` | POST | `{"token": "..."}` - flushes, syncs, responds, then reboots the device. Same ordering/error-code contract as `/confirmShutdown`. |
 
 ---
 

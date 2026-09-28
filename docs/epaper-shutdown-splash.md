@@ -171,10 +171,17 @@ cannot kexec).
 
 `list-jobs` output for `poweroff`, `halt` and `reboot` was captured from the lab
 and is committed as test fixtures (`epaper_main/testdata/list-jobs-*.txt`).
-Stratux's own paths all use these: `POST /shutdown` and
-`/confirmShutdown` run `systemctl poweroff`; `POST /reboot` runs
-`systemctl reboot`; the OTA script (`debian/stratux-pre-start.sh`) runs the
-plain `reboot` command, which is `systemctl reboot` under Debian's systemd-sysv.
+Stratux's own paths all use these: `POST /confirmShutdown` runs `systemctl
+poweroff`; `POST /confirmReboot` and the Power page's own confirmed Restart
+action run `systemctl reboot`; the OTA script (`debian/stratux-pre-start.sh`)
+runs the plain `reboot` command, which is `systemctl reboot` under Debian's
+systemd-sysv. (The pre-existing `POST /shutdown` and `POST /reboot` are
+retired - they perform no action at all now, having been found to be a
+confirmation bypass; see
+[power-shutdown-resilience.md](power-shutdown-resilience.md)'s "Legacy
+endpoint retirement". This splash logic itself never depended on which HTTP
+route was used - only on the final `systemctl` command actually issued - so
+nothing about that retirement changes its behavior.)
 
 ### Both directions of the ordering
 
