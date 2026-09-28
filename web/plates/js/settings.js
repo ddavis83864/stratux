@@ -513,21 +513,44 @@ function SettingsCtrl($rootScope, $scope, $state, $location, $window, $http) {
 		}
 	};
 
-	// postReboot is still used by the "reboot required by a setting
-	// change" prompt (modalRebootRequired in settings.html) - the
-	// standalone Reboot/Shutdown buttons that used to live in this page's
-	// Commands panel were removed in favor of the Power page's confirmed
-	// flows (web/plates/power.html); postShutdown had no other caller and
-	// was removed along with its button.
-	$scope.postReboot = function () {
-		$window.location.href = "/";
-		$location.path('/home');
-		$http.post(URL_REBOOT).
-		then(function (response) {
-			// do nothing
-			// $scope.$apply();
-		}, function (response) {
-			// do nothing
+	// RequiredReboot backs the "a setting you just changed requires a
+	// reboot" prompt (modalRebootRequired below). It used to call the
+	// bare, unconfirmed POST /reboot directly via a now-removed
+	// postReboot() - that endpoint no longer performs any action (see
+	// main/managementinterface.go's handleRebootRequest and
+	// docs/power-shutdown-resilience.md's "Legacy endpoint retirement"
+	// section: a client-side modal is not server-side confirmation, so a
+	// forged/replayed POST there could reboot the device with no record
+	// any operator had confirmed anything). This modal's own explicit
+	// "Reboot" click is now the trigger for the same confirmed flow the
+	// Power page's Restart action uses (POST /requestReboot, then
+	// /confirmReboot with the returned token - main/powerapi.go) - a
+	// genuine, server-issued, short-lived, single-use, boot-session-bound
+	// token is minted and consumed as a direct result of this one click,
+	// not a second, separate confirmation step, matching Restart's own
+	// single-confirmation policy.
+	$scope.RequiredReboot = {busy: false, error: ''};
+
+	$scope.confirmRequiredReboot = function () {
+		if ($scope.RequiredReboot.busy) {
+			return;
+		}
+		$scope.RequiredReboot.busy = true;
+		$scope.RequiredReboot.error = '';
+		$http.post(URL_REBOOT_REQUEST, {}).then(function (response) {
+			var token = response.data.token;
+			$http.post(URL_REBOOT_CONFIRM, {token: token}).then(function () {
+				$window.location.href = "/";
+				$location.path('/home');
+			}, function (confirmResponse) {
+				$scope.RequiredReboot.busy = false;
+				var data = confirmResponse.data || {};
+				$scope.RequiredReboot.error = data.error || 'Reboot could not be confirmed.';
+			});
+		}, function (requestResponse) {
+			$scope.RequiredReboot.busy = false;
+			var data = requestResponse.data || {};
+			$scope.RequiredReboot.error = data.error || 'Could not prepare a reboot request.';
 		});
 	};
 

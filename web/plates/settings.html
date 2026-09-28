@@ -492,11 +492,12 @@
                     <div class="modal-body">
                         <p>For this change to take effect, a reboot of the Stratux is required.</p>
                         <p>Do you want to reboot now? You can also reboot manually later.</p>
+                        <p class="small text-danger" ng-show="RequiredReboot.error">{{RequiredReboot.error}}</p>
                     </div>
                     <div class="modal-footer">
-                        <a ui-turn-off="modalRebootRequired" class="btn btn-default">Cancel</a>
-                        <a ng-click="postReboot()" ui-turn-off="modalRebootRequired" ui-turn-on="rebooting"
-                            class="btn btn-primary">Reboot</a>
+                        <a ui-turn-off="modalRebootRequired" ng-disabled="RequiredReboot.busy" class="btn btn-default">Cancel</a>
+                        <a ng-click="confirmRequiredReboot()" ng-disabled="RequiredReboot.busy"
+                            class="btn btn-primary">{{RequiredReboot.busy ? 'Rebooting...' : 'Reboot'}}</a>
                     </div>
                 </div>
             </div>
