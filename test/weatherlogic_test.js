@@ -242,6 +242,40 @@ t('sumWeatherCounters: a missing/null status sums to zero, never throws', () => 
 	assert.strictEqual(WeatherLogic.sumWeatherCounters({}), 0);
 });
 
+// Found via bench acceptance testing (2026-09-28, PR #41 physical
+// deployment): a fresh boot with zero weather ever received showed
+// "WX RX RECENT" instead of "NO WX FRAMES YET" on the live device -
+// the first-ever status message was wrongly treated as "a frame just
+// arrived" regardless of whether the counter sum was actually zero.
+t('trackWeatherCounterState: a sum that is and stays zero never marks an increase, even on the first observation', () => {
+	const zero = {UAT_METAR_total: 0, UAT_TAF_total: 0, UAT_NEXRAD_total: 0, UAT_SIGMET_total: 0, UAT_PIREP_total: 0};
+	let state = WeatherLogic.trackWeatherCounterState(null, zero, 1000);
+	assert.strictEqual(state.ageSeconds, null, 'the very first observation of a zero sum must not mark an increase');
+	state = WeatherLogic.trackWeatherCounterState(state, zero, 5000);
+	assert.strictEqual(state.ageSeconds, null, 'a sum that stays zero must never report an age');
+});
+
+t('trackWeatherCounterState: a real increase from zero is correctly marked as just-now', () => {
+	const zero = {UAT_METAR_total: 0, UAT_TAF_total: 0, UAT_NEXRAD_total: 0, UAT_SIGMET_total: 0, UAT_PIREP_total: 0};
+	const one = {UAT_METAR_total: 1, UAT_TAF_total: 0, UAT_NEXRAD_total: 0, UAT_SIGMET_total: 0, UAT_PIREP_total: 0};
+	let state = WeatherLogic.trackWeatherCounterState(null, zero, 1000);
+	state = WeatherLogic.trackWeatherCounterState(state, one, 4000);
+	assert.strictEqual(state.ageSeconds, 0, 'a genuine increase must be marked at the moment it is observed');
+	state = WeatherLogic.trackWeatherCounterState(state, one, 9000);
+	assert.strictEqual(state.ageSeconds, 5, 'age must advance while the sum stays unchanged afterward');
+});
+
+t('trackWeatherCounterState: a further increase updates the mark again', () => {
+	const one = {UAT_METAR_total: 1, UAT_TAF_total: 0, UAT_NEXRAD_total: 0, UAT_SIGMET_total: 0, UAT_PIREP_total: 0};
+	const two = {UAT_METAR_total: 2, UAT_TAF_total: 0, UAT_NEXRAD_total: 0, UAT_SIGMET_total: 0, UAT_PIREP_total: 0};
+	let state = WeatherLogic.trackWeatherCounterState(null, one, 1000);
+	assert.strictEqual(state.ageSeconds, 0);
+	state = WeatherLogic.trackWeatherCounterState(state, one, 10000);
+	assert.strictEqual(state.ageSeconds, 9);
+	state = WeatherLogic.trackWeatherCounterState(state, two, 12000);
+	assert.strictEqual(state.ageSeconds, 0, 'a fresh increase resets the age even though the sum never returned to zero');
+});
+
 t('countActiveTowers: matches status.js\'s own Messages_last_minute > 0 rule exactly', () => {
 	const towers = {
 		'(47.8,-116.9)': {Messages_last_minute: 11},

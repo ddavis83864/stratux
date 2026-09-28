@@ -44,8 +44,7 @@ function WeatherCtrl($rootScope, $scope, $state, $http, $interval) {
 	$scope.Towers = 0;
 	$scope.ReceiverFreshnessLabel = 'NO WX FRAMES YET';
 	$scope.LastWeatherFrameAgeSeconds = null;
-	var lastWeatherCounterSum = null;
-	var lastWeatherCounterAt = null;
+	var weatherCounterState = null; // see WeatherLogic.trackWeatherCounterState
 
 	$scope.ActiveCategory = WL.CATEGORY_METAR;
 	$scope.Categories = [
@@ -284,13 +283,9 @@ function WeatherCtrl($rootScope, $scope, $state, $http, $interval) {
 			} catch (e) {
 				return;
 			}
-			var sum = WL.sumWeatherCounters(status);
 			var now = Date.now();
-			if (lastWeatherCounterSum === null || sum > lastWeatherCounterSum) {
-				lastWeatherCounterAt = now;
-			}
-			lastWeatherCounterSum = sum;
-			$scope.LastWeatherFrameAgeSeconds = lastWeatherCounterAt === null ? null : (now - lastWeatherCounterAt) / 1000;
+			weatherCounterState = WL.trackWeatherCounterState(weatherCounterState, status, now);
+			$scope.LastWeatherFrameAgeSeconds = weatherCounterState.ageSeconds;
 			$scope.ReceiverFreshnessLabel = WL.receiverFreshnessLabel($scope.LastWeatherFrameAgeSeconds);
 			$scope.ReceiverStatus = status; // raw /getStatus snapshot - only used for the NOTAM/SIGMET counter-only tab
 			$scope.$apply();

@@ -351,6 +351,35 @@ this module's functions whatever plain data those concerns produce.
 		return sum;
 	}
 
+	// trackWeatherCounterState folds one new /getStatus snapshot into the
+	// running "when did the weather-product counter sum last increase"
+	// state, and derives the resulting age in seconds (null if it has
+	// never increased, i.e. no weather-product frame has ever been
+	// observed this boot). Pure - nowMs is passed in rather than read
+	// from Date.now() here, so this is directly unit-testable.
+	//
+	// Found via bench acceptance testing (2026-09-28, PR #41 physical
+	// deployment): a prior, inline version of this logic in weather.js
+	// treated the very FIRST status message ever received as if a frame
+	// had "just arrived", even when the counter sum was and stayed zero
+	// (a receiver that has genuinely never received any weather) -
+	// because it only checked "is this the first observation", not also
+	// "is the sum actually positive". That produced "WX RX RECENT"
+	// immediately after a fresh boot with zero weather ever received,
+	// instead of the correct "NO WX FRAMES YET". The fix is the `sum > 0`
+	// guard below: a zero sum, first observation or not, must never mark
+	// an increase.
+	function trackWeatherCounterState(prevState, status, nowMs) {
+		var sum = sumWeatherCounters(status);
+		var lastSum = prevState ? prevState.lastSum : null;
+		var lastIncreaseAtMs = prevState ? prevState.lastIncreaseAtMs : null;
+		if (sum > 0 && (lastSum === null || sum > lastSum)) {
+			lastIncreaseAtMs = nowMs;
+		}
+		var ageSeconds = (lastIncreaseAtMs === null) ? null : (nowMs - lastIncreaseAtMs) / 1000;
+		return {lastSum: sum, lastIncreaseAtMs: lastIncreaseAtMs, ageSeconds: ageSeconds};
+	}
+
 	// countActiveTowers mirrors web/plates/js/status.js's own getTowers()
 	// exactly: an entry in /getTowers counts as active when its
 	// Messages_last_minute is greater than zero.
@@ -560,6 +589,7 @@ this module's functions whatever plain data those concerns produce.
 		formatAge: formatAge,
 		receiverFreshnessLabel: receiverFreshnessLabel,
 		sumWeatherCounters: sumWeatherCounters,
+		trackWeatherCounterState: trackWeatherCounterState,
 		countActiveTowers: countActiveTowers,
 		decodeNexradIntensityBase64: decodeNexradIntensityBase64,
 		intensityStats: intensityStats,
