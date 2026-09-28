@@ -17,18 +17,68 @@ separate from the power-consolidation branch and from any FIS-B work. This docum
 not claim the splash is fixed, because no defect has been corrected yet - see "Status" below
 for what has now actually been confirmed.
 
-## Status (updated after two owner-attended, video/journal-instrumented physical tests)
+## Status (updated after five owner-attended, video/trace-instrumented physical tests, two fix attempts)
 
-**A real defect is now confirmed, via direct video evidence: the operational renderer's
-"Stratux is shut down. / Safe to remove power." text screen does not appear at all during a
-real shutdown.** This supersedes this document's earlier, weaker hypothesis ("normal
-multi-stage flash, misperceived") - that hypothesis was based on the owner's own verbal
-recollection of watching the shutdown live, which frame-by-frame video review directly
-contradicts. See "Decisive video evidence" and "Journal capture attempt" below. The exact
-root cause inside `epaper_main` is still not confirmed (a journal-capture attempt to nail it
-down did not persist any data - see below) - two concrete, code-grounded hypotheses are
-given, neither proven. No fix has been implemented. Physical validation of any future fix
-remains **NOT RUN**.
+**UNRESOLVED.** A real defect is confirmed (the shutdown text screen never appears legibly),
+and two fix attempts have both been physically tested and both shown, via three independent,
+convergent, quantitative frame-difference analyses, **not to work**. See "Two fix attempts,
+both confirmed not working" below for the full account. No further physical testing has been
+performed as of this update; do not merge or deploy any of this branch's fix code as a
+working solution. Issue #43 stays open.
+
+## Two fix attempts, both confirmed not working (2026-09-28, later in the day)
+
+**Attempt 1** (commit `aed71566`): a 3-second pause between the operational renderer's text
+draw and the shutdown-splash unit's own `Clear()`, cancellable by context
+(`select { case <-time.After(pause): case <-ctx.Done(): }`) on the theory that a bounded,
+cosmetic wait should never be why systemd has to SIGKILL this unit. Physically tested with an
+owner-recorded, video-timestamped real shutdown (`IMG_4749.MOV`). Quantitative
+frame-difference analysis (mean absolute pixel difference per 0.125s frame, not eyeballed)
+showed the panel changing continuously for ~3.1s total with only a ~0.35-0.4s static gap in
+the middle - indistinguishable from no pause at all. Hypothesis: systemd's own very-late
+shutdown signal sweep reached this process during the wait and fired `ctx.Done()` almost
+immediately.
+
+**Attempt 2** (commit `c5d83e25`): the pause made unconditional (`time.Sleep(pause)`, not
+cancelled by `ctx.Done()`) - directly testing the attempt-1 hypothesis. Physically tested
+**twice**:
+- Video-recorded real shutdown (`IMG_4755.MOV`): the exact same pattern - ~3.25s total flash,
+  ~0.25-0.375s gap.
+- A combined trace+pause instrumented build (temporary, never committed - added a
+  synchronous, fsync'd stage logger to `main.go`/`splash.go`/`splashshutdown.go`, removed
+  again afterward), tested with a real shutdown that was simultaneously video-recorded
+  (`IMG_4759.MOV`) and traced. The trace confirms the operational renderer's own draw still
+  succeeds cleanly (`driver.Update()` returns no error, ~1.8s, matching the validated
+  non-shutdown baseline exactly) - but the trace from the *separate* shutdown-splash process
+  cuts off immediately after it logs its own entry, before logging `classifyJobs`,
+  `beforePause`, or anything else. Working theory (unconfirmed): `/var/lib/stratux-data`
+  (where the trace file lives) may become unwritable very late in the real shutdown sequence,
+  silently dropping subsequent writes - independent of whether the pause itself ran. The
+  video from this same test shows the identical ~3.1s/~0.3s pattern a **third** time.
+
+**Three independent, quantitative video analyses, across both fix attempts, converge on the
+same negative result every time.** The visible transition is consistently too short (~3.1s
+total) to contain both a working 3-second pause and the two remaining full refreshes
+(~3.5s combined) - regardless of what the (separately inconclusive) trace shows. This is
+strong enough, convergent evidence to conclude neither fix attempt visibly works, without
+needing to fully resolve why.
+
+Recommended next steps (none performed):
+1. Relocate diagnostic trace output to a filesystem confirmed to stay mounted through the
+   entire shutdown sequence (e.g. `/boot/firmware`, which this unit's own ordering comments
+   already establish stays mounted through this unit's stop) instead of
+   `/var/lib/stratux-data`, for a trace that does not cut off early.
+2. Seriously consider that the pause code may not be reached at all in the real
+   `-splash-shutdown` `ExecStop` execution path, despite passing every unit test - a
+   systemd/`ExecStop`-specific interaction that hardware-free unit tests cannot exercise.
+3. Consider a same-process mechanism instead: have the *operational renderer itself* hold its
+   already-successful draw for the pause duration before releasing the panel, rather than
+   relying on a *separate* process (the shutdown-splash service) to wait before taking over -
+   removing the cross-process handoff from the timing-critical path entirely.
+
+The rest of this document (below) is the original investigation that established the defect
+and the first "just normal flashing" hypothesis (since superseded) - kept for the full
+record.
 
 ## Decisive video evidence (2026-09-28, owner-attended, recorded)
 
