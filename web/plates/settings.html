@@ -53,12 +53,9 @@
                     </div>
                     <div class="form-group reset-flow">
                         <div class="col-xs-12">
-                            <button class="btn btn-primary btn-block" ui-turn-on="modalReboot">Reboot</button>
-                        </div>
-                    </div>
-                    <div class="form-group reset-flow">
-                        <div class="col-xs-12">
-                            <button class="btn btn-primary btn-block" ui-turn-on="modalShutdown">Shutdown</button>
+                            <!-- Restart/Shutdown live on the Power page now (confirmed,
+                                 precondition-checked flows) - see docs/power-shutdown-resilience.md. -->
+                            <a class="btn btn-default btn-block" href="#/power">Restart / Shut Down (Power page)</a>
                         </div>
                     </div>
                 </div>
@@ -477,36 +474,11 @@
 <div class="col-sm-12">
     <h3 ui-if="rebooting" ui-state="rebooting">Stratux is rebooting. You may need to reconnect WiFi once it reboots.
     </h3>
-    <h3 ui-if="shuttingdown" ui-state="shuttingdown">Stratux is shutting down. You may disconnect power.</h3>
     <h3 ui-if="WiFiRestart" ui-state="WiFiRestart">Stratux WiFi is Restarting Services. You may need to reconnect WiFi
         once services are restored.</h3>
 </div>
 
 <div ui-content-for="modals">
-    <!-- Reboot Config Modal -->
-    <div class="modal" ui-if="modalReboot" ui-state="modalReboot">
-        <div class="modal-overlay "></div>
-        <div class="vertical-alignment-helper center-block">
-            <div class="modal-dialog vertical-align-center">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <button class="close" ui-turn-off="modalReboot"></button>
-                        <h4 class="modal-title">Are you really sure?</h4>
-                    </div>
-                    <div class="modal-body">
-                        <p>Do you wish to reboot the Stratux?</p>
-                        <p>Note that the system will reboot immediately and it will stop responding during the
-                            reboot</p>
-                    </div>
-                    <div class="modal-footer">
-                        <a ui-turn-off="modalReboot" class="btn btn-default">Cancel</a>
-                        <a ng-click="postReboot()" ui-turn-off="modalReboot" ui-turn-on="rebooting"
-                            class="btn btn-primary">Reboot</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
     <!-- Reboot required due to settings change Modal -->
     <div class="modal" ui-if="modalRebootRequired" ui-state="modalRebootRequired">
         <div class="modal-overlay "></div>
@@ -520,35 +492,12 @@
                     <div class="modal-body">
                         <p>For this change to take effect, a reboot of the Stratux is required.</p>
                         <p>Do you want to reboot now? You can also reboot manually later.</p>
+                        <p class="small text-danger" ng-show="RequiredReboot.error">{{RequiredReboot.error}}</p>
                     </div>
                     <div class="modal-footer">
-                        <a ui-turn-off="modalRebootRequired" class="btn btn-default">Cancel</a>
-                        <a ng-click="postReboot()" ui-turn-off="modalRebootRequired" ui-turn-on="rebooting"
-                            class="btn btn-primary">Reboot</a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <!-- Shutdown Modal -->
-    <div class="modal" ui-if="modalShutdown" ui-state="modalShutdown">
-        <div class="modal-overlay "></div>
-        <div class="vertical-alignment-helper center-block">
-            <div class="modal-dialog vertical-align-center">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <button class="close" ui-turn-off="modalShutdown"></button>
-                        <h4 class="modal-title">Are you really sure?</h4>
-                    </div>
-                    <div class="modal-body">
-                        <p>Do you wish to shutdown the Stratux?</p>
-                        <p>Note that the system will shutdown immediately. Please disconnect the power after the
-                            shutdown.</p>
-                    </div>
-                    <div class="modal-footer">
-                        <a ui-turn-off="modalShutdown" class="btn btn-default">Cancel</a>
-                        <a ng-click="postShutdown()" ui-turn-off="modalShutdown" ui-turn-on="shuttingdown"
-                            class="btn btn-primary">Shutdown</a>
+                        <a ui-turn-off="modalRebootRequired" ng-disabled="RequiredReboot.busy" class="btn btn-default">Cancel</a>
+                        <a ng-click="confirmRequiredReboot()" ng-disabled="RequiredReboot.busy"
+                            class="btn btn-primary">{{RequiredReboot.busy ? 'Rebooting...' : 'Reboot'}}</a>
                     </div>
                 </div>
             </div>

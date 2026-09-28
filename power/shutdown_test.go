@@ -10,11 +10,13 @@ import (
 // called, so these tests can run the full state machine, including a
 // successful outcome, in a normal `go test` process.
 type fakeExecutor struct {
-	mu         sync.Mutex
-	syncCalls  int
-	powerCalls int
-	syncErr    error
-	powerErr   error
+	mu          sync.Mutex
+	syncCalls   int
+	powerCalls  int
+	rebootCalls int
+	syncErr     error
+	powerErr    error
+	rebootErr   error
 }
 
 func (f *fakeExecutor) Sync() error {
@@ -29,10 +31,21 @@ func (f *fakeExecutor) PowerOff() error {
 	f.powerCalls++
 	return f.powerErr
 }
+func (f *fakeExecutor) Reboot() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rebootCalls++
+	return f.rebootErr
+}
 func (f *fakeExecutor) counts() (int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.syncCalls, f.powerCalls
+}
+func (f *fakeExecutor) rebootCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rebootCalls
 }
 
 func fixedClock(seconds float64) func() float64 {
@@ -83,6 +96,48 @@ func TestManager_FullSuccessfulLifecycle(t *testing.T) {
 	}
 	if _, powerCalls := exec.counts(); powerCalls != 1 {
 		t.Errorf("expected exactly 1 PowerOff call after IssuePowerOff, got %d", powerCalls)
+	}
+}
+
+// TestManager_IssueRebootLifecycle proves a Manager used for the reboot
+// action (main/powerapi.go's rebootManager) runs the identical
+// preconditions/flush/sync sequence as the shutdown lifecycle, and that
+// IssueReboot - not IssuePowerOff - is the one that actually fires,
+// exactly once, only after Confirm reaches StageCommandIssued.
+func TestManager_IssueRebootLifecycle(t *testing.T) {
+	exec := &fakeExecutor{}
+	flushed := false
+	m := NewManager("boot-1", fixedClock(1000), nil, func() error { flushed = true; return nil }, exec)
+
+	tok, err := m.RequestConfirmation(sequentialToken())
+	if err != nil {
+		t.Fatalf("RequestConfirmation: %v", err)
+	}
+	stage, err := m.Confirm(tok.Token)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	if stage != StageCommandIssued {
+		t.Fatalf("expected COMMAND_ISSUED, got %s", stage)
+	}
+	if !flushed {
+		t.Error("expected the flush hook to have run")
+	}
+	if syncCalls, powerCalls := exec.counts(); syncCalls != 1 || powerCalls != 0 {
+		t.Errorf("expected exactly 1 Sync call and 0 PowerOff calls before IssueReboot, got sync=%d power=%d", syncCalls, powerCalls)
+	}
+	if exec.rebootCount() != 0 {
+		t.Errorf("Reboot must not be called by Confirm - expected 0, got %d", exec.rebootCount())
+	}
+
+	if err := m.IssueReboot(); err != nil {
+		t.Fatalf("IssueReboot: %v", err)
+	}
+	if exec.rebootCount() != 1 {
+		t.Errorf("expected exactly 1 Reboot call after IssueReboot, got %d", exec.rebootCount())
+	}
+	if _, powerCalls := exec.counts(); powerCalls != 0 {
+		t.Errorf("IssueReboot must never call PowerOff, got %d PowerOff calls", powerCalls)
 	}
 }
 

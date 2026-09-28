@@ -12,12 +12,16 @@ var URL_DOWNLOADAHRSLOGFILES = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadahr
 var URL_DOWNLOADDB          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloaddb";
 var URL_DOWNLOADLOGFILE     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/downloadlog";
 var URL_GMETER_RESET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/resetGMeter";
-var URL_REBOOT              = URL_HOST_PROTOCOL + URL_HOST_BASE + "/reboot";
+// URL_REBOOT ("/reboot") and URL_SHUTDOWN ("/shutdown") were removed here -
+// both endpoints still exist server-side but no longer perform any action
+// (see main/managementinterface.go's handleRebootRequest/handleShutdownRequest
+// and docs/power-shutdown-resilience.md's "Legacy endpoint retirement"
+// section). Use URL_REBOOT_REQUEST/URL_REBOOT_CONFIRM or
+// URL_SHUTDOWN_REQUEST/URL_SHUTDOWN_CONFIRM instead.
 var URL_RESTARTAPP          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/restart";
 var URL_SATELLITES_GET      = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getSatellites";
 var URL_SETTINGS_GET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getSettings";
 var URL_SETTINGS_SET        = URL_HOST_PROTOCOL + URL_HOST_BASE + "/setSettings";
-var URL_SHUTDOWN            = URL_HOST_PROTOCOL + URL_HOST_BASE + "/shutdown";
 var URL_STATUS_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStatus";
 var URL_HEALTH_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getHealth";
 var URL_REGION_GET          = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRegion";
@@ -77,6 +81,9 @@ var URL_POWER_HEALTH_GET     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getPowerHea
 var URL_SHUTDOWN_STATUS_GET  = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getShutdownStatus";
 var URL_SHUTDOWN_REQUEST     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/requestShutdown";
 var URL_SHUTDOWN_CONFIRM     = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmShutdown";
+var URL_REBOOT_STATUS_GET    = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getRebootStatus";
+var URL_REBOOT_REQUEST       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/requestReboot";
+var URL_REBOOT_CONFIRM       = URL_HOST_PROTOCOL + URL_HOST_BASE + "/confirmReboot";
 
 var URL_STORAGE_LIFECYCLE_GET = URL_HOST_PROTOCOL + URL_HOST_BASE + "/getStorageLifecycle";
 

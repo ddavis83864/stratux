@@ -68,9 +68,14 @@ func VerifyToken(t ConfirmationToken, bootSessionID string, nowMonotonic float64
 // package and main/powerapi_test.go injects a fake that only records that
 // it was called, so no automated test run ever powers off or reboots the
 // machine it runs on.
+//
+// One Executor implementation backs both a shutdown Manager and a reboot
+// Manager (see main/powerapi.go) - Sync/PowerOff/Reboot are all stateless
+// OS commands, so there is no reason for two separate instances.
 type Executor interface {
 	Sync() error
 	PowerOff() error
+	Reboot() error
 }
 
 // Flusher lets the caller hook in subsystem-specific flush-before-
@@ -252,6 +257,18 @@ func (m *Manager) Confirm(presentedToken string) (Stage, error) {
 // HTTP response has already been written - see Confirm's doc comment.
 func (m *Manager) IssuePowerOff() error {
 	return m.executor.PowerOff()
+}
+
+// IssueReboot performs the actual, final, irreversible reboot. Call it
+// only after Confirm has returned StageCommandIssued and the caller's
+// HTTP response has already been written - the same ordering requirement
+// as IssuePowerOff, for the same reason (Confirm's doc comment). Which of
+// IssuePowerOff/IssueReboot a caller should use depends on which action
+// this particular Manager instance was constructed for - main/ wires one
+// Manager per action (shutdownManager, rebootManager), both sharing the
+// same preconditions and flush hook.
+func (m *Manager) IssueReboot() error {
+	return m.executor.Reboot()
 }
 
 // Reset returns the Manager to IDLE, clearing any pending token and last
