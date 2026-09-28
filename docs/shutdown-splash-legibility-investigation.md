@@ -114,7 +114,7 @@ issue was reported on).
 
 While running the epaper package tests as baseline due diligence (`go test ./epaper/...
 ./epaper_main/...`, zero code changes in this worktree), two pre-existing failures were
-observed in `epaper_main`, unrelated to the shutdown splash:
+observed in `epaper_main`:
 
 ```
 --- FAIL: TestDashboardGoldenImages/06-fisb-stale
@@ -122,21 +122,52 @@ observed in `epaper_main`, unrelated to the shutdown splash:
 epaper: recovered panic in dashboard refresh: runtime error: invalid memory address or nil pointer dereference
 ```
 
-This is a genuine nil-pointer panic in the **dashboard** renderer (a different code path
-from the shutdown-text/ARS-splash renderer this issue is about), caught by its own
-`recover()` wrapper (so it cannot crash the service), for two specific fixture scenarios
-("fisb-stale" and "worst-case-text"). This predates this investigation (zero code changes
-were made in this worktree before running the tests) and is out of scope for the
-shutdown-splash issue. Recorded here so it is not lost; a separate issue should track it if
-the owner wants it investigated.
+**Correction (this section originally mischaracterized this finding):** the panic log line
+above is *not* the cause of these two failures. It comes from two separate, deliberate,
+passing tests (`TestRefreshPanicIsContained`, `TestRefreshOnce_PanicIsContained`) that
+exist specifically to verify the panic-recovery wrapper works - they happened to log near
+the golden-image failures in non-verbose output, and an earlier pass through this doc wrongly
+correlated the two. Re-running `-v` makes the actual source of each line unambiguous.
+
+The two golden-image failures have their own, separate, now-understood root cause: commit
+`1f19d281` regenerated goldens for 3 of the 5 fixtures its own fault-icon-styling change
+affected, missing `06-fisb-stale` and `12-worst-case-text`. Confirmed via pixel diff (1-2
+pixels out of 120,000, consistent with the known icon-outline change) and visual inspection
+(both renders are clean and legible). Fixed separately, out of scope for this issue: see
+issue #45 and PR #46 (`fix/dashboard-golden-images`, its own branch/worktree, deliberately
+kept apart from this shutdown-splash work).
+
+## Stage map for physical re-observation
+
+For a decisive video-recorded test, this is the exact expected sequence of what should
+appear on the panel from the final shutdown confirmation to the image no longer changing,
+and which process/unit owns each stage:
+
+| # | Stage | Owning process / unit | What should be visible | Trigger |
+|---|---|---|---|---|
+| 1 | Dashboard's last live frame | `epaperd`, `stratux_epaper.service` (operational renderer) | Whatever the dashboard was already showing at the moment of confirmation - unchanged, no new draw yet | N/A - this is simply the panel's state before SIGTERM arrives |
+| 2 | Shutdown text screen | Same process, its `shutdown()` closure, on SIGTERM | A **full refresh** (brief flash/clear cycle) settling to: "Stratux is shut down." / "Safe to remove power." / the aviation disclaimer line, on a plain white background, top-left-aligned text | `systemctl poweroff` reaching this service's SIGTERM |
+| 3 | Process exit, panel released | Same process | No visual change during this step - `Sleep()` (deep sleep, retains RAM) then SPI/GPIO release; the settled stage-2 image should persist unchanged on the panel (e-paper retains its image with no power) | Immediately after stage 2's `Update()` call returns |
+| 4 | `stratux_epaper_shutdown.service` starts, clears | `epaperd -splash-shutdown` (separate process, its own `Init()`+`Clear()`) | A **second full refresh** (another flash/clear cycle) to a blank white panel | systemd's `ExecStop` for this unit, guaranteed (by `Before=` ordering) to run only after stage 3 has fully finished |
+| 5 | ARS splash drawn | Same process, `runSplash` | A **third full refresh** settling to the ARS boot-splash artwork (same bitmap/renderer as the boot splash) | Immediately follows stage 4's clear, same process |
+| 6 | Final state | Same process | `Sleep()` + SPI/GPIO release; the settled stage-5 ARS splash image persists unchanged - this is the "image stops changing" end state to record | End of the `-splash-shutdown` run |
+
+What would distinguish a real defect from the "normal multi-stage flash, misperceived"
+hypothesis: **each stage's *settled* end-state** (2's text screen, 5's ARS splash) should
+be individually sharp and legible once its own full-refresh flash finishes - stage 2's text
+must read cleanly as "Stratux is shut down. / Safe to remove power." before stage 4 clears
+it, and stage 5's ARS splash must be the clean, already-validated boot-splash artwork. A
+genuine defect would show as one of those *settled* frames itself being garbled, not just
+the transient flash *between* frames (which is a normal, expected part of every full
+refresh on this controller, previously accepted by the owner). Recording continuously from
+before the final confirmation through stage 6 lets each settled frame be checked frame-by-
+frame afterward, rather than relying on what registers to the eye in real time.
 
 ## Recommended next step (not performed here)
 
-The only way to further narrow this is a fresh, owner-attended, closely observed real
-shutdown - ideally recorded (slow-motion video, or the owner watching frame-by-frame rather
-than glancing) - specifically to determine whether each of the three refresh stages is
-individually clean (supporting the "normal multi-stage flash, misperceived" hypothesis) or
-whether any single stage's *settled* end-state (not mid-flash) is genuinely garbled
-(which would point to a real hardware or timing defect requiring further investigation).
+The only way to further narrow this is a fresh, owner-attended, video-recorded real
+shutdown, checked against the stage map above - specifically to determine whether each
+settled frame (stage 2's text screen, stage 5's ARS splash) is individually clean, or
+whether one of them is genuinely garbled at its own settled end-state, not just mid-flash.
 This has not been performed as part of this investigation. Physical validation of this
 issue therefore remains **NOT RUN**.
