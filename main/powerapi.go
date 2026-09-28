@@ -1,8 +1,10 @@
 /*
 powerapi.go: HTTP glue for the power package (see power/) - debounced
 power/thermal health (readiness.ThrottleStatus wrapped with an honest
-capability model), the previous-session clean/unclean marker, and a
-manual, two-step confirmed controlled-shutdown flow.
+capability model), the previous-session clean/unclean marker, and two
+manual, confirmed action flows built on the same power.Manager state
+machine: a two-step controlled shutdown and a single-confirmation
+controlled restart.
 
 Endpoints:
 
@@ -10,17 +12,27 @@ Endpoints:
 	GET  /getShutdownStatus  - current controlled-shutdown stage
 	POST /requestShutdown    - step 1: preconditions + issue a confirmation token
 	POST /confirmShutdown    - step 2: consume the token, flush, sync, power off
+	GET  /getRebootStatus    - current controlled-reboot stage
+	POST /requestReboot      - preconditions + issue a confirmation token
+	POST /confirmReboot      - consume the token, flush, sync, reboot
 
 See docs/power-shutdown-resilience.md for the full design: the explicit
 non-goals (no battery percentage, no automatic/unattended shutdown, no
-GPIO reservation, no UPS HAT integration), the two-step confirmation UX,
-and the hardware-validation checklist reserved for a future,
+GPIO reservation, no UPS HAT integration), the confirmation UX for each
+flow, and the hardware-validation checklist reserved for a future,
 owner-authorized mission - this feature ships built and tested, but NOT
 deployed, on its own draft PR.
 
-This file never touches the pre-existing, unconfirmed POST /shutdown
-(handleShutdownRequest in managementinterface.go) - that endpoint is left
-completely unchanged.
+The pre-existing, single-call POST /shutdown and POST /reboot
+(handleShutdownRequest/handleRebootRequest in managementinterface.go)
+predate this file and are kept reachable for compatibility (the Settings
+page's own "reboot required by a setting change" prompt still uses
+POST /reboot - see modalRebootRequired in web/plates/settings.html) -
+but both now run through the exact same otaNotBusyPrecondition/
+configBackupNotBusyPrecondition/gracefulShutdown/markSessionClosed
+functions this file defines, so no supported route can bypass the rules
+the confirmed flows enforce. See managementinterface.go's own doc
+comments on those two handlers for the exact behavior.
 */
 package main
 
@@ -56,6 +68,7 @@ var (
 	powerCurrentSessionID  string
 
 	shutdownManager *power.Manager
+	rebootManager   *power.Manager
 )
 
 // currentBootOrSessionID prefers Linux's own per-boot random id (stable
@@ -110,13 +123,21 @@ func initPower() {
 	bootSessionID := preflightSessionID
 	preflightMu.Unlock()
 
-	shutdownManager = power.NewManager(bootSessionID, monotonicSeconds, []power.Precondition{
+	powerPreconditions := []power.Precondition{
 		otaNotBusyPrecondition,
 		configBackupNotBusyPrecondition,
-	}, func() error {
+	}
+	powerFlush := func() error {
 		gracefulShutdown()
 		return nil
-	}, realShutdownExecutor{})
+	}
+	shutdownManager = power.NewManager(bootSessionID, monotonicSeconds, powerPreconditions, powerFlush, realPowerExecutor{})
+	// rebootManager shares the exact same preconditions and flush hook as
+	// shutdownManager - a reboot is exactly as disruptive to an in-flight
+	// OTA/restore or an active recording as a poweroff is, so it must be
+	// gated and cleaned up identically. Only the final command differs
+	// (IssueReboot vs IssuePowerOff, both on the one realPowerExecutor).
+	rebootManager = power.NewManager(bootSessionID, monotonicSeconds, powerPreconditions, powerFlush, realPowerExecutor{})
 
 	log.Printf("power: session %s initialized (previous session available: %v, ended cleanly: %v)\n", id, assessment.Available, assessment.EndedCleanly)
 }
@@ -168,20 +189,25 @@ func configBackupNotBusyPrecondition() error {
 	return nil
 }
 
-// realShutdownExecutor is the only part of this feature that touches real
+// realPowerExecutor is the only part of this feature that touches real
 // hardware - every test in power/ and this file's own test file injects a
-// fake instead. Sync/PowerOff mirror the exact commands
-// handleShutdownRequest (the pre-existing, unconfirmed /shutdown endpoint
-// - left entirely unchanged by this feature) already uses.
-type realShutdownExecutor struct{}
+// fake instead. Sync/PowerOff/Reboot mirror the exact commands
+// managementinterface.go's handleShutdownRequest/doReboot use for the
+// same actions, so a confirmed action and its legacy-compatible
+// counterpart always issue the identical underlying OS command.
+type realPowerExecutor struct{}
 
-func (realShutdownExecutor) Sync() error {
+func (realPowerExecutor) Sync() error {
 	syscall.Sync()
 	return nil
 }
 
-func (realShutdownExecutor) PowerOff() error {
+func (realPowerExecutor) PowerOff() error {
 	return exec.Command("systemctl", "poweroff").Run()
+}
+
+func (realPowerExecutor) Reboot() error {
+	return exec.Command("systemctl", "reboot").Run()
 }
 
 func newShutdownToken() string {
@@ -192,7 +218,18 @@ func newShutdownToken() string {
 	return "shutdown-" + hex.EncodeToString(b[:])
 }
 
-func statusForShutdownError(err error) int {
+func newRebootToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("power: crypto/rand failed: " + err.Error())
+	}
+	return "reboot-" + hex.EncodeToString(b[:])
+}
+
+// statusForPowerActionError maps a power.Manager error onto an HTTP status
+// code - shared by both the shutdown and reboot confirmed flows, since
+// power.Manager's error set is action-agnostic.
+func statusForPowerActionError(err error) int {
 	switch {
 	case errors.Is(err, power.ErrPreconditionFailed), errors.Is(err, power.ErrAlreadyInProgress):
 		return http.StatusConflict
@@ -296,7 +333,7 @@ func handleRequestShutdownRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := shutdownManager.RequestConfirmation(newShutdownToken)
 	if err != nil {
-		writeJSON(w, statusForShutdownError(err), map[string]interface{}{"success": false, "error": err.Error()})
+		writeJSON(w, statusForPowerActionError(err), map[string]interface{}{"success": false, "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -341,7 +378,7 @@ func handleConfirmShutdownRequest(w http.ResponseWriter, r *http.Request) {
 
 	stage, err := shutdownManager.Confirm(req.Token)
 	if err != nil {
-		writeJSON(w, statusForShutdownError(err), map[string]interface{}{"success": false, "error": err.Error(), "stage": string(stage)})
+		writeJSON(w, statusForPowerActionError(err), map[string]interface{}{"success": false, "error": err.Error(), "stage": string(stage)})
 		return
 	}
 
@@ -356,6 +393,107 @@ func handleConfirmShutdownRequest(w http.ResponseWriter, r *http.Request) {
 
 	if err := shutdownManager.IssuePowerOff(); err != nil {
 		log.Printf("power: IssuePowerOff failed: %s\n", err)
+	}
+}
+
+// handleGetRebootStatusRequest serves GET /getRebootStatus.
+func handleGetRebootStatusRequest(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
+	setJSONHeaders(w)
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	if rebootManager == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"stage": string(power.StageIdle)})
+		return
+	}
+	stage, lastErr := rebootManager.Status()
+	json.NewEncoder(w).Encode(map[string]interface{}{"stage": string(stage), "lastError": lastErr})
+}
+
+// handleRequestRebootRequest serves POST /requestReboot - the Power
+// page's Restart action issues this immediately when clicked, before
+// showing its single confirmation panel, so a precondition failure (an
+// OTA update or configuration restore in progress) is surfaced without
+// ever presenting a confirmation the operator cannot actually use. Never
+// mutates system state; only issues a short-lived, single-use,
+// boot-session-bound confirmation token - see requestShutdown's own doc
+// comment for the identical rationale.
+func handleRequestRebootRequest(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
+	setJSONHeaders(w)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if rebootManager == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"success": false, "error": "reboot subsystem not initialized"})
+		return
+	}
+	tok, err := rebootManager.RequestConfirmation(newRebootToken)
+	if err != nil {
+		writeJSON(w, statusForPowerActionError(err), map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":            true,
+		"token":              tok.Token,
+		"expiresAtMonotonic": tok.ExpiresAtMonotonic,
+	})
+}
+
+type confirmRebootRequest struct {
+	Token string `json:"token"`
+}
+
+// handleConfirmRebootRequest serves POST /confirmReboot - the operator's
+// one explicit confirmation. The response describing the outcome is
+// fully written and flushed to the client BEFORE this handler issues the
+// actual reboot command, for the same reason and via the same ordering
+// guarantee as handleConfirmShutdownRequest (see power.Manager.Confirm's
+// doc comment). Blocked (409, without touching anything) if an OTA
+// update or configuration restore has started since the matching
+// requestReboot call.
+func handleConfirmRebootRequest(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
+	setJSONHeaders(w)
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if rebootManager == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"success": false, "error": "reboot subsystem not initialized"})
+		return
+	}
+	var req confirmRebootRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsRequestBytes)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "invalid JSON body: " + err.Error()})
+		return
+	}
+	if req.Token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "missing required field: token"})
+		return
+	}
+
+	stage, err := rebootManager.Confirm(req.Token)
+	if err != nil {
+		writeJSON(w, statusForPowerActionError(err), map[string]interface{}{"success": false, "error": err.Error(), "stage": string(stage)})
+		return
+	}
+
+	// stage is StageCommandIssued here. Record the clean close and send
+	// the success response - flushed all the way to the client - before
+	// actually issuing the reboot command below.
+	markSessionClosed("controlled-reboot")
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "stage": string(stage)})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	if err := rebootManager.IssueReboot(); err != nil {
+		log.Printf("power: IssueReboot failed: %s\n", err)
 	}
 }
 
