@@ -60,6 +60,19 @@ frame entirely absent, a live viewer sees the dashboard jump straight into a sin
 plausibly reading as "garbled" or "mixed with the existing dashboard" in real time, exactly
 as originally reported.
 
+**Independently reproduced.** The owner also recorded the second, journal-instrumented
+shutdown below (`IMG_4743.MOV`, 143.12s, sha256
+`db29052e873b6d9029face4a154d0e4eb7d74352c92532c404795504ca7f83d2`, same evidence
+directory). The same frame-by-frame analysis (2s, then 0.125s resolution across the
+transition) shows the identical pattern: dashboard persists unchanged, then one continuous
+flash sequence directly into the settled ARS splash - no shutdown-text frame at any
+resolution, this time either. **This is now confirmed reproducible across two independent
+real shutdowns, not a one-off.** That reproducibility argues somewhat against the
+nil-driver race-window hypothesis below (which would be expected to be intermittent,
+dependent on unlucky settings-poll timing) and somewhat for the blocking-loop-timing
+hypothesis or an as-yet-unidentified deterministic cause - but this is a weak inference from
+absence of intermittency, not confirmation; the two hypotheses are still both open.
+
 ## Journal capture attempt (inconclusive)
 
 To determine *why* the text screen is skipped - whether `stratux_epaper.service`'s
