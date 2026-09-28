@@ -23,16 +23,18 @@ flow, and the hardware-validation checklist reserved for a future,
 owner-authorized mission - this feature ships built and tested, but NOT
 deployed, on its own draft PR.
 
-The pre-existing, single-call POST /shutdown and POST /reboot
-(handleShutdownRequest/handleRebootRequest in managementinterface.go)
-predate this file and are kept reachable for compatibility (the Settings
-page's own "reboot required by a setting change" prompt still uses
-POST /reboot - see modalRebootRequired in web/plates/settings.html) -
-but both now run through the exact same otaNotBusyPrecondition/
-configBackupNotBusyPrecondition/gracefulShutdown/markSessionClosed
-functions this file defines, so no supported route can bypass the rules
-the confirmed flows enforce. See managementinterface.go's own doc
-comments on those two handlers for the exact behavior.
+The pre-existing POST /shutdown and POST /reboot (handleShutdownRequest/
+handleRebootRequest in managementinterface.go) predate this file and are
+kept registered, but no longer perform any action - both were found, on
+inspection, to have no remaining caller with any server-issued
+confirmation of its own (a client-side modal is not server-side state),
+which made either one a genuine confirmation bypass: a single POST -
+forged, replayed, or from a stale browser tab - could shut the device
+down or reboot it with no record any operator had confirmed anything.
+Every caller has been migrated to the confirmed flows this file defines;
+see managementinterface.go's own doc comments on those two handlers, and
+docs/power-shutdown-resilience.md's "Legacy endpoint retirement" section,
+for the full trace and disposition.
 */
 package main
 

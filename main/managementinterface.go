@@ -689,43 +689,51 @@ func setPersistentLogging(persistent bool) {
 	}
 }
 
-// handleShutdownRequest serves the pre-existing, single-call POST
-// /shutdown. The Settings page's own standalone Shutdown button (which
-// used to be this endpoint's only caller) has been removed - the Power
-// page's two-step confirmed flow (POST /requestShutdown + /confirmShutdown,
-// see main/powerapi.go) is now the only supported UI path - but this
-// endpoint stays reachable for compatibility with any existing external
-// caller. It must never be a way to bypass the same rules the confirmed
-// flow enforces, so it now runs the identical precondition checks and
-// graceful-flush sequence: blocked (409) while an OTA update or
-// configuration restore is in progress, and the SDRs/data log/active
-// recording are stopped and flushed cleanly before the device powers off,
-// exactly as gracefulShutdown already does for the confirmed flow.
+// handleShutdownRequest serves the pre-existing POST /shutdown. It no
+// longer performs any action.
+//
+// Investigation (see docs/power-shutdown-resilience.md's "Legacy
+// endpoint retirement" section for the full trace): this endpoint had
+// exactly zero remaining callers anywhere in this codebase - its one-time
+// UI caller (Settings' standalone Shutdown button) was already removed.
+// A single, unconfirmed POST here used to power the device off outright
+// (earlier still) or, after an intermediate fix, do so gated only by the
+// OTA/restore-busy preconditions - still a genuine confirmation bypass,
+// since neither precondition check is a substitute for a server-issued,
+// single-use confirmation token: any POST from a stale browser tab, a
+// forged/replayed request, or a script would still have powered the
+// device off immediately, with no record that an operator had actually
+// confirmed anything. The only supported way to shut the device down is
+// now the confirmed flow (POST /requestShutdown, then /confirmShutdown -
+// see main/powerapi.go). This endpoint is kept registered, not deleted,
+// so an old client gets an explicit, actionable explanation instead of a
+// bare 404.
 func handleShutdownRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
-	if err := otaNotBusyPrecondition(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
-		return
-	}
-	if err := configBackupNotBusyPrecondition(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
-		return
-	}
-	gracefulShutdown()
-	markSessionClosed("legacy-shutdown")
-	syscall.Sync()
-	exec.Command("systemctl", "poweroff").Run()
+	writeJSON(w, http.StatusGone, map[string]interface{}{
+		"success": false,
+		"error":   "this endpoint no longer performs an immediate shutdown - use POST /requestShutdown, then POST /confirmShutdown with the returned token",
+	})
 }
 
 // doReboot runs this project's centralized graceful-shutdown sequence
 // (SDRs, data log, active recording - see gracefulShutdown's own doc
-// comment) before recording a clean session close and rebooting. Shared
-// by handleRebootRequest (POST /reboot, kept for compatibility - see its
-// own doc comment) and, indirectly, by nothing else: the Power page's
-// confirmed Restart action uses power.Manager/rebootManager instead (see
-// main/powerapi.go), which runs the same gracefulShutdown flush but
-// issues "systemctl reboot" itself rather than calling this function.
+// comment) before recording a clean session close and rebooting.
+//
+// Its only callers are internal to the OTA state machine (main/ota.go's
+// requestOverlayDisable-then-reboot step, and otaRequestRollbackReboot) -
+// both already-authorized actions (an OTA update the operator explicitly
+// uploaded and the device already validated, or that update's own
+// automatic rollback) that need their own reboot step, not a second,
+// separate operator confirmation for it. It is deliberately NOT called by
+// any HTTP handler: handleRebootRequest (POST /reboot) used to call it
+// through delayReboot on every unconfirmed POST - see that handler's own
+// doc comment for why that was a genuine confirmation bypass, and why it
+// no longer does. The Power page's confirmed Restart action does not use
+// this function either - it goes through power.Manager/rebootManager
+// instead (main/powerapi.go), which runs the identical gracefulShutdown
+// flush but issues "systemctl reboot" itself.
 func doReboot() {
 	gracefulShutdown()
 	markSessionClosed("reboot")
@@ -767,32 +775,38 @@ func handleRestartRequest(w http.ResponseWriter, r *http.Request) {
 	go doRestartApp()
 }
 
-// handleRebootRequest serves the pre-existing, single-call POST /reboot.
-// The Settings page's own standalone Reboot button has been removed (the
-// Power page's confirmed Restart action - POST /requestReboot +
-// /confirmReboot, see main/powerapi.go - is now the supported UI path for
-// an operator-initiated reboot), but this endpoint stays reachable: the
-// Settings page's own "a setting you just changed requires a reboot"
-// prompt (modalRebootRequired in web/plates/settings.html) still calls it
-// directly, and any external caller depending on it continues to work.
-// It must never be a way to bypass the same rules the confirmed flow
-// enforces, so it now runs the identical precondition checks before
-// rebooting - doReboot itself already runs the identical graceful-flush
-// sequence (see doReboot's own doc comment).
+// handleRebootRequest serves the pre-existing POST /reboot. It no longer
+// performs any action.
+//
+// Investigation (see docs/power-shutdown-resilience.md's "Legacy
+// endpoint retirement" section for the full trace): this endpoint had
+// exactly one remaining caller anywhere in this codebase - the Settings
+// page's "a setting you just changed requires a reboot" prompt
+// (previously modalRebootRequired's postReboot(), web/plates/js/settings.js)
+// - and that caller had no server-issued confirmation of its own: a
+// client-side modal is not server-side state, so a forged/replayed POST
+// to this endpoint, or a stale browser tab, could reboot the device with
+// no record that an operator had actually confirmed anything - the same
+// genuine bypass handleShutdownRequest had (see its own doc comment).
+// That prompt now goes through the confirmed flow directly (POST
+// /requestReboot, then /confirmReboot - see main/powerapi.go and
+// SettingsCtrl's confirmRequiredReboot in web/plates/js/settings.js), so
+// this endpoint has no remaining caller of any kind. It is kept
+// registered, not deleted, so an old client gets an explicit, actionable
+// explanation instead of a bare 404.
+//
+// This is unrelated to doReboot/delayReboot's own, separate, legitimate
+// internal use by the OTA state machine (main/ota.go) - see doReboot's
+// doc comment. That caller is already-authorized (the operator explicitly
+// uploaded and the device already validated the update) and was never
+// reachable through this HTTP handler in the first place.
 func handleRebootRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
-	w.Header().Set("Access-Control-Allow-Method", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept")
-	if err := otaNotBusyPrecondition(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
-		return
-	}
-	if err := configBackupNotBusyPrecondition(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
-		return
-	}
-	go delayReboot()
+	writeJSON(w, http.StatusGone, map[string]interface{}{
+		"success": false,
+		"error":   "this endpoint no longer performs an immediate reboot - use POST /requestReboot, then POST /confirmReboot with the returned token",
+	})
 }
 
 func handleOrientAHRS(w http.ResponseWriter, r *http.Request) {

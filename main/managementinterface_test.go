@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,15 +91,19 @@ func TestDefaultServer_OtherAssetsKeepGeneralCache(t *testing.T) {
 	}
 }
 
-// --- Legacy /shutdown and /reboot endpoint safety -----------------------
+// --- Legacy /shutdown and /reboot endpoint retirement --------------------
 //
-// handleShutdownRequest/handleRebootRequest call exec.Command("systemctl",
-// ...) directly with no injectable executor (unlike the confirmed flows
-// in main/powerapi.go), so these tests deliberately exercise ONLY the
-// blocked (precondition-failure) path - the one path that returns before
-// any real system command would run. There is no safe way to test the
-// unblocked path from an automated test; that remains a manual,
-// physical-device verification step (see the final report).
+// handleShutdownRequest/handleRebootRequest used to call exec.Command
+// ("systemctl", ...) directly - first unconditionally, then (a prior,
+// still-insufficient fix) gated only by the OTA/restore-busy
+// preconditions. Both are retired now: neither endpoint performs any
+// action anymore, under any precondition state - a single POST can never
+// power the device off or reboot it, confirmed/token or not. These tests
+// prove that invariance directly: the response is identical (410, no
+// action) whether OTA/config-restore is busy or idle, because the
+// handler no longer even inspects that state - there is no remaining
+// conditional path that could ever fall through to a real systemctl
+// command from either endpoint.
 
 // withTestOTABusy points otaDir at a temp dir holding a real, non-idle,
 // non-terminal OTA state - the same shape otaNotBusyPrecondition reads -
@@ -138,50 +143,87 @@ func withTestConfigBackupIdle(t *testing.T) {
 	t.Cleanup(func() { configBackupState = orig })
 }
 
-func TestHandleShutdownRequest_BlockedByOTABusy(t *testing.T) {
-	withTestOTABusy(t)
-	withTestConfigBackupIdle(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+// legacyRouteResponse posts to a legacy handler and decodes its JSON body.
+func legacyRouteResponse(t *testing.T, path string, handler http.HandlerFunc) (int, map[string]interface{}) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
 	w := httptest.NewRecorder()
-	handleShutdownRequest(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 while an OTA update is in progress, got %d: %s", w.Code, w.Body.String())
+	handler(w, req)
+	var body map[string]interface{}
+	if w.Body.Len() > 0 {
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: response was not valid JSON: %v (body: %s)", path, err, w.Body.String())
+		}
+	}
+	return w.Code, body
+}
+
+func assertLegacyRouteNeverActs(t *testing.T, path string, handler http.HandlerFunc) {
+	t.Helper()
+	code, body := legacyRouteResponse(t, path, handler)
+	if code != http.StatusGone {
+		t.Errorf("%s: expected 410 Gone, got %d (body: %v)", path, code, body)
+	}
+	if body["success"] != false {
+		t.Errorf("%s: expected success:false, got %v", path, body)
+	}
+	if _, hasError := body["error"]; !hasError {
+		t.Errorf("%s: expected a non-empty error explaining the retirement, got %v", path, body)
 	}
 }
 
-func TestHandleShutdownRequest_BlockedByConfigBackupBusy(t *testing.T) {
+func TestHandleShutdownRequest_NeverActs_RegardlessOfPreconditionState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(t *testing.T)
+	}{
+		{"OTA busy", func(t *testing.T) { withTestOTABusy(t); withTestConfigBackupIdle(t) }},
+		{"config restore busy", func(t *testing.T) { withTestOTAIdle(t); withTestConfigBackupBusy(t) }},
+		{"idle", func(t *testing.T) { withTestOTAIdle(t); withTestConfigBackupIdle(t) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.set(t)
+			assertLegacyRouteNeverActs(t, "/shutdown", handleShutdownRequest)
+		})
+	}
+}
+
+func TestHandleRebootRequest_NeverActs_RegardlessOfPreconditionState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(t *testing.T)
+	}{
+		{"OTA busy", func(t *testing.T) { withTestOTABusy(t); withTestConfigBackupIdle(t) }},
+		{"config restore busy", func(t *testing.T) { withTestOTAIdle(t); withTestConfigBackupBusy(t) }},
+		{"idle", func(t *testing.T) { withTestOTAIdle(t); withTestConfigBackupIdle(t) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.set(t)
+			assertLegacyRouteNeverActs(t, "/reboot", handleRebootRequest)
+		})
+	}
+}
+
+// TestHandleShutdownAndRebootRequest_WrongMethodAndAnyMethod_NeverAct proves
+// the retirement response is unconditional on method too - not just that
+// GET/POST are both harmless, but that there is no code path in either
+// handler that could ever reach a real systemctl command.
+func TestHandleShutdownAndRebootRequest_AnyMethodNeverActs(t *testing.T) {
 	withTestOTAIdle(t)
-	withTestConfigBackupBusy(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
-	w := httptest.NewRecorder()
-	handleShutdownRequest(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 while a configuration restore is in progress, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestHandleRebootRequest_BlockedByOTABusy(t *testing.T) {
-	withTestOTABusy(t)
 	withTestConfigBackupIdle(t)
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/shutdown", nil)
+		w := httptest.NewRecorder()
+		handleShutdownRequest(w, req)
+		if w.Code != http.StatusGone {
+			t.Errorf("/shutdown %s: expected 410, got %d", method, w.Code)
+		}
 
-	req := httptest.NewRequest(http.MethodPost, "/reboot", nil)
-	w := httptest.NewRecorder()
-	handleRebootRequest(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 while an OTA update is in progress, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestHandleRebootRequest_BlockedByConfigBackupBusy(t *testing.T) {
-	withTestOTAIdle(t)
-	withTestConfigBackupBusy(t)
-
-	req := httptest.NewRequest(http.MethodPost, "/reboot", nil)
-	w := httptest.NewRecorder()
-	handleRebootRequest(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 while a configuration restore is in progress, got %d: %s", w.Code, w.Body.String())
+		req = httptest.NewRequest(method, "/reboot", nil)
+		w = httptest.NewRecorder()
+		handleRebootRequest(w, req)
+		if w.Code != http.StatusGone {
+			t.Errorf("/reboot %s: expected 410, got %d", method, w.Code)
+		}
 	}
 }
