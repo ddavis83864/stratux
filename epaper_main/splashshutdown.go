@@ -65,6 +65,27 @@ const (
 	// PID 1 over a local socket and returns in milliseconds; this only
 	// matters if PID 1 is wedged, in which case not drawing is right.
 	jobQueryTimeout = 5 * time.Second
+
+	// safeToRemovePowerPause is issue #43's fix: the operational
+	// renderer's own "Stratux is shut down. / Safe to remove power."
+	// screen was confirmed, on real hardware, to be drawn correctly and
+	// to be perfectly legible when shown in isolation - the panel and
+	// the bitmap content were never the problem. What was missing is
+	// this: this unit's own Init()+Clear() (about to run) begins
+	// overwriting that screen roughly 60-100ms after the operational
+	// renderer's Update() call reports success, which is not enough
+	// time for a human to ever perceive the settled frame before it is
+	// cleared for the ARS splash - confirmed by two independent
+	// owner-recorded real shutdowns, both showing the panel go directly
+	// from the live dashboard through one continuous flash into the ARS
+	// splash with no legible pause in between, even though a
+	// synchronous, fsync'd diagnostic trace of a third real shutdown
+	// showed the text draw completing with no error. Pausing here, once
+	// a real power-off is already confirmed (never on a reboot or a
+	// plain service stop, where nothing draws over this screen anyway),
+	// gives that already-correct message time to actually be seen
+	// before this process clears it.
+	safeToRemovePowerPause = 3 * time.Second
 )
 
 // shutdownKind is what the systemd job queue says the system is doing.
@@ -143,7 +164,7 @@ func systemctlListJobs(ctx context.Context) (string, error) {
 // splash or a clean "not applicable" skip, 1 for a hardware/driver/asset
 // failure, 2 if refused because the operational service appears to own the
 // panel.
-func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeout time.Duration, open busOpener, listJobs jobLister, out, errOut io.Writer) int {
+func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeout, pause time.Duration, open busOpener, listJobs jobLister, out, errOut io.Writer) int {
 	d := decideBootSplash(configPath)
 	if !d.Run {
 		fmt.Fprintf(out, "shutdown splash skipped: %s\n", d.Reason)
@@ -166,7 +187,18 @@ func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeo
 		fmt.Fprintln(out, "shutdown splash skipped: not a system power-off (the unit was stopped on its own)")
 		return exitOK
 	}
-	fmt.Fprintf(out, "shutdown splash: power-off in progress (%s); drawing the ARS splash\n", strings.Join(jobs, ", "))
+	fmt.Fprintf(out, "shutdown splash: power-off in progress (%s)\n", strings.Join(jobs, ", "))
+	if pause > 0 {
+		fmt.Fprintf(out, "shutdown splash: pausing %s so the operational renderer's \"safe to remove power\" screen can actually be seen before it is cleared\n", pause)
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			// Timeout or a second signal arrived - don't make a bounded,
+			// cosmetic pause the reason systemd has to SIGKILL this unit.
+		}
+	}
+
+	fmt.Fprintln(out, "shutdown splash: drawing the ARS splash")
 	// force=false: the ownership guard stays on, as for the boot splash.
 	// Under the unit's ordering the operational renderer's status file
 	// (in its RuntimeDirectory) is already gone, so this only trips if
@@ -181,5 +213,5 @@ func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeo
 func runSplashShutdownCommand(configPath string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return runSplashShutdown(ctx, configPath, common.EpaperStatusPath, shutdownSplashTimeout, openRealBus, systemctlListJobs, os.Stdout, os.Stderr)
+	return runSplashShutdown(ctx, configPath, common.EpaperStatusPath, shutdownSplashTimeout, safeToRemovePowerPause, openRealBus, systemctlListJobs, os.Stdout, os.Stderr)
 }

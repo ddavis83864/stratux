@@ -86,7 +86,7 @@ func shutRun(t *testing.T, conf string, bus *fakeBus, status string, timeout tim
 		}
 		return bus, func() { released++ }, nil
 	}
-	code = runSplashShutdown(context.Background(), conf, status, timeout, open, jobsFn(jobs, jobsErr, &listed), &o, &e)
+	code = runSplashShutdown(context.Background(), conf, status, timeout, 0, open, jobsFn(jobs, jobsErr, &listed), &o, &e)
 	return code, opened, released, listed, o.String(), e.String()
 }
 
@@ -311,7 +311,7 @@ func TestRunSplashShutdown_HungSystemdQueryIsBounded(t *testing.T) {
 	hang := func(ctx context.Context) (string, error) { <-ctx.Done(); return "", ctx.Err() }
 	var o, e bytes.Buffer
 	start := time.Now()
-	code := runSplashShutdown(context.Background(), writeConf(t, cfg42), absentStatus(t), 150*time.Millisecond, open, hang, &o, &e)
+	code := runSplashShutdown(context.Background(), writeConf(t, cfg42), absentStatus(t), 150*time.Millisecond, 0, open, hang, &o, &e)
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("hung query held the shutdown for %v", took)
 	}
@@ -342,6 +342,89 @@ func TestRunSplashShutdown_NeverOpensPanelWhileOperationalRendererRuns(t *testin
 	}
 	if !strings.Contains(errOut, "may own the panel") {
 		t.Errorf("stderr %q", errOut)
+	}
+}
+
+// Issue #43: the operational renderer's "safe to remove power" screen was
+// confirmed correct and legible in isolation on real hardware, but was
+// never visible during a real shutdown because this unit began clearing
+// it within ~100ms of the operational renderer reporting success - not
+// long enough for a human to ever see the settled frame. The fix is this
+// pause, injected here (never as the real safeToRemovePowerPause
+// constant, which would make every other test in this file take 3 real
+// seconds) between confirming a real power-off and this unit opening the
+// panel to clear it.
+func TestRunSplashShutdown_PausesBeforeClearingSoTheSafeScreenCanBeSeen(t *testing.T) {
+	bus := &fakeBus{}
+	var opened int
+	open := func(epaper.GPIOMapping) (Bus, func(), error) {
+		opened++
+		return bus, func() {}, nil
+	}
+	const pause = 80 * time.Millisecond
+	var o, e bytes.Buffer
+	start := time.Now()
+	code := runSplashShutdown(context.Background(), writeConf(t, cfg42), absentStatus(t), time.Minute, pause, open, jobsFn(poweroffJobs(t), nil, new(int)), &o, &e)
+	took := time.Since(start)
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr %q", code, e.String())
+	}
+	if took < pause {
+		t.Errorf("returned after %v, less than the %v pause - the panel could have started clearing before the pause elapsed", took, pause)
+	}
+	if opened != 1 {
+		t.Errorf("panel opened %d times, want exactly 1 (after the pause, to draw the splash)", opened)
+	}
+	if !strings.Contains(o.String(), pause.String()) {
+		t.Errorf("stdout %q doesn't mention the pause duration", o.String())
+	}
+}
+
+// pause=0 (what every other test in this file uses via shutRun) must be
+// an outright skip, not a very-short-but-nonzero wait - these tests would
+// otherwise be slow and flaky under load.
+func TestRunSplashShutdown_ZeroPauseSkipsWaitingEntirely(t *testing.T) {
+	bus := &fakeBus{}
+	code, opened, _, _, out, _ := shutRun(t, writeConf(t, cfg42), bus, absentStatus(t), time.Minute, nil, poweroffJobs(t), nil)
+	if code != exitOK || opened != 1 {
+		t.Fatalf("exit=%d opened=%d", code, opened)
+	}
+	if strings.Contains(out, "pausing") {
+		t.Errorf("logged a pause message with pause=0: %q", out)
+	}
+}
+
+// The pause must never survive past the run's own deadline or a second
+// signal - a cosmetic, bounded wait must not be why systemd has to
+// SIGKILL this unit.
+func TestRunSplashShutdown_PauseIsCancelledByContext(t *testing.T) {
+	bus := &fakeBus{}
+	open := func(epaper.GPIOMapping) (Bus, func(), error) { return bus, func() {}, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	var o, e bytes.Buffer
+	start := time.Now()
+	code := runSplashShutdown(ctx, writeConf(t, cfg42), absentStatus(t), time.Minute, time.Hour, open, jobsFn(poweroffJobs(t), nil, new(int)), &o, &e)
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("an hour-long pause was not cut short by context cancellation: took %v", took)
+	}
+	_ = code // the run continues (and draws) once the pause is cut short - only the wait itself is bounded by ctx
+}
+
+func TestSafeToRemovePowerPauseIsReasonable(t *testing.T) {
+	if safeToRemovePowerPause <= 0 {
+		t.Fatalf("safeToRemovePowerPause=%v must be positive to fix issue #43 at all", safeToRemovePowerPause)
+	}
+	if safeToRemovePowerPause >= shutdownSplashTimeout {
+		t.Errorf("safeToRemovePowerPause=%v must be a small part of the %v deadline, not consume it", safeToRemovePowerPause, shutdownSplashTimeout)
+	}
+	// Long enough to actually read two short lines, short enough not to
+	// meaningfully delay a real shutdown.
+	if safeToRemovePowerPause < time.Second || safeToRemovePowerPause > 10*time.Second {
+		t.Errorf("safeToRemovePowerPause=%v is outside a sane 1-10s reading-time range", safeToRemovePowerPause)
 	}
 }
 
