@@ -13,11 +13,75 @@ evidence.
 
 Code-only, from a fresh worktree/branch (`fix/shutdown-splash-legibility`) off the
 newly-merged `master` (PR #42's merge commit `aac2f0cca990c2e1d1a706faad8544a6bb686a32`),
-separate from the power-consolidation branch and from any FIS-B work. **No physical
-reproduction was attempted** - a real shutdown test needs the owner beside the grounded
-device to restore power, and that was not re-established for this investigation. This
-document is the analysis and software-side due diligence; it does not claim the splash is
-fixed, because no defect was confirmed, let alone corrected.
+separate from the power-consolidation branch and from any FIS-B work. This document does
+not claim the splash is fixed, because no defect has been corrected yet - see "Status" below
+for what has now actually been confirmed.
+
+## Status (updated after two owner-attended, video/journal-instrumented physical tests)
+
+**A real defect is now confirmed, via direct video evidence: the operational renderer's
+"Stratux is shut down. / Safe to remove power." text screen does not appear at all during a
+real shutdown.** This supersedes this document's earlier, weaker hypothesis ("normal
+multi-stage flash, misperceived") - that hypothesis was based on the owner's own verbal
+recollection of watching the shutdown live, which frame-by-frame video review directly
+contradicts. See "Decisive video evidence" and "Journal capture attempt" below. The exact
+root cause inside `epaper_main` is still not confirmed (a journal-capture attempt to nail it
+down did not persist any data - see below) - two concrete, code-grounded hypotheses are
+given, neither proven. No fix has been implemented. Physical validation of any future fix
+remains **NOT RUN**.
+
+## Decisive video evidence (2026-09-28, owner-attended, recorded)
+
+The owner recorded a real, confirmed shutdown continuously on video from before the final
+confirmation through the panel settling (`IMG_4741.MOV`, 123.85s, sha256
+`94c9aad594ce40872ac79f61e4616833ce76ff1bcda08b3541918723012d5a57`, preserved at
+`/home/ddavis/acceptance-evidence/issue-43-shutdown-splash-video-20260928/`). Extracting
+frames at 2s, 0.25s, and finally 0.125s (8 fps, the video's practical limit near its native
+~24 fps) resolution across the entire transition shows, consistently at every resolution:
+
+1. The live operational dashboard persists unchanged, exactly as it was showing before
+   shutdown was confirmed.
+2. Directly from that dashboard frame, a single continuous LUT-driven full-refresh flash
+   sequence begins (~2 seconds of flashing/inverting frames, including a transient
+   inverted/ghost glimpse of the ARS logo partway through - normal for this controller).
+3. The flash settles directly into the clean ARS splash bitmap, which then remains
+   unchanged for the rest of the recording.
+
+**At no point, at any sampling resolution, does a frame showing "Stratux is shut down." or
+"Safe to remove power." appear.** The owner's own initial verbal recollection ("stage 2 was
+clean and legible") was a good-faith but mistaken recollection under the speed of watching
+this live - the video is the higher-fidelity record here, and it shows the text screen
+simply never being drawn, not being drawn-and-then-hard-to-read.
+
+This also better explains the *original* garbled-splash complaint than the earlier "just
+normal flashing" hypothesis: with the intended intermediate "Safe to remove power" resting
+frame entirely absent, a live viewer sees the dashboard jump straight into a single
+~2-second flash-then-splash transition with no clean pause to read anything in between -
+plausibly reading as "garbled" or "mixed with the existing dashboard" in real time, exactly
+as originally reported.
+
+## Journal capture attempt (inconclusive)
+
+To determine *why* the text screen is skipped - whether `stratux_epaper.service`'s
+`shutdown()` closure never runs, runs but hits an error, or is killed before finishing -
+persistent journal logging was set up before a second real shutdown, using the same
+technique validated in an earlier, unrelated e-paper acceptance session: a `Storage=persistent`
+drop-in under `/run/systemd/journald.conf.d/`, `/var/lib/stratux-data/acceptance/journal`
+bind-mounted onto `/var/log/journal`, then `systemctl restart systemd-journald`. Confirmed
+active immediately afterward (`journalctl --list-boots` correctly showed the live boot).
+
+After the shutdown and the owner's power restore, `journalctl --directory=/var/lib/stratux-data/acceptance/journal
+--list-boots` shows **no entries at all from that boot** - only stale data from an earlier,
+unrelated session (2026-09-19). The persistent-storage migration was active but evidently
+never flushed to the real (ext4-backed) disk before power was physically cut - this device's
+poweroff is fast enough, and/or journald's own flush timing late enough in the shutdown
+transaction, that this capture technique did not work for the operational renderer's own
+shutdown-time behavior this time. (`stratux_epaper.service` also sets `StandardOutput=null`,
+so even a successful capture would only have shown systemd's own PID-1-level unit start/stop
+timing for it, not `epaperd`'s own log lines - a real limit of this technique for this
+specific unit, worth noting for any future attempt.) Not repeated a third time this session,
+per "do not repeatedly cycle the device without a reason" - two real shutdowns is enough
+disruption for one session without a clearer plan for a third.
 
 ## What actually draws during a real shutdown
 
@@ -86,29 +150,58 @@ If "mixed with the existing dashboard" was genuinely observed on the physical pa
 cause is therefore not a software-generated bitmap defect - it would have to be either a
 physical/electrical effect during the refresh itself, or a perceptual one (see below).
 
-## Most likely explanation, given the evidence
+## Superseded: the earlier "just normal flashing" hypothesis
 
-E-paper full refreshes on this controller (SSD1677-family) are inherently a multi-stage,
-visibly-flashing LUT-driven process (invert/clear cycles as part of ghosting mitigation),
-not an instantaneous swap. Three of these happen back-to-back in a real shutdown (dashboard
--> shutdown text -> clear+splash), a sequence that was already known and previously accepted
-by the owner as a UX characteristic (not treated as a defect) before this session. The most
-evidence-supported explanation is that what was observed is this known multi-stage
-transition - individually correct frames, each briefly visible mid-flash - being perceived
-as "garbled" when watched in real time, rather than a data-corruption bug. This is a
-hypothesis, not a confirmed root cause: it cannot be fully distinguished from a genuine
-transient hardware/connection issue without a slow-motion recording or a careful,
-frame-by-frame re-observation of a real shutdown, which requires the owner physically
-present with the device - not available for this investigation.
+This section is kept for the record but is **no longer the leading explanation** - see
+"Decisive video evidence" above. It previously read: E-paper full refreshes on this
+controller are inherently a multi-stage, visibly-flashing process; three of these happen
+back-to-back in a real shutdown, a sequence already known and previously accepted by the
+owner; the most evidence-supported explanation was that this known multi-stage transition,
+individually correct at each stage, was being perceived as "garbled" in real time. Frame-by-
+frame video review now shows this was wrong in one specific, important way: it is not three
+full refreshes with each settled frame legible - the *middle* stage (the shutdown text
+screen) does not draw at all, leaving only two refreshes (dashboard -> flash -> splash) with
+no legible intermediate frame. The "normal flashing" characteristic itself is real and still
+not the defect; the *missing stage* is.
+
+## Two hypotheses for the missing text screen (neither confirmed)
+
+Both are grounded in the actual code (`epaper_main/main.go`'s `run()`/`shutdown()`), not
+speculation, but neither has server-side log confirmation (see "Journal capture attempt"):
+
+1. **The main loop doesn't reach `ctx.Done()` in time.** `run()`'s `select` only re-checks
+   `ctx.Done()` at the top of each loop iteration; if a dashboard refresh cycle (network
+   poll + render + panel write) is in progress when SIGTERM arrives, `shutdown()` isn't
+   called until that iteration finishes. If systemd's stop budget for this unit (or the
+   overall shutdown transaction) runs out first, `stratux_epaper.service` could be
+   SIGKILLed - skipping `shutdown()` entirely - before an in-progress cycle finishes.
+   `stratux_epaper.service`'s own unit file sets no explicit `TimeoutStopSec` (so it uses
+   systemd's default, typically generous), which argues against this being the whole story,
+   but the *overall* shutdown transaction's own budget wasn't checked here.
+2. **`driver` is nil at the exact moment SIGTERM arrives.** `shutdown()`'s closure only
+   draws `if driver != nil`; a settings-triggered re-initialization window
+   (`driver.Sleep(); closeBusFn(); driver, bus = nil, nil`) briefly nils it out. If SIGTERM
+   lands in that window, `shutdown()` silently does nothing visible - consistent with what
+   the video shows (the dashboard's last complete frame simply persists, since e-paper
+   retains its image with no further writes, right up until the *separate*
+   `stratux_epaper_shutdown.service` process starts its own, independent `Init()`+`Clear()`).
+   No settings change was made during either test this session, so this specific trigger for
+   the nil window is not confirmed to have actually happened - only that the code path exists
+   and would produce exactly this symptom if it did.
+
+Distinguishing these (or finding a third cause) needs either a successful journal capture of
+a future real shutdown, or temporary, reverted diagnostic logging added to `shutdown()`
+itself for one instrumented test run - neither has been done.
 
 ## What was NOT found
 
-No code or configuration defect was identified in the shutdown-splash rendering or
-sequencing path. Per the task's own instruction, **no speculative fix is being made** for an
-unconfirmed root cause - that would risk regressing already hardware-validated code (the
-boot splash, which shares the same `runSplash`/`Render` machinery and rendered cleanly both
-in Session 1 (journal) and Session 2 (direct owner observation), on the very device this
-issue was reported on).
+No code fix has been implemented. A real, confirmed defect exists (the missing text screen),
+but its precise internal cause is not yet established, and per the task's own instruction,
+**no speculative fix is being made** for an unconfirmed root cause - guessing between the
+two hypotheses above and "fixing" the wrong one would risk regressing already
+hardware-validated code (the boot splash, which shares the same `runSplash`/`Render`
+machinery and rendered cleanly in every test this session, on the very device this issue was
+reported on) without actually closing the gap.
 
 ## Incidental, unrelated finding (not in scope, not fixed here)
 
@@ -152,22 +245,27 @@ and which process/unit owns each stage:
 | 5 | ARS splash drawn | Same process, `runSplash` | A **third full refresh** settling to the ARS boot-splash artwork (same bitmap/renderer as the boot splash) | Immediately follows stage 4's clear, same process |
 | 6 | Final state | Same process | `Sleep()` + SPI/GPIO release; the settled stage-5 ARS splash image persists unchanged - this is the "image stops changing" end state to record | End of the `-splash-shutdown` run |
 
-What would distinguish a real defect from the "normal multi-stage flash, misperceived"
-hypothesis: **each stage's *settled* end-state** (2's text screen, 5's ARS splash) should
-be individually sharp and legible once its own full-refresh flash finishes - stage 2's text
-must read cleanly as "Stratux is shut down. / Safe to remove power." before stage 4 clears
-it, and stage 5's ARS splash must be the clean, already-validated boot-splash artwork. A
-genuine defect would show as one of those *settled* frames itself being garbled, not just
-the transient flash *between* frames (which is a normal, expected part of every full
-refresh on this controller, previously accepted by the owner). Recording continuously from
-before the final confirmation through stage 6 lets each settled frame be checked frame-by-
-frame afterward, rather than relying on what registers to the eye in real time.
+**This stage map describes the intended design** (used to plan the decisive video test
+above). The actual video evidence shows stages 2 and 3 do not happen - the panel goes
+directly from stage 1 to stage 4. The map remains useful as a reference for what *should*
+happen once a fix is made, and for framing any future diagnostic logging.
 
-## Recommended next step (not performed here)
+## Recommended next steps (not performed here)
 
-The only way to further narrow this is a fresh, owner-attended, video-recorded real
-shutdown, checked against the stage map above - specifically to determine whether each
-settled frame (stage 2's text screen, stage 5's ARS splash) is individually clean, or
-whether one of them is genuinely garbled at its own settled end-state, not just mid-flash.
-This has not been performed as part of this investigation. Physical validation of this
-issue therefore remains **NOT RUN**.
+1. **Root-cause the missing draw.** Either a successful persistent-journal capture of a
+   future real shutdown (the attempt this session did not persist any data - see above), or
+   temporary, explicitly-reverted diagnostic logging inside `shutdown()` itself
+   (e.g., logging whether `driver` was nil, and how long the preceding loop iteration took)
+   for one instrumented owner-attended test, to distinguish the two hypotheses above (or
+   find a third).
+2. **Implement the smallest fix once the cause is known**, preserving the boot splash,
+   dashboard, "Safe to remove power" *intent*, unit ordering, and reboot-skips-splash
+   behavior exactly. Add a regression test for whatever the actual defect turns out to be
+   (e.g., if it's the nil-driver race, a test that `shutdown()` still draws using the
+   *previous* driver/config if a reinit was in flight; if it's the blocking-loop timing, a
+   test bounding how long a single loop iteration can run before yielding to `ctx.Done()`).
+3. **Physically re-verify with another video-recorded real shutdown**, checked frame-by-
+   frame against the stage map, before considering issue #43 closed.
+
+None of this has been performed. Issue #43 remains open, with a now-confirmed (not
+hypothesized) defect. No fix PR has been opened yet.
