@@ -289,24 +289,39 @@ automated test; that remains a manual, physical-device step (see the checklist b
 
 ## Hardware-validation checklist
 
-Partially executed on the grounded test Stratux (192.168.10.1) on 2026-09-28, at commit
-`60a0bb7e` - see `/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/`
-for the full evidence and gate-by-gate table. A real controlled *shutdown* was deliberately
-**not** attempted (it requires the owner physically present to restore power afterward, which
-was not confirmed that session), so items 4-6 remain open, and a few precondition-busy checks
-that would require manufacturing risky on-disk OTA state on a shared device were also left open
-(items 7, 10, and the busy-case half of 12). This is a starting point for the still-outstanding
-owner-authorized hardware-validation work, not a substitute for it.
+Executed in two owner-supervised sessions on the grounded test Stratux (192.168.10.1),
+2026-09-28, at commit `60a0bb7e` - see
+`/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/` for the full
+evidence and gate-by-gate tables (Session 1's restart/legacy-route/cancel checks, and Session
+2's owner-attended real shutdown, recovery, and reboot-display observation). Remaining open
+items are the under-voltage induction test (3), the physical power-yank test (6), the
+precondition-busy checks that would require manufacturing risky on-disk OTA state on a shared
+device (7, 10, and the busy-case half of 12), and token-replay-after-daemon-restart (8). This
+is a starting point for that still-outstanding owner-authorized hardware-validation work, not a
+substitute for it.
+
+Session 2 also surfaced one new finding, unrelated to this PR's own code: the shutdown e-paper
+splash rendered illegibly ("genuinely garbled, not legible as any message," per the owner's
+direct observation) during the real shutdown test, even though the shutdown mechanism itself
+worked correctly (device halted, owner-confirmed). PR #42 makes no e-paper code changes, so
+this is not attributed to this PR; it is recorded here for the owner's own follow-up.
 
 1. **DONE (2026-09-28).** Deployed via the established OTA state machine; new boot ID,
    installed commit, and `/getPowerHealth`/`/getShutdownStatus` all confirmed.
 2. **DONE (2026-09-28).** `throttled=0x0` and `/getPowerHealth` severity `ok` confirmed with
    the device powered normally.
 3. **Open.** Requires a known-weak USB power source/cable; not attempted.
-4. **Open.** No real controlled shutdown was attempted this session (see above).
-5. **Open** (for the shutdown path specifically - not attempted). The equivalent check for a
-   controlled *restart* (`previousSessionEndedCleanly: true` on the next boot) **is DONE**,
-   confirmed twice.
+4. **DONE (2026-09-28, Session 2, owner-attended).** A real controlled shutdown was performed
+   through the two-step dashboard UI (Prepare Shutdown, cancel-then-retry demonstrated first,
+   then both explicit confirmations completed). The device actually powered off - confirmed
+   directly and physically by the owner ("The device is shutdown"), not inferred from loss of
+   network alone (the HTTP/network drop was recorded only as supporting, not sole, evidence).
+   No active recording was running for this specific check (the equivalent recording-under-
+   shutdown scenario is covered by item 9's restart-with-active-recording check, which used the
+   identical `gracefulShutdown()` flush path).
+5. **DONE (2026-09-28, Session 2).** After the owner physically restored power, `/getPowerHealth`
+   showed `previousSessionEndedCleanly: true` for the new boot - the shutdown path's own version
+   of this check. (The restart path's equivalent was already confirmed twice in Session 1.)
 6. **Open.** A physical power yank is out of scope for a routine acceptance session; not
    attempted.
 7. **Open.** Requires an OTA update genuinely in progress at the moment of `/confirmShutdown`;
@@ -315,7 +330,11 @@ owner-authorized hardware-validation work, not a substitute for it.
 9. **DONE (2026-09-28).** A real controlled restart was performed through the Power page's
    single-confirmation Restart flow while a recording (`rec-20260928T153758Z`) was active;
    its metadata shows `complete: true`, the device's boot ID changed (genuine reboot, not just
-   an HTTP 200), and it rejoined the Wi-Fi AP/Web UI on its own afterward.
+   an HTTP 200), and it rejoined the Wi-Fi AP/Web UI on its own afterward. In Session 2, the
+   owner directly watched a further Restart live and confirmed the shutdown/"Safe to remove
+   power" splash does **not** appear during a reboot - only the normal boot splash and
+   operational handoff, "looks good" - settling by direct observation what Session 1 could only
+   infer from the (necessarily reboot-spanning) journal.
 10. **Open.** Requires an OTA update genuinely in progress at the moment of `/confirmReboot`;
     not forced this session (see reasoning above).
 11. **DONE (2026-09-28), except the mid-OTA sub-case.** The Settings page was confirmed to
