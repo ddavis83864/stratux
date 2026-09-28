@@ -18,9 +18,10 @@ This feature adds three things on top of that one real signal:
    measure - under-voltage and thermal/frequency throttling, both right now and at any point
    since boot - debounced against single noisy readings, and paired with explicit,
    always-visible text about what this hardware *cannot* measure.
-2. A manual, two-step confirmed controlled-shutdown flow, so an operator can power the
-   device off cleanly (flushing any active recording first) without pulling power or SSHing
-   in.
+2. A manual, confirmed controlled-shutdown flow (two explicit steps) and controlled-restart
+   flow (one explicit confirmation), so an operator can power the device off or reboot it
+   cleanly (flushing any active recording first) without pulling power or SSHing in - the
+   single supported place in the Web UI for either action.
 3. A previous-session marker: a small, conservatively-worded note about whether the last
    session recorded a clean shutdown or reboot before this boot started.
 
@@ -101,9 +102,28 @@ no content of its own).
 once even under concurrent `confirmShutdown` calls (`power.TestManager_ConcurrentConfirmOnlyOneWins`
 exercises this directly with 20 concurrent goroutines).
 
-This feature never touches the pre-existing, unconfirmed `POST /shutdown`
-(`handleShutdownRequest` in `main/managementinterface.go`) - that endpoint is left completely
-unchanged, in case any existing client depends on it.
+A parallel `Manager` instance (`rebootManager`) drives an identical flow for a controlled
+restart, differing only in the UI's confirmation count (one explicit confirmation instead of
+shutdown's two) and the final command (`IssueReboot` instead of `IssuePowerOff`) - see
+"Restart" below.
+
+**Update (Web UI power-control consolidation):** the pre-existing, single-call `POST
+/shutdown` and `POST /reboot` (`handleShutdownRequest`/`handleRebootRequest` in
+`main/managementinterface.go`) used to be completely unaffected by this feature - deliberately
+left alone, on the theory that any existing client might depend on their exact original
+behavior. That changed: the Settings page's own standalone Reboot/Shutdown buttons (the only
+UI callers of those two endpoints for an operator-initiated action) have been removed in favor
+of this page, and both endpoints now run through the *exact same* `otaNotBusyPrecondition`/
+`configBackupNotBusyPrecondition`/`gracefulShutdown`/`markSessionClosed` functions this
+confirmed flow uses - a stale browser tab, a script, or any other caller of the legacy
+endpoints can no longer bypass the OTA/restore-busy check or skip the recording-flush/SDR-
+shutdown sequence the confirmed flow already enforced. They remain reachable (not removed) for
+compatibility - in particular, `POST /reboot` is still called directly by the Settings page's
+own "a setting you just changed requires a reboot" prompt, which has no confirmation-token
+flow of its own and does not need one (the setting has already been explicitly changed by the
+operator). Neither legacy endpoint gained the two-step/token-based interactive confirmation -
+they have no confirmation UI of their own to gate - only the same *safety* checks the confirmed
+flow already had.
 
 ## The previous-session marker
 
@@ -143,12 +163,23 @@ not make one. The exact displayed text (and the test that enforces it,
 ## Dashboard
 
 The Power page (`web/plates/power.html` / `web/plates/js/power.js`, linked from the sidebar)
-shows the current power-health reading (with the same capability-honesty notes as the API),
-the previous-session assessment, and the two-step shutdown flow: a "Prepare Shutdown" button,
-then an explicit "I understand this will power off the device now" checkbox that must be
-checked before "Confirm Shutdown" becomes clickable, plus a "Cancel" button that abandons an
-issued-but-unconfirmed token (nothing to undo server-side, since step one never mutates
-anything).
+is the single supported place in the Web UI to restart or shut down the device. It shows the
+current power-health reading (with the same capability-honesty notes as the API), the
+previous-session assessment, and two action panels:
+
+- **Restart** - one explicit confirmation: a "Restart" button that immediately requests a
+  token (surfacing a blocked precondition, if any, before showing anything else to confirm),
+  then a warning panel with a "Confirm Restart" button and a "Cancel" button.
+- **Shutdown** - the original two-step flow: a "Prepare Shutdown" button, then an explicit "I
+  understand this will power off the device now" checkbox that must be checked before "Confirm
+  Shutdown" becomes clickable, plus a "Cancel" button.
+
+Both "Cancel" actions simply abandon an issued-but-unconfirmed token (nothing to undo
+server-side, since the request step never mutates anything). Restart deliberately keeps a
+lighter confirmation than Shutdown - a reboot is self-recovering and far less consequential
+than a poweroff - while still running through the identical server-side precondition/flush
+machinery. The Settings page's former standalone Reboot/Shutdown buttons were removed in favor
+of this page; Settings now links here instead.
 
 ## API reference
 
@@ -158,10 +189,15 @@ anything).
 | GET | `/getShutdownStatus` | Current controlled-shutdown stage |
 | POST | `/requestShutdown` | Step 1: preconditions + issue a confirmation token |
 | POST | `/confirmShutdown` | Step 2: consume the token, flush, sync, power off |
+| GET | `/getRebootStatus` | Current controlled-reboot stage |
+| POST | `/requestReboot` | Preconditions + issue a confirmation token |
+| POST | `/confirmReboot` | Consume the token, flush, sync, reboot |
+| POST | `/shutdown` | Legacy, single-call, no confirmation UI of its own - kept for compatibility, now precondition-checked and flushed identically to the confirmed flow (see "The controlled-shutdown flow" above) |
+| POST | `/reboot` | Legacy, single-call - still used by the Settings page's "reboot required by a setting change" prompt; same precondition/flush treatment as `/shutdown` |
 
 `/getPowerHealth` never reports a battery percentage, a runtime estimate, or anything about
-an outstanding shutdown token. `/confirmShutdown` and the diagnostics/recording summaries
-below likewise never include the token value itself once issued.
+an outstanding shutdown/reboot token. `/confirmShutdown`/`/confirmReboot` and the diagnostics/
+recording summaries below likewise never include a token value itself once issued.
 
 ## Readiness / Preflight / Diagnostics / Recording integration
 
@@ -187,12 +223,20 @@ Every test in `power/*_test.go` and `main/powerapi_test.go` uses a fake `power.E
 none of them ever calls `syscall.Sync()` or `systemctl poweroff`/`reboot`. Coverage includes:
 bit-parsing edge cases (reused from `readiness/vcgencmd_test.go`), the debounce policy
 (requires-N-consecutive-samples, streak resets on disagreement, recovers after N good
-samples), the full state-machine lifecycle (success; missing/wrong/reused/expired/
-wrong-boot-session token; precondition failure at request time and again at confirm time;
-flush failure; sync failure; concurrent confirm attempts), the session-marker's atomic
-read/write and conservative-wording assertions, and the HTTP layer (every endpoint's method
-guard, malformed/missing-field bodies, and the end-to-end request → confirm → marked-clean
-flow).
+samples), the full state-machine lifecycle for both actions (success; missing/wrong/reused/
+expired/wrong-boot-session token; precondition failure at request time and again at confirm
+time; flush failure; sync failure; concurrent confirm attempts; the shutdown and reboot
+Managers' tokens never cross-accept each other's), the session-marker's atomic read/write and
+conservative-wording assertions, and the HTTP layer (every endpoint's method guard,
+malformed/missing-field bodies, and the end-to-end request → confirm → marked-clean flow).
+
+The legacy `/shutdown` and `/reboot` endpoints have no injectable executor (they call
+`exec.Command` directly, unlike the confirmed flows), so `main/managementinterface_test.go`
+can only exercise their new *blocked* path automatically (a real OTA-busy state written via
+`ota.SaveState`, and a real configuration-restore-busy state) - proving the precondition gate
+itself works without ever risking a real `systemctl` invocation from a test run. Their
+unblocked/success path is not, and cannot safely be, covered by an automated test; that
+remains a manual, physical-device step (see the checklist below).
 
 ## Hardware-validation checklist (prepared, not executed)
 
@@ -221,5 +265,25 @@ feature's own introducing PR explicitly reserves that work for - not a substitut
    `/confirmShutdown` is rejected with `409` and nothing happens.
 8. Confirm a confirmation token cannot be replayed after a daemon restart (kill and restart
    the `stratux` service between request and confirm).
-9. Confirm the existing, pre-existing `/shutdown` endpoint's behavior is completely
-   unaffected by this feature.
+9. Perform a real controlled restart through the Power page's single-confirmation Restart
+   flow while an active recording is running; confirm the recording's metadata shows
+   `complete: true`, the device actually reboots (physical confirmation), and it rejoins the
+   Wi-Fi AP/Web UI on its own afterward.
+10. Start `/requestReboot`, then start an OTA update before confirming; confirm
+    `/confirmReboot` is rejected with `409` and nothing happens - the reboot-flow equivalent of
+    check 7.
+11. Confirm the Settings page no longer shows standalone Reboot/Shutdown buttons, that its
+    "Power page" link works, and that changing a setting that requires a reboot (e.g.
+    Persistent Logging) still shows its own "reboot required" prompt and reboots successfully
+    via `postReboot()`/`POST /reboot`.
+12. With a real OTA update or configuration restore in progress, confirm both legacy endpoints
+    (`POST /shutdown`, `POST /reboot`) refuse the action (`409`) rather than proceeding - the
+    physical-device counterpart to the automated blocked-path tests in
+    `main/managementinterface_test.go`. This is the one behavior this feature's own earlier
+    draft explicitly left unverified for `/shutdown` (see "The controlled-shutdown flow"
+    above's "Update" note) - now that it is no longer left unaffected, it needs confirming.
+13. With neither an OTA update nor a configuration restore in progress, confirm `POST
+    /shutdown` and `POST /reboot` still work end-to-end (they are kept reachable for
+    compatibility, not merely gated) - a real device power-off and a real device reboot,
+    physically confirmed, each via a direct call to the endpoint rather than the Power page's
+    UI.
