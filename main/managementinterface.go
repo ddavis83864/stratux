@@ -689,12 +689,45 @@ func setPersistentLogging(persistent bool) {
 	}
 }
 
+// handleShutdownRequest serves the pre-existing, single-call POST
+// /shutdown. The Settings page's own standalone Shutdown button (which
+// used to be this endpoint's only caller) has been removed - the Power
+// page's two-step confirmed flow (POST /requestShutdown + /confirmShutdown,
+// see main/powerapi.go) is now the only supported UI path - but this
+// endpoint stays reachable for compatibility with any existing external
+// caller. It must never be a way to bypass the same rules the confirmed
+// flow enforces, so it now runs the identical precondition checks and
+// graceful-flush sequence: blocked (409) while an OTA update or
+// configuration restore is in progress, and the SDRs/data log/active
+// recording are stopped and flushed cleanly before the device powers off,
+// exactly as gracefulShutdown already does for the confirmed flow.
 func handleShutdownRequest(w http.ResponseWriter, r *http.Request) {
+	setNoCache(w)
+	setJSONHeaders(w)
+	if err := otaNotBusyPrecondition(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	if err := configBackupNotBusyPrecondition(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	gracefulShutdown()
+	markSessionClosed("legacy-shutdown")
 	syscall.Sync()
 	exec.Command("systemctl", "poweroff").Run()
 }
 
+// doReboot runs this project's centralized graceful-shutdown sequence
+// (SDRs, data log, active recording - see gracefulShutdown's own doc
+// comment) before recording a clean session close and rebooting. Shared
+// by handleRebootRequest (POST /reboot, kept for compatibility - see its
+// own doc comment) and, indirectly, by nothing else: the Power page's
+// confirmed Restart action uses power.Manager/rebootManager instead (see
+// main/powerapi.go), which runs the same gracefulShutdown flush but
+// issues "systemctl reboot" itself rather than calling this function.
 func doReboot() {
+	gracefulShutdown()
 	markSessionClosed("reboot")
 	syscall.Sync()
 	exec.Command("systemctl", "reboot").Run()
@@ -734,11 +767,31 @@ func handleRestartRequest(w http.ResponseWriter, r *http.Request) {
 	go doRestartApp()
 }
 
+// handleRebootRequest serves the pre-existing, single-call POST /reboot.
+// The Settings page's own standalone Reboot button has been removed (the
+// Power page's confirmed Restart action - POST /requestReboot +
+// /confirmReboot, see main/powerapi.go - is now the supported UI path for
+// an operator-initiated reboot), but this endpoint stays reachable: the
+// Settings page's own "a setting you just changed requires a reboot"
+// prompt (modalRebootRequired in web/plates/settings.html) still calls it
+// directly, and any external caller depending on it continues to work.
+// It must never be a way to bypass the same rules the confirmed flow
+// enforces, so it now runs the identical precondition checks before
+// rebooting - doReboot itself already runs the identical graceful-flush
+// sequence (see doReboot's own doc comment).
 func handleRebootRequest(w http.ResponseWriter, r *http.Request) {
 	setNoCache(w)
 	setJSONHeaders(w)
 	w.Header().Set("Access-Control-Allow-Method", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept")
+	if err := otaNotBusyPrecondition(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	if err := configBackupNotBusyPrecondition(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
 	go delayReboot()
 }
 
@@ -1444,6 +1497,9 @@ func managementInterface() {
 	http.HandleFunc("/getShutdownStatus", handleGetShutdownStatusRequest)
 	http.HandleFunc("/requestShutdown", handleRequestShutdownRequest)
 	http.HandleFunc("/confirmShutdown", handleConfirmShutdownRequest)
+	http.HandleFunc("/getRebootStatus", handleGetRebootStatusRequest)
+	http.HandleFunc("/requestReboot", handleRequestRebootRequest)
+	http.HandleFunc("/confirmReboot", handleConfirmRebootRequest)
 
 	// Storage-lifecycle inventory foundation - see
 	// main/storagelifecycleapi.go and docs/storage-lifecycle.md.
