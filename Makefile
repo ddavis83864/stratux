@@ -65,17 +65,31 @@ xrtlais:
 test:
 	make -C test
 
-# Go unit tests for the deterministic SDR assignment logic (sdrassign).
-# Deliberately scoped to sdrassign rather than `go test ./...`: the main
-# package requires cgo and a locally-built libdump978.so (see stratuxrun
-# above), and several other packages talk to real hardware (GPS, sensors,
-# SDRs) that isn't available in CI or on a dev machine. sdrassign has
-# neither dependency, so it's the narrowest reliable scope for automated
-# regression coverage. See docs/hardware/sdr-and-bands.md.
+# Go unit tests for packages with neither of `go test ./...`'s two
+# blockers here: the main package needs cgo and a locally-built
+# libdump978.so (see stratuxrun above), and several other packages talk
+# to real hardware (GPS, sensors, SDRs) that isn't available in CI or on
+# a dev machine.
+#
+#   - sdrassign: the deterministic SDR assignment logic. Neither
+#     dependency. See docs/hardware/sdr-and-bands.md.
+#   - epaper, epaper_main: the optional e-paper display's pure decision/
+#     render logic and its epaperd binary. No cgo (confirmed: neither
+#     package nor anything they import references cgo or the SDR
+#     libraries). Real GPIO/SPI access is confined behind small,
+#     explicitly injected interfaces (PanelDriver, Bus, busOpener,
+#     jobLister, StatusSource, ...) that every test here replaces with a
+#     fake - the same pattern fancontrol_main already uses for its own
+#     fault-isolated service. These two packages were simply never added
+#     when their test suites grew past a handful of cases - see issue
+#     #45, which found (and fixed, separately) two golden-image tests
+#     that had been silently failing on `master` since an earlier commit
+#     specifically because nothing here ever ran them.
 .PHONY: gotest
 gotest:
-	go vet ./sdrassign/...
+	go vet ./sdrassign/... ./epaper/... ./epaper_main/...
 	go test ./sdrassign/... -v
+	go test ./epaper/... ./epaper_main/... -v
 
 www:
 	make -C web
