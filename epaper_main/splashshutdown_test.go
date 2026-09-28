@@ -18,9 +18,11 @@ import (
 	"github.com/stratux/stratux/epaper/splash/assets"
 )
 
-// approvedBitmapSHA256 is the frozen production bitmap
-// (docs/epaper-boot-splash.md). The shutdown splash reuses it verbatim.
-const approvedBitmapSHA256 = "51039f8a375a2ecc44ed25fe7b6f373b31e7695e7a854bd192d605695b5b73dc"
+// approvedShutdownBitmapSHA256 is the frozen final shutdown splash bitmap
+// (docs/epaper-shutdown-splash.md): the ARS logo plus the "Safe to remove
+// power" message (issue #43). It is a distinct asset from the boot splash
+// (epaper/splash/assets/CHECKSUMS.sha256).
+const approvedShutdownBitmapSHA256 = "991d4a486912869a92efd8f32d6b96ae3e246b8b9f9355879782bbc731eac7be"
 
 func fixture(t *testing.T, name string) string {
 	t.Helper()
@@ -158,7 +160,7 @@ func TestRunSplashShutdown_PoweroffDrawsExactSplashOnceAndReleases(t *testing.T)
 		if last := bus.commands[len(bus.commands)-1]; last != cmdDeepSleep {
 			t.Errorf("%s: panel not left asleep: last command 0x%02X", fx, last)
 		}
-		want := assets.Bitmap()
+		want := assets.ShutdownBitmap()
 		n := 0
 		for _, d := range bus.data {
 			if bytes.Equal(d, want) {
@@ -178,24 +180,25 @@ func TestRunSplashShutdown_PoweroffDrawsExactSplashOnceAndReleases(t *testing.T)
 }
 
 // The artwork is frozen: the bitmap the shutdown path draws is the exact
-// approved production asset, not a copy.
+// approved final shutdown splash asset (issue #43), not the boot splash
+// and not a copy.
 func TestRunSplashShutdown_UsesTheApprovedAsset(t *testing.T) {
-	sum := sha256.Sum256(assets.Bitmap())
-	if got := hex.EncodeToString(sum[:]); got != approvedBitmapSHA256 {
-		t.Fatalf("embedded production bitmap sha256 = %s, want the approved %s", got, approvedBitmapSHA256)
+	sum := sha256.Sum256(assets.ShutdownBitmap())
+	if got := hex.EncodeToString(sum[:]); got != approvedShutdownBitmapSHA256 {
+		t.Fatalf("embedded shutdown bitmap sha256 = %s, want the approved %s", got, approvedShutdownBitmapSHA256)
 	}
-	if _, err := splash.Validate(assets.Bitmap()); err != nil {
-		t.Fatalf("approved bitmap fails validation: %v", err)
+	if _, err := splash.Validate(assets.ShutdownBitmap()); err != nil {
+		t.Fatalf("approved shutdown bitmap fails validation: %v", err)
 	}
 	bus := &fakeBus{}
 	shutRun(t, writeConf(t, cfg42), bus, absentStatus(t), time.Minute, nil, poweroffJobs(t), nil)
-	want, _ := splashBitmap(0)
+	want, _ := shutdownSplashBitmap(0)
 	for _, d := range bus.data {
 		if bytes.Equal(d, want) {
 			return
 		}
 	}
-	t.Error("the approved bitmap never reached the controller")
+	t.Error("the approved shutdown bitmap never reached the controller")
 }
 
 func TestRunSplashShutdown_Rotation180(t *testing.T) {
@@ -204,7 +207,7 @@ func TestRunSplashShutdown_Rotation180(t *testing.T) {
 	if code, _, _, _, _, _ := shutRun(t, conf, bus, absentStatus(t), time.Minute, nil, poweroffJobs(t), nil); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
-	want, _ := splashBitmap(180)
+	want, _ := shutdownSplashBitmap(180)
 	for _, d := range bus.data {
 		if bytes.Equal(d, want) {
 			return
@@ -321,9 +324,9 @@ func TestRunSplashShutdown_HungSystemdQueryIsBounded(t *testing.T) {
 }
 
 func TestRunSplashShutdown_CorruptEmbeddedAssetFailsBeforeHardware(t *testing.T) {
-	orig := loadBitmap
-	defer func() { loadBitmap = orig }()
-	loadBitmap = func() []byte { return make([]byte, 100) }
+	orig := loadShutdownBitmap
+	defer func() { loadShutdownBitmap = orig }()
+	loadShutdownBitmap = func() []byte { return make([]byte, 100) }
 	code, opened, _, _, _, errOut := shutRun(t, writeConf(t, cfg42), &fakeBus{}, absentStatus(t), time.Minute, nil, poweroffJobs(t), nil)
 	if code != exitFailure || opened != 0 || !strings.Contains(errOut, "embedded splash asset is invalid") {
 		t.Errorf("exit=%d opened=%d stderr=%q", code, opened, errOut)

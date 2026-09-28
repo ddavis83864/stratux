@@ -1,26 +1,45 @@
 # ARS e-paper shutdown splash
 
-> **Status: physically validated on the real Stratux Pi** (owner-observed),
-> package `stratux-2.0.0~rc2-arm64.deb` built from commit
-> `616ed20ed9b95e9b2be92e1a2e00792b0abd8b89` and installed through the supported
-> OTA mechanism. Poweroff draws the ARS splash, the image survives power removal,
-> a reboot draws nothing, and the boot splash is unchanged; the shutdown/reboot
-> journals prove the panel-ownership ordering. See the
-> [acceptance record](#physical-acceptance-record). The acceptance was of the
-> code as packaged; this documentation was updated afterwards.
+> **Status: implementation complete, physical acceptance PENDING** (issue
+> [#43](https://github.com/stratux/stratux/issues/43)). The design below
+> supersedes the three-refresh design physically validated under commit
+> `616ed20ed9b95e9b2be92e1a2e00792b0abd8b89` (its
+> [acceptance record](#physical-acceptance-record-prior-design-historical) is
+> retained for history, immediately below). That prior design's final image
+> carried **no text** - the operational renderer's own "Stratux is shut down.
+> Safe to remove power." text screen was drawn first, then silently
+> overwritten by the plain ARS splash, so the last thing the panel showed
+> never said it was safe to remove power. Six owner-recorded videos and two
+> independent pause-based fix attempts (documented on the now-superseded
+> `fix/shutdown-splash-legibility` branch, PR #44) confirmed a visible
+> intermediate screen could not be made to work: whatever text appeared was
+> never reliably legible before being overwritten.
+>
+> **The fix (this document, current design):** the message is baked directly
+> into the final retained image's own artwork, eliminating the intermediate
+> text screen and the cross-process timing dependency entirely. **Do not
+> mark issue #43 resolved, deploy to a flight Stratux, or merge past this
+> point until the [physical acceptance procedure](#physical-acceptance-procedure)
+> has been run and recorded below.**
 
 On an **orderly power-off** (or halt) of the Raspberry Pi, the last image left
-on the Waveshare **4.2" V2** e-paper panel is the approved ARS splash instead of
-the operational status screen. E-paper is bistable, so the image stays on the
-panel after the Pi has halted and power has been removed.
+on the Waveshare **4.2" V2** e-paper panel is a dedicated shutdown splash - the
+ARS logo plus a large, unambiguous **"SAFE TO REMOVE POWER"** message - instead
+of the operational status screen. E-paper is bistable, so the image stays on
+the panel after the Pi has halted and power has been removed. This is the
+single, final image an orderly power-off leaves on the panel; nothing else is
+drawn between it and the halt.
 
-It is a separate feature from the validated [boot
-splash](epaper-boot-splash.md) and reuses that feature's renderer, artwork,
-timeouts and configuration gate unchanged. The approved artwork is frozen: the
-shutdown path draws the **same embedded bitmap** (SHA-256
-`51039f8a375a2ecc44ed25fe7b6f373b31e7695e7a854bd192d605695b5b73dc`,
-400×300, 15,000 bytes) via the same `runSplash`; no separate shutdown artwork
-exists.
+It is a separate feature from the validated [boot splash](epaper-boot-splash.md)
+and reuses that feature's renderer, driver sequencing, timeouts and
+configuration gate unchanged. The **artwork is its own asset**, distinct from
+the boot splash's (issue #43: it must carry the safety message, which the
+plain logo does not): embedded bitmap
+`epaper/splash/assets/ars-shutdown-400x300.bin` (400×300, 15,000 bytes, its
+own frozen SHA-256 in `epaper/splash/assets/CHECKSUMS.sha256`), drawn via the
+same `runSplash`, selected through a `splashSource` (`epaper_main/splash.go`)
+so the shared Init/Clear/Update/Sleep/ownership-guard/timeout logic is not
+duplicated between the two splashes.
 
 ## What the user sees
 
@@ -28,26 +47,35 @@ exists.
 NORMAL BOOT (unchanged, validated)
   power applied -> ARS boot splash -> operational Stratux status display
 
-ORDERLY POWER-OFF / HALT (new)
+ORDERLY POWER-OFF / HALT (issue #43 design)
   operational status display
-    -> stratux_epaper (operational renderer) stops, releases SPI/GPIO
-    -> shutdown splash acquires the panel, draws the ARS splash (full refresh),
-       panel sleeps, SPI/GPIO released
-    -> Pi completes shutdown -> ARS image remains on the unpowered panel
+    -> stratux_epaper (operational renderer) sleeps the panel (draws nothing
+       new - see below) and releases SPI/GPIO
+    -> shutdown splash acquires the panel: Clear (blank flash), then one full
+       refresh drawing the ARS logo + "SAFE TO REMOVE POWER" splash, panel
+       sleeps, SPI/GPIO released
+    -> Pi completes shutdown -> the logo+message image remains on the
+       unpowered panel
 
 NEXT POWER-ON
-  retained ARS image -> boot splash (unchanged) -> operational display
+  retained shutdown image -> boot splash (unchanged) -> operational display
 
 REBOOT (deliberately no shutdown splash)
   operational display -> reboot -> boot splash -> operational display
 ```
 
-Note the operational renderer's own, pre-existing stop behavior is unchanged: on
-SIGTERM it first draws its fixed text screen ("Stratux is shut down. Safe to
-remove power.") and puts the panel to sleep. On a power-off the shutdown splash
-then replaces that text screen, so the panel shows, in order: status -> text
-screen -> (blank flash from `Clear`) -> ARS splash. See
-[Limitations](#limitations-and-risks).
+The operational renderer's own stop behavior changed with issue #43: on
+SIGTERM (including every controlled shutdown) it now only sleeps the panel and
+releases SPI/GPIO - it no longer draws its old "Stratux is shut down. Safe to
+remove power." text screen first (`epaper_main/main.go`'s `shutdown()`). The
+panel is bistable, so whatever the operational renderer was last displaying
+simply stays until the shutdown splash overwrites it (power-off) or the boot
+splash overwrites it (reboot). This removes one full refresh compared with the
+prior design and, more importantly, removes the cross-process timing gap that
+made that old text screen's own legibility physically unreliable (see the
+status note at the top of this document). On a power-off the panel now shows,
+in order: status -> (blank flash from the shutdown splash's `Clear`) -> the
+logo+message splash - two full refreshes, not three.
 
 ## Architecture
 
@@ -55,7 +83,8 @@ screen -> (blank flash from `Clear`) -> ARS splash. See
 |---|---|
 | New unit | `debian/stratux_epaper_shutdown.service` |
 | New renderer mode | `epaperd -splash-shutdown` (`epaper_main/splashshutdown.go`) |
-| Reused, unchanged | `runSplash`/`renderSplash` (`splash.go`), the panel driver, the embedded bitmap, the boot splash's `decideBootSplash` config gate and `bootSplashTimeout` |
+| Own, distinct asset | `epaper/splash/assets/ars-shutdown-400x300.bin` (logo + "Safe to remove power"), generated from `epaper/splash/assets/source/ars-shutdown-source.png` |
+| Reused, unchanged | `runSplash`/`renderSplash` (`splash.go`) via the `shutdownSplashSource` selector, the panel driver, the boot splash's `decideBootSplash` config gate and `bootSplashTimeout` |
 | Packaged into | `lib/systemd/system/` by the `Makefile` `dpkg` target |
 | Enabled by | `debian/postinst.dpkg`: `systemctl enable stratux_epaper_shutdown`, inside the Pi guard, **before** the `STRATUX_OTA_INSTALL` early-exit |
 | Armed (started) by | `debian/postinst.dpkg` on the **non-OTA** path only, before `stratux_epaper` is started; an OTA install is armed by its own reboot |
@@ -210,7 +239,7 @@ proves the check can fail.
 |---|---|
 | Which units are active at runtime? | `stratux`, `stratux_epaper` (operational renderer), the boot splash (`active (exited)`), and the shutdown unit (`active (exited)`). |
 | Which are pulled into poweroff? | All are stopped via the default `Conflicts=shutdown.target`; the shutdown unit is *stopped*, not started, by the transaction. |
-| When does the operational renderer get SIGTERM, and when does it release? | Early in the stop phase (it only waits for units ordered after it). It draws its text screen, sleeps the panel, closes SPI/GPIO and exits; the stop job completes when the process has exited. |
+| When does the operational renderer get SIGTERM, and when does it release? | Early in the stop phase (it only waits for units ordered after it). It sleeps the panel (drawing nothing new - issue #43) and closes SPI/GPIO, then exits; the stop job completes when the process has exited. |
 | When does the shutdown renderer start? | When the shutdown unit's stop job runs, which systemd orders after the stop jobs of both renderers (and of the boot splash). |
 | Can `shutdown.target` start a service after another stops? | Yes (D1), but that start job cannot be ordered before an unmount - measured. Not used. |
 | `DefaultDependencies`? | Left at `yes` deliberately: it provides `After=basic.target` (stop before the unmount) and `Conflicts=shutdown.target` (included in every shutdown). A test pins it. |
@@ -242,8 +271,10 @@ There is never simultaneous panel ownership. Three independent layers:
   Stratux's shutdown endpoints, the power key): draws once, sleeps the panel,
   releases SPI/GPIO; the Pi then completes shutdown.
 - **Reboot** (`systemctl reboot`, `shutdown -r`, Stratux's reboot, OTA reboots;
-  kexec is classified the same way): **no** shutdown splash refresh; the normal boot splash follows. (The
-  operational renderer's own pre-existing stop text screen still appears.)
+  kexec is classified the same way): **no** shutdown splash refresh; the normal
+  boot splash follows. (The operational renderer still only sleeps the panel
+  on its own stop - see [What the user sees](#what-the-user-sees) - so nothing
+  new is drawn between the status display and the boot splash either way.)
 - **Ordinary service stop/restart** (`systemctl restart stratux_epaper`,
   settings change, OTA restart): the shutdown unit is not involved.
 - **Stopping/restarting the shutdown unit itself**: `ExecStop` runs, finds no
@@ -269,7 +300,7 @@ Uses `/boot/firmware/stratux.conf` exactly as the boot splash does; there is
 | Settings | Shutdown splash |
 |---|---|
 | `EpaperEnabled` false / absent / no or unparseable config | none (logged, exit 0) |
-| Enabled, `waveshare-4.2in-v2`, rotation 0 or 180, on power-off/halt | **ARS splash** |
+| Enabled, `waveshare-4.2in-v2`, rotation 0 or 180, on power-off/halt | **shutdown splash** (ARS logo + "Safe to remove power") |
 | Enabled, 4.2" V2, but reboot / not a power-off / cannot tell | none (logged, exit 0) |
 | Enabled, 3.7" or panel unset, 4.2" V2 rotation 90/270, invalid panel/rotation | none (logged, exit 0) |
 
@@ -303,16 +334,18 @@ at boot), then continues.
 
 ## Limitations and risks
 
-- **The "Safe to remove power" text is replaced.** The operational renderer's
-  existing text screen appears first and is then overwritten by the ARS splash.
-  The final image carries no text, so it no longer says "safe to remove power".
-  The operational renderer was deliberately left unchanged (validated unit and
-  a stated regression requirement); a future change could make it skip its text
-  screen when a power-off is queued, saving one refresh. This is a product
-  decision for the owner.
-- **Extra refreshes at power-off.** Text screen (full), `Clear` (full), splash
-  (full): three full refreshes and a blank flash, on top of normal wear
-  considerations for e-paper. Reboots add none.
+- **Fixed by this design (issue #43): the final image now says "safe to
+  remove power".** The prior design's plain ARS splash silently overwrote the
+  operational renderer's own text screen, so the final retained image carried
+  no message at all. This design bakes the message into the shutdown splash's
+  own artwork, so whatever is successfully drawn last is the message - no
+  cross-process hand-off to get right. See the status note at the top of this
+  document for the two pause-based approaches that were tried and physically
+  failed before this design was adopted.
+- **Extra refreshes at power-off.** `Clear` (full) then the splash (full): two
+  full refreshes and one blank flash, on top of normal wear considerations for
+  e-paper. Reboots add none. (The prior design's operational-renderer text
+  screen added a third; removing it is itself a small wear/time improvement.)
 - **Relies on `systemctl list-jobs`.** It is a stable CLI over PID 1's job queue,
   fails safe (skip), and is exercised by fixtures from the real target systemd,
   but it is not a formally versioned API.
@@ -337,11 +370,16 @@ at boot), then continues.
 | File | Change |
 |---|---|
 | `debian/stratux_epaper_shutdown.service` | new unit |
-| `epaper_main/splashshutdown.go` | `-splash-shutdown`: config gate, job-queue classification, calls `runSplash` |
-| `epaper_main/main.go` | `-splash-shutdown` flag (refused in combination with `-splash`/`-splash-boot`); `-splash-config` help text |
+| `epaper_main/splashshutdown.go` | `-splash-shutdown`: config gate, job-queue classification, calls `runSplash` with `shutdownSplashSource` |
+| `epaper_main/splash.go` | `splashSource` (issue #43): lets `runSplash` draw either splash asset; `shutdownSplashBitmap`/`loadShutdownBitmap` |
+| `epaper_main/main.go` | `-splash-shutdown` flag (refused in combination with `-splash`/`-splash-boot`); `-splash-config` help text; `shutdown()` no longer draws a text screen (issue #43) - see [What the user sees](#what-the-user-sees) |
+| `epaper/splash/assets/ars-shutdown-400x300.bin`, `assets.go` (`ShutdownBitmap`), `source/ars-shutdown-source.png`, `CHECKSUMS.sha256`, `ars-shutdown-400x300.preview.png` | the new, distinct shutdown splash asset (issue #43) |
+| `epaper/splash/cmd/splashgen/main.go` | `-name` flag: generates either named asset without disturbing the other's committed checksum lines |
+| `epaper/layout.go` | `ShutdownLines` removed (issue #43): no longer called by anything |
 | `Makefile` | packages the unit |
 | `debian/postinst.dpkg`, `debian/prerm.dpkg` | enable / arm / stop the unit |
 | `epaper_main/splashshutdown_test.go`, `epaper_main/shutdownunit_test.go`, `epaper_main/testdata/list-jobs-*.txt` | tests and real-systemd fixtures |
+| `epaper/splash/assets/shutdown_assets_test.go` | content/bounds/regeneration tests for the new asset (issue #43) |
 | `test/epaper_packaging_test.sh` | shutdown unit, scripts, `systemd-analyze verify` |
 | `test/epaper_shutdown_systemd_lab.sh` | opt-in real-systemd container lab |
 | `docs/epaper-shutdown-splash.md` (this file), `docs/README.md`, `docs/waveshare-epaper-display.md`, `docs/epaper-boot-splash.md` | documentation |
@@ -357,25 +395,38 @@ bash test/epaper_shutdown_systemd_lab.sh   # opt-in: real systemd 252 in Docker 
 Covered: configuration (enabled / disabled / supported and unsupported panel /
 rotation 0, 180, 90 / missing / malformed / oversized); classification of real
 `list-jobs` fixtures for poweroff, halt and reboot plus edge cases; the approved
-asset checksum and validation; exactly one full refresh writing the exact bitmap
-to both planes, ending in deep sleep and a release; 180 degrees; skip paths touch
-no hardware; every failure class exits non-zero and releases; a stuck BUSY and a
-hung systemd query are cut off by the deadline; a corrupt asset fails before
-hardware; the ownership guard; CLI wiring in a real subprocess (`-splash-boot`
-unchanged, `-splash-shutdown` isolated and refused in combination); unit
-structure, `Before=` both renderers, no `After=`, no coupling, no shutdown-target
-wiring, bounded timeouts, and a stop-order model; the existing units unchanged
-and uncoupled; `postinst`/`prerm` behavior in OTA and normal modes. Each key
-property was mutation-tested (dropping a `Before=`, `After=` instead of
-`Before=`, `WantedBy=poweroff.target`, `RemainAfterExit=no`,
-`DefaultDependencies=no`, reboot no longer winning, dropped ownership guard, ...
-each makes a test fail).
+**shutdown** asset's checksum, validation, dimensions, non-blank populations,
+byte-identical regeneration from its own source, and that it is distinct from
+the boot splash asset (a same-bitmap regression would silently drop the
+message); the message region carries ink separately from and below the logo
+region; exactly one full refresh writing the exact shutdown bitmap to both
+planes, ending in deep sleep and a release; 180 degrees (point-symmetric,
+proven pixel-by-pixel); skip paths touch no hardware; every failure class
+exits non-zero and releases; a stuck BUSY and a hung systemd query are cut off
+by the deadline; a corrupt embedded shutdown asset fails before hardware
+(exercising `loadShutdownBitmap`, not the boot splash's `loadBitmap`); the
+ownership guard; CLI wiring in a real subprocess (`-splash-boot` unchanged,
+`-splash-shutdown` isolated and refused in combination); unit structure,
+`Before=` both renderers, no `After=`, no coupling, no shutdown-target wiring,
+bounded timeouts, and a stop-order model; the existing units unchanged and
+uncoupled; `postinst`/`prerm` behavior in OTA and normal modes; the
+operational renderer's own lifecycle test asserts its `shutdown()` closure's
+last event is `Sleep`, with no frame drawn by that closure. Each key property
+was mutation-tested (dropping a `Before=`, `After=` instead of `Before=`,
+`WantedBy=poweroff.target`, `RemainAfterExit=no`, `DefaultDependencies=no`,
+reboot no longer winning, dropped ownership guard, ... each makes a test
+fail).
 
 ## Physical acceptance procedure
 
-The repeatable checklist (it was run once; see the
-[record](#physical-acceptance-record)). Owner-run only. Install a real package build
-through the normal path first (see
+The repeatable checklist for the **current design** (issue #43: the message is
+baked into the final image). It was run once for the *prior* three-refresh
+design (see the
+[historical record](#physical-acceptance-record-prior-design-historical)); the
+current design's own run is recorded in the
+[pending record](#physical-acceptance-record-current-design-issue-43) below,
+to be filled in before issue #43 is closed. Owner-run only. Install a real
+package build through the normal path first (see
 [step 0 of the boot-splash gate](epaper-boot-splash.md#cold-boot-acceptance-gate)):
 web-UI OTA upload, never a hand copy (which would vanish with the overlay).
 After the install reboots:
@@ -417,19 +468,30 @@ lost at every reboot: re-add it after each one.
 operational display. `systemctl status stratux_epaper_splash` is `active
 (exited)`, `status=0/SUCCESS`. Unchanged from the validated boot gate.
 
-**TEST B - orderly power-off.** With the operational display showing, request
-shutdown through Stratux's normal path. Expected on the panel: status -> the
-"Stratux is shut down." text screen -> the ARS splash. Wait for the Pi's activity
-to stop, then remove power. Expected: the **ARS image remains** on the unpowered
-panel (check again after several minutes).
+**TEST B - orderly power-off (the core issue #43 gate).** With the operational
+display showing, video-record the panel, then request shutdown through
+Stratux's normal path. Expected on the panel: status -> a brief blank flash
+(the shutdown splash's `Clear`) -> the final splash (ARS logo + large "SAFE TO
+REMOVE POWER" text). Wait for the Pi's activity to stop (owner directly
+confirms the halt - never inferred from network loss alone), then remove
+power. Capture the complete transition **and** the final settled frame on
+video. Expected: the **logo+message image remains** on the unpowered panel
+(check again after several minutes), and on frame-by-frame review of the
+recording the message is **fully legible** - no garbling, no truncation, no
+frame where it appears only partially drawn as the final state. A PNG preview
+generated from the repository is not a substitute for this: it confirms the
+artwork is correct, not that the physical panel renders and retains it
+correctly.
 
-**TEST C - subsequent boot.** Restore power. Expected: the retained ARS image,
-then the boot-splash sequence, then the operational display.
+**TEST C - subsequent boot.** Restore power. Expected: the retained
+logo+message image, then the boot-splash sequence, then the operational
+display.
 
 **TEST D - reboot.** From the operational display, request a reboot. Expected:
-**no ARS refresh at shutdown** (the panel shows the operational renderer's text
-screen, then the boot splash's ARS at boot, then the operational display), and
-the shutdown unit's journal reads `shutdown splash skipped: the system is
+**no shutdown-splash refresh** (the panel keeps showing whatever the
+operational renderer last displayed, unchanged, until the boot splash's ARS
+image appears at the next boot, then the operational display), and the
+shutdown unit's journal reads `shutdown splash skipped: the system is
 rebooting (reboot.target); the boot splash follows`.
 
 **TEST E - journal evidence for TEST B.** `journalctl -b -1 -o short-precise -u
@@ -437,9 +499,9 @@ stratux_epaper -u stratux_epaper_shutdown --no-pager` must show, in this order:
 
 ```
 Stopping stratux_epaper.service ...                     (operational renderer told to stop)
-Stopped  stratux_epaper.service ...                     (process exited => SPI/GPIO released)
+Stopped  stratux_epaper.service ...                     (process exited => SPI/GPIO released; no text-screen draw - issue #43)
 Stopping stratux_epaper_shutdown.service ...
-epaperd: shutdown splash: power-off in progress (poweroff.target); drawing the ARS splash
+epaperd: shutdown splash: power-off in progress (poweroff.target); drawing the final shutdown splash
 epaperd: initializing panel...
 epaperd: clearing panel (full refresh)...
 epaperd: drawing ARS splash (full refresh)...
@@ -452,12 +514,23 @@ The `Stopped stratux_epaper.service` line must precede the `power-off in
 progress` line (the ownership proof). Optional negative checks: `sudo systemctl
 restart stratux_epaper` must add no `epaperd: shutdown splash` lines; with
 `EpaperEnabled` false, a power-off must log `shutdown splash skipped:
-EpaperEnabled is false` and leave the operational renderer's text screen as the
-final image. Anything unexpected (a splash on reboot, overlapping ownership,
-shutdown noticeably delayed, an ARS splash that is blank or garbled): stop and
-report before trusting the feature.
+EpaperEnabled is false` and leave the operational renderer's last display as
+the final image (no shutdown splash drawn). **Any of the following is a FAIL:
+mark it explicitly, preserve the video/journal evidence, revise the fix, and
+repeat only the affected test** - do not mark issue #43 resolved: a splash on
+reboot; overlapping ownership; shutdown noticeably delayed; a final image that
+is blank, garbled, or where "SAFE TO REMOVE POWER" is not fully legible at
+arm's length in the recording's last settled frame; a final image drawn before
+the device has actually finished the cleanup/sync the message claims.
 
-## Physical acceptance record
+## Physical acceptance record (prior design, historical)
+
+> This record is for the three-refresh design superseded by issue #43 (see
+> the status note at the top of this document). It is retained for its
+> ownership/ordering evidence, which the current design still relies on
+> unchanged; its content claims about the final image (a plain, textless ARS
+> splash preceded by a separate text screen) no longer describe the shipped
+> behavior.
 
 Owner-run on the real Stratux Raspberry Pi with the Waveshare 4.2" V2 panel
 (`EpaperEnabled` true, `waveshare-4.2in-v2`, rotation 0), protected overlay root.
@@ -563,3 +636,14 @@ clean; 0 failed units; `stratux`, `stratux_epaper`, `stratux_epaper_splash`,
 AHRS, baro, 1090 ES, UAT, GDL90, fan and storage `READY`; power `ok`
 (`throttled=0x0`). The only degradations were environmental (indoors: GPS "no
 satellite solution yet", so time unsynchronized).
+
+## Physical acceptance record (current design, issue #43)
+
+> **PENDING.** The implementation above (single final image, message baked
+> into its own artwork, no intermediate text screen) has been built, unit- and
+> asset-tested, and its bitmap previewed and visually reviewed as a PNG - but
+> **not yet physically run** on the test device per the
+> [procedure](#physical-acceptance-procedure) above. A PNG preview is not
+> physical acceptance. This section is filled in after that run. Until it is,
+> issue #43 stays open, this design is not merged past the fix PR's review,
+> and it is not deployed to a flight Stratux.

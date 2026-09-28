@@ -147,7 +147,7 @@ func runSplashBoot(ctx context.Context, configPath, statusPath string, timeout t
 	// does not exist yet (/run is a fresh tmpfs), so this only ever trips
 	// if someone starts the splash unit by hand while the operational
 	// renderer is already running - which must not double-own the panel.
-	return runSplash(ctx, d.Panel, d.Rotation, false, statusPath, open, out, errOut)
+	return runSplash(ctx, bootSplashSource, d.Panel, d.Rotation, false, statusPath, open, out, errOut)
 }
 
 // runSplashBootCommand wires runSplashBoot to the real hardware, status
