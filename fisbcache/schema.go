@@ -154,8 +154,14 @@ func DecodePersistedEntry(raw []byte, nowUTC time.Time) (Entry, string, error) {
 	}
 
 	e := Entry{
-		Key:       key,
-		SizeBytes: int64(len(raw)),
+		Key: key,
+		// SizeBytes must match live-admission semantics exactly (the
+		// decoded payload's own byte length, per Entry.SizeBytes's
+		// doc comment) - NOT len(raw), which is the whole persisted
+		// JSON envelope (schema/origin/identity/timestamps/checksum
+		// plus payload) and inflates every recovered entry's reported
+		// and byte-budgeted size relative to how it was admitted.
+		SizeBytes: int64(len(p.Payload)),
 	}
 	if p.SourceTimeTrusted {
 		e.Source = SourceTime{Trusted: true, UTC: p.SourceTimeUTC}

@@ -65,6 +65,13 @@ type Entry struct {
 	// The zero value means "not recorded" (clock was not trusted then).
 	ReceivedAtUTC time.Time
 
+	// SizeBytes is the decoded product payload's own byte length only
+	// (e.g. int64(len(payload)) at live admission) - never the size of any
+	// enclosing envelope, wrapper, or on-disk record. Store.TotalBytes and
+	// PlanEviction's byte budget both sum this field directly, so a
+	// different meaning here silently inflates reported/budgeted cache
+	// size. DecodePersistedEntry must derive it from the decoded payload
+	// (p.Payload), not from the raw persisted JSON record.
 	SizeBytes int64
 }
 

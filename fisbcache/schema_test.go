@@ -38,6 +38,43 @@ func TestEncodeDecodePersistedEntry_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestDecodePersistedEntry_SizeBytesMatchesLiveAdmission guards against the
+// SizeBytes semantics regressing to len(raw) (the whole persisted JSON
+// envelope) instead of len(payload) (the decoded product content only) -
+// found via a real cross-restart field comparison where every recovered
+// entry's SizeBytes was inflated by the envelope's own fixed overhead
+// relative to what live admission had recorded for the identical payload.
+func TestDecodePersistedEntry_SizeBytesMatchesLiveAdmission(t *testing.T) {
+	payload := "METAR KSEA 151200Z 00000KT 10SM CLR 20/10 A3000"
+	admissionSizeBytes := int64(len(payload)) // mirrors main/fisbcacherun.go's live-admission call site
+
+	e := Entry{Key: TextKey(TextProductMETAR, "KSEA")}
+	p, err := EncodePersistedEntry(e, payload)
+	if err != nil {
+		t.Fatalf("EncodePersistedEntry: %v", err)
+	}
+	raw, err := marshalPersistedEntryForTest(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	got, decodedPayload, err := DecodePersistedEntry(raw, time.Time{})
+	if err != nil {
+		t.Fatalf("DecodePersistedEntry: %v", err)
+	}
+	if decodedPayload != payload {
+		t.Fatalf("decoded payload mismatch: got %q, want %q", decodedPayload, payload)
+	}
+	if got.SizeBytes != admissionSizeBytes {
+		t.Errorf("SizeBytes mismatch across recovery: got %d, want %d (live-admission semantics: len(payload))",
+			got.SizeBytes, admissionSizeBytes)
+	}
+	if got.SizeBytes == int64(len(raw)) && len(raw) != len(payload) {
+		t.Errorf("SizeBytes appears to be measuring the whole persisted envelope (len(raw)=%d) instead of the payload (len(payload)=%d)",
+			len(raw), len(payload))
+	}
+}
+
 func TestEncodePersistedEntry_OversizedPayloadRejected(t *testing.T) {
 	e := Entry{Key: TextKey(TextProductMETAR, "KSEA")}
 	huge := strings.Repeat("x", maxPersistedPayloadBytes+1)
