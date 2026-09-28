@@ -287,51 +287,51 @@ flows' own success paths (both shutdown and reboot) are exercised end-to-end aga
 `power.Executor` in `main/powerapi_test.go` - real hardware commands are never invoked by any
 automated test; that remains a manual, physical-device step (see the checklist below).
 
-## Hardware-validation checklist (prepared, not executed)
+## Hardware-validation checklist
 
-This feature has not been deployed to any device, and this checklist has not been run. It
-is a starting point for the future, owner-authorized hardware-validation mission this
-feature's own introducing PR explicitly reserves that work for - not a substitute for it.
+Partially executed on the grounded test Stratux (192.168.10.1) on 2026-09-28, at commit
+`60a0bb7e` - see `/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/`
+for the full evidence and gate-by-gate table. A real controlled *shutdown* was deliberately
+**not** attempted (it requires the owner physically present to restore power afterward, which
+was not confirmed that session), so items 4-6 remain open, and a few precondition-busy checks
+that would require manufacturing risky on-disk OTA state on a shared device were also left open
+(items 7, 10, and the busy-case half of 12). This is a starting point for the still-outstanding
+owner-authorized hardware-validation work, not a substitute for it.
 
-1. Deploy via the established OTA state machine; confirm the new boot ID, installed commit,
-   and that `/getPowerHealth`/`/getShutdownStatus` respond.
-2. With the device powered normally, confirm `throttled=0x0` and the dashboard shows `ok`.
-3. Using a known-weak USB power source or cable, induce a real under-voltage condition and
-   confirm bit 0 sets, the dashboard reaches `critical` within `RequiredConsecutive` samples,
-   and it clears back to `ok` after the condition is removed and stays cleared per this
-   feature's "occurred" bits resetting only on the next boot (they do not self-clear - by
-   design, matching the firmware's own semantics).
-4. Perform a real controlled shutdown through the two-step dashboard UI while an active
-   recording is running; confirm the recording's metadata shows `complete: true` and the
-   device actually powers off (physical confirmation, not just the HTTP response).
-5. Power the device back on and confirm `/getPowerHealth`'s previous-session fields show
-   `previousSessionEndedCleanly: true` for that boot.
-6. Deliberately cut power without using the shutdown flow (a real, physical yank - the
-   scenario this whole feature exists to report on honestly); power back on and confirm
-   `previousSessionEndedCleanly: false` with the conservative note text, and confirm the
-   Preflight page shows the new "Previous session" check as `CAUTION`, never blocking.
-7. Start `/requestShutdown`, then start an OTA update before confirming; confirm
-   `/confirmShutdown` is rejected with `409` and nothing happens.
-8. Confirm a confirmation token cannot be replayed after a daemon restart (kill and restart
-   the `stratux` service between request and confirm).
-9. Perform a real controlled restart through the Power page's single-confirmation Restart
-   flow while an active recording is running; confirm the recording's metadata shows
-   `complete: true`, the device actually reboots (physical confirmation), and it rejoins the
-   Wi-Fi AP/Web UI on its own afterward.
-10. Start `/requestReboot`, then start an OTA update before confirming; confirm
-    `/confirmReboot` is rejected with `409` and nothing happens - the reboot-flow equivalent of
-    check 7.
-11. Confirm the Settings page no longer shows standalone Reboot/Shutdown buttons, that its
-    "Power page" link works, and that changing a setting that requires a reboot (e.g.
-    Persistent Logging) still shows its own "reboot required" prompt, that clicking its
-    "Reboot" button actually reboots the device (physical confirmation) via the confirmed
-    flow (`confirmRequiredReboot()` → `POST /requestReboot` → `POST /confirmReboot`), and that
-    the prompt surfaces a blocked-precondition error (rather than silently doing nothing) if a
-    reboot is attempted mid-OTA.
-12. With a real OTA update or configuration restore in progress, and again while idle, confirm
-    a direct `POST /shutdown` and a direct `POST /reboot` both return `410 Gone` and the device
-    neither powers off nor reboots in any of those four cases - the physical-device counterpart
-    to `main/managementinterface_test.go`'s `TestHandle{Shutdown,Reboot}Request_NeverActs_
-    RegardlessOfPreconditionState`. This closes the confirmation-bypass a review correctly
-    identified in this feature's own earlier draft, where those two endpoints were reachable
-    and precondition-gated but not confirmation-gated (see "Legacy endpoint retirement" above).
+1. **DONE (2026-09-28).** Deployed via the established OTA state machine; new boot ID,
+   installed commit, and `/getPowerHealth`/`/getShutdownStatus` all confirmed.
+2. **DONE (2026-09-28).** `throttled=0x0` and `/getPowerHealth` severity `ok` confirmed with
+   the device powered normally.
+3. **Open.** Requires a known-weak USB power source/cable; not attempted.
+4. **Open.** No real controlled shutdown was attempted this session (see above).
+5. **Open** (for the shutdown path specifically - not attempted). The equivalent check for a
+   controlled *restart* (`previousSessionEndedCleanly: true` on the next boot) **is DONE**,
+   confirmed twice.
+6. **Open.** A physical power yank is out of scope for a routine acceptance session; not
+   attempted.
+7. **Open.** Requires an OTA update genuinely in progress at the moment of `/confirmShutdown`;
+   not forced this session (see reasoning above).
+8. **Open.** Not attempted this session.
+9. **DONE (2026-09-28).** A real controlled restart was performed through the Power page's
+   single-confirmation Restart flow while a recording (`rec-20260928T153758Z`) was active;
+   its metadata shows `complete: true`, the device's boot ID changed (genuine reboot, not just
+   an HTTP 200), and it rejoined the Wi-Fi AP/Web UI on its own afterward.
+10. **Open.** Requires an OTA update genuinely in progress at the moment of `/confirmReboot`;
+    not forced this session (see reasoning above).
+11. **DONE (2026-09-28), except the mid-OTA sub-case.** The Settings page was confirmed to
+    show no standalone Reboot/Shutdown buttons and a working "Power page" link. Toggling
+    Persistent Logging showed the "reboot required" prompt; clicking its "Reboot" button
+    physically rebooted the device via the confirmed flow (`confirmRequiredReboot()` →
+    `POST /requestReboot` → `POST /confirmReboot`) - done twice, once to apply the setting and
+    once to restore it to its original value, each a genuine reboot (new boot ID, setting
+    change verified via `/getSettings`). The prompt's blocked-precondition-error-while-mid-OTA
+    sub-case was **not** forced live this session; the equivalent path against a synthetic
+    unreachable backend was previously verified via headless Chrome (see PR #42's description).
+12. **DONE (2026-09-28) for the idle case; open for the busy case.** With the device idle, a
+    direct `POST /shutdown` and a direct `POST /reboot` both returned `410 Gone` and the device
+    neither powered off nor rebooted (boot ID unchanged) - the physical-device counterpart to
+    `main/managementinterface_test.go`'s `TestHandle{Shutdown,Reboot}Request_NeverActs_
+    RegardlessOfPreconditionState` for the idle branch. This confirms the confirmation-bypass a
+    review correctly identified in this feature's own earlier draft is closed for the case that
+    matters most in practice (an idle device). The busy-case (mid-OTA/mid-restore) was not
+    forced live this session; it remains proven only by the automated test above.
