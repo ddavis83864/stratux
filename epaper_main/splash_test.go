@@ -58,6 +58,55 @@ func TestSplashBitmap_ReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
+// The final shutdown splash (issue #43) goes through the exact same
+// rotation machinery as the boot splash, on its own distinct asset - this
+// mirrors TestSplashBitmap_Rotations so both assets are held to the same
+// orientation guarantee.
+func TestShutdownSplashBitmap_Rotations(t *testing.T) {
+	base := assets.ShutdownBitmap()
+
+	got0, err := shutdownSplashBitmap(0)
+	if err != nil || !bytes.Equal(got0, base) {
+		t.Fatalf("rotation 0 must return the production shutdown bitmap unchanged (err=%v)", err)
+	}
+	if bytes.Equal(base, assets.Bitmap()) {
+		t.Fatal("the shutdown splash asset is byte-identical to the boot splash: the 'Safe to remove power' message is missing")
+	}
+
+	got180, err := shutdownSplashBitmap(180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got180) != splash.BitmapLen {
+		t.Fatalf("rotation 180 length = %d, want %d", len(got180), splash.BitmapLen)
+	}
+	for y := 0; y < splash.Height; y++ {
+		for x := 0; x < splash.Width; x++ {
+			if splash.Pixel(got180, x, y) != splash.Pixel(base, splash.Width-1-x, splash.Height-1-y) {
+				t.Fatalf("rotation 180 pixel (%d,%d) is not the point-symmetric source pixel", x, y)
+			}
+		}
+	}
+	if bytes.Equal(got180, base) {
+		t.Fatal("rotation 180 returned the unrotated bitmap")
+	}
+
+	for _, r := range []int{90, 270, 45, -1} {
+		if _, err := shutdownSplashBitmap(r); err == nil {
+			t.Errorf("rotation %d accepted; only 0 and 180 are supported", r)
+		}
+	}
+}
+
+func TestShutdownSplashBitmap_ReturnsIndependentCopy(t *testing.T) {
+	a, _ := shutdownSplashBitmap(0)
+	a[0] ^= 0xFF
+	b, _ := shutdownSplashBitmap(0)
+	if a[0] == b[0] {
+		t.Fatal("mutating one returned bitmap changed the embedded asset")
+	}
+}
+
 func writeStatus(t *testing.T, state epaper.ServiceState, age time.Duration) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "status.json")
@@ -169,7 +218,7 @@ func absentStatus(t *testing.T) string { return filepath.Join(t.TempDir(), "abse
 func TestRunSplash_EndToEndThroughRealDriver(t *testing.T) {
 	bus := &fakeBus{}
 	released := 0
-	code := runSplash(context.Background(), epaper.PanelWaveshare42V2, 0, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard)
+	code := runSplash(context.Background(), bootSplashSource, epaper.PanelWaveshare42V2, 0, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard)
 	if code != exitOK {
 		t.Fatalf("exit code %d, want %d", code, exitOK)
 	}
@@ -207,7 +256,7 @@ func TestRunSplash_EndToEndThroughRealDriver(t *testing.T) {
 func TestRunSplash_Rotation180SendsRotatedBitmap(t *testing.T) {
 	bus := &fakeBus{}
 	released := 0
-	if code := runSplash(context.Background(), epaper.PanelWaveshare42V2, 180, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard); code != exitOK {
+	if code := runSplash(context.Background(), bootSplashSource, epaper.PanelWaveshare42V2, 180, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard); code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
 	want, _ := splashBitmap(180)
@@ -241,7 +290,7 @@ func TestRunSplash_RefusalsHappenBeforeHardwareIsOpened(t *testing.T) {
 		{"service owns panel", epaper.PanelWaveshare42V2, 0, false, running},
 	}
 	for _, c := range cases {
-		if code := runSplash(context.Background(), c.panel, c.rotation, c.force, c.status, open, io.Discard, io.Discard); code != exitRefused {
+		if code := runSplash(context.Background(), bootSplashSource, c.panel, c.rotation, c.force, c.status, open, io.Discard, io.Discard); code != exitRefused {
 			t.Errorf("%s: exit %d, want %d", c.name, code, exitRefused)
 		}
 	}
@@ -250,14 +299,14 @@ func TestRunSplash_RefusalsHappenBeforeHardwareIsOpened(t *testing.T) {
 	}
 
 	// -splash-force overrides the ownership guard only.
-	if code := runSplash(context.Background(), epaper.PanelWaveshare42V2, 0, true, running, open, io.Discard, io.Discard); code != exitOK {
+	if code := runSplash(context.Background(), bootSplashSource, epaper.PanelWaveshare42V2, 0, true, running, open, io.Discard, io.Discard); code != exitOK {
 		t.Errorf("forced run exit %d, want %d", code, exitOK)
 	}
 }
 
 func TestRunSplash_OpenFailureAndDriverFailureReleaseCorrectly(t *testing.T) {
 	released := 0
-	code := runSplash(context.Background(), epaper.PanelWaveshare42V2, 0, false, absentStatus(t),
+	code := runSplash(context.Background(), bootSplashSource, epaper.PanelWaveshare42V2, 0, false, absentStatus(t),
 		fakeOpener(nil, &released, errors.New("no /dev/gpiomem")), io.Discard, io.Discard)
 	if code != exitFailure || released != 0 {
 		t.Errorf("open failure: exit %d released %d, want %d and 0 (nothing was opened)", code, released, exitFailure)
@@ -266,7 +315,7 @@ func TestRunSplash_OpenFailureAndDriverFailureReleaseCorrectly(t *testing.T) {
 	// A BUSY timeout inside the driver must still release the hardware.
 	bus := &fakeBus{waitIdleErr: context.DeadlineExceeded}
 	released = 0
-	code = runSplash(context.Background(), epaper.PanelWaveshare42V2, 0, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard)
+	code = runSplash(context.Background(), bootSplashSource, epaper.PanelWaveshare42V2, 0, false, absentStatus(t), fakeOpener(bus, &released, nil), io.Discard, io.Discard)
 	if code != exitFailure {
 		t.Errorf("BUSY timeout: exit %d, want %d", code, exitFailure)
 	}

@@ -585,22 +585,29 @@ understood.
 
 > **Shutdown splash (4.2" V2 only, `EpaperEnabled` true).** On an orderly
 > power-off or halt (never a reboot), a separate unit,
-> `stratux_epaper_shutdown.service`, draws the approved ARS splash *after* this
-> service has stopped and released the panel, so the ARS image - not the text
-> screen below - is what remains on the panel once the Pi is off. See
+> `stratux_epaper_shutdown.service`, draws its own dedicated final image
+> *after* this service has stopped and released the panel: the ARS logo plus
+> a prominent "SAFE TO REMOVE POWER" message, baked into that splash's own
+> artwork (issue #43) - so that message, not a separate text screen, is what
+> remains on the panel once the Pi is off. See
 > [epaper-shutdown-splash.md](epaper-shutdown-splash.md).
 
 - On `epaperd`'s own startup, before the first real content sample
   completes, the panel shows a fixed "Starting..." screen
   (`epaper.StartupLines`) - it is never left blank during startup.
 - On a controlled stop (`SIGTERM`/`SIGINT`, including a full system
-  shutdown), the panel is updated with a fixed "Stratux is shut down. Safe
-  to remove power." screen (`epaper.ShutdownLines`) *before* the
-  controller is put to sleep and `PWR` de-asserted - never after, so this
-  service itself always leaves the shutdown message as its last output. (On a
-  power-off with the 4.2" V2 and `EpaperEnabled` true, the shutdown splash unit
-  then replaces it with the ARS splash; on a reboot, or with any other
-  panel/setting, this message is what stays.)
+  shutdown), this service draws nothing further: it puts the controller to
+  sleep and de-asserts `PWR`, leaving whatever it was last displaying on the
+  panel (e-paper is bistable). It no longer draws a "Stratux is shut down"
+  text screen of its own (issue #43: that screen's legibility depended on a
+  timing gap between this process and the shutdown-splash unit that two
+  independent physical fix attempts could not make reliable; the message was
+  moved into the shutdown splash's own final image instead, removing the
+  hand-off entirely). On a power-off with the 4.2" V2 and `EpaperEnabled`
+  true, the shutdown splash unit then draws its logo+message image over
+  whatever was last shown; on a reboot, or with any other panel/setting,
+  this service's last display is what stays until the boot splash's next
+  refresh.
 - The `stratux_epaper` systemd unit is **enabled and started
   automatically** by the package's post-install script, exactly like
   `stratux_fancontrol`. A manual, post-boot `systemctl enable` was found

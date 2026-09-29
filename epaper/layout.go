@@ -177,17 +177,6 @@ func alertsWord(enabled, muted bool) string {
 	return "enabled"
 }
 
-// ShutdownLines is the fixed content shown on a controlled shutdown,
-// per docs/waveshare-epaper-display.md's startup/shutdown behavior -
-// deliberately static (no live data) since nothing is being sampled once
-// the main daemon is stopping.
-func ShutdownLines() []Line {
-	return []Line{
-		{Text: "Stratux is shut down."},
-		{Text: "Safe to remove power."},
-	}
-}
-
 // StartupLines is shown immediately on epaper_main's own startup, before
 // the first real content sample completes - so the panel never sits
 // blank during startup.

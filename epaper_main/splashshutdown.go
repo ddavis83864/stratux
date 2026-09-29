@@ -1,12 +1,27 @@
 package main
 
-// splashshutdown.go: `epaperd -splash-shutdown`, the orderly-power-off ARS
-// splash run by debian/stratux_epaper_shutdown.service as its ExecStop,
-// after the operational renderer (and the boot splash) have stopped and
-// released the panel.
+// splashshutdown.go: `epaperd -splash-shutdown`, the orderly-power-off
+// final splash run by debian/stratux_epaper_shutdown.service as its
+// ExecStop, after the operational renderer (and the boot splash) have
+// stopped and released the panel.
+//
+// This is the single, final retained image an orderly power-off leaves
+// on the panel (issue #43): the ARS logo plus a prominent "Safe to
+// remove power" message, drawn once as one full refresh. There is
+// deliberately no separate, earlier "Stratux is shut down" text screen
+// any more - two independent fix attempts at making that intermediate
+// screen legible (a pause between it and this splash, tried both
+// cancellable and unconditional) were physically tested and both failed
+// to produce a visible result (see docs/shutdown-splash-legibility-investigation.md
+// on the now-superseded fix/shutdown-splash-legibility branch for the
+// full account). Putting the message in this splash's own artwork
+// removes the cross-process timing dependency entirely: whatever this
+// process successfully draws is what stays on the panel, with no
+// hand-off to get right.
 //
 // It is a thin lifecycle layer around the physically validated renderer
-// (splash.go, via runSplash): the same embedded bitmap, panel driver,
+// (splash.go, via runSplash): the same embedded bitmap (a distinct
+// asset from the boot splash - see epaper/splash/assets), panel driver,
 // Init -> Clear -> Update(full) -> Sleep sequence, BUSY timeouts, rotation
 // handling and SPI/GPIO release. It adds only two decisions:
 //
@@ -166,12 +181,12 @@ func runSplashShutdown(ctx context.Context, configPath, statusPath string, timeo
 		fmt.Fprintln(out, "shutdown splash skipped: not a system power-off (the unit was stopped on its own)")
 		return exitOK
 	}
-	fmt.Fprintf(out, "shutdown splash: power-off in progress (%s); drawing the ARS splash\n", strings.Join(jobs, ", "))
+	fmt.Fprintf(out, "shutdown splash: power-off in progress (%s); drawing the final shutdown splash\n", strings.Join(jobs, ", "))
 	// force=false: the ownership guard stays on, as for the boot splash.
 	// Under the unit's ordering the operational renderer's status file
 	// (in its RuntimeDirectory) is already gone, so this only trips if
 	// something has broken that ordering - and then refusing is right.
-	return runSplash(ctx, d.Panel, d.Rotation, false, statusPath, open, out, errOut)
+	return runSplash(ctx, shutdownSplashSource, d.Panel, d.Rotation, false, statusPath, open, out, errOut)
 }
 
 // runSplashShutdownCommand wires runSplashShutdown to the real hardware,

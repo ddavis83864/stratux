@@ -155,10 +155,12 @@ func TestLayout_EveryPageProducesAtLeastOneLine(t *testing.T) {
 	}
 }
 
-func TestShutdownAndStartupLines_AreNonEmptyAndStatic(t *testing.T) {
-	if len(ShutdownLines()) == 0 {
-		t.Errorf("ShutdownLines must not be empty")
-	}
+// ShutdownLines was removed with issue #43: the operational renderer no
+// longer draws a "Stratux is shut down" text screen on shutdown (see
+// epaper_main/main.go's shutdown() and docs/epaper-shutdown-splash.md).
+// The final retained image is now the dedicated shutdown splash asset in
+// epaper/splash/assets, not a Line-based text page.
+func TestStartupLines_AreNonEmptyAndStatic(t *testing.T) {
 	if len(StartupLines()) == 0 {
 		t.Errorf("StartupLines must not be empty")
 	}
