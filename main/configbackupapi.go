@@ -381,6 +381,35 @@ func applyEpaperSettingsSectionToGlobalSettings(e configbackup.EpaperSettingsSec
 	globalSettings.EpaperPage = e.Page
 }
 
+// --- FISBCacheSettings <-> configbackup.FISBCacheSettingsSection -------
+
+func fisbCacheSettingsSectionFromCurrent(s FISBCacheSettings) configbackup.FISBCacheSettingsSection {
+	return configbackup.FISBCacheSettingsSection{
+		Enabled:            s.Enabled,
+		PersistenceEnabled: s.PersistenceEnabled,
+		ReplayEnabled:      s.ReplayEnabled,
+		MaxCacheBytes:      s.MaxCacheBytes,
+		MaxEntries:         s.MaxEntries,
+	}
+}
+
+// applyFISBCacheSettingsSection returns base (the CURRENT settings - so
+// SchemaVersion is preserved exactly as-is) with every field overwritten
+// from section. Never touches the cache's own stored entries - this is
+// settings only, mirroring applyAutoRecordSettingsSection exactly. A
+// restored section carrying ReplayEnabled:true is still rejected by
+// configbackup.Validate before this function is ever reached (see
+// validateFISBCacheSettings), so this function itself does not need to
+// re-check it.
+func applyFISBCacheSettingsSection(base FISBCacheSettings, section configbackup.FISBCacheSettingsSection) FISBCacheSettings {
+	base.Enabled = section.Enabled
+	base.PersistenceEnabled = section.PersistenceEnabled
+	base.ReplayEnabled = section.ReplayEnabled
+	base.MaxCacheBytes = section.MaxCacheBytes
+	base.MaxEntries = section.MaxEntries
+	return base
+}
+
 // gatherConfigBackupCurrentState takes a coherent-enough snapshot of
 // every section this subsystem exports/restores. It never holds
 // profilesMu across the AlertSettings/globalSettings reads - only around
@@ -415,6 +444,7 @@ func gatherConfigBackupCurrentState() (configbackup.CurrentState, error) {
 		AutoRecordSettings:  autoRecordSettingsSectionFromCurrent(loadAutoRecordSettings()),
 		TrafficCPASettings:  trafficCPASettingsSectionFromCurrent(loadTrafficCPASettings()),
 		EpaperSettings:      epaperSettingsSectionFromGlobalSettings(),
+		FISBCacheSettings:   fisbCacheSettingsSectionFromCurrent(loadFISBCacheSettings()),
 	}, nil
 }
 
@@ -464,6 +494,7 @@ func buildConfigBackupDocument(includePrivacySensitive bool) (configbackup.Docum
 		AutoRecordSettings:         current.AutoRecordSettings,
 		TrafficCPASettings:         current.TrafficCPASettings,
 		EpaperSettings:             current.EpaperSettings,
+		FISBCacheSettings:          current.FISBCacheSettings,
 	})
 }
 
@@ -832,6 +863,7 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	originalAlertSettings := loadAlertSettings()
 	originalAutoRecordSettings := loadAutoRecordSettings()
 	originalTrafficCPASettings := loadTrafficCPASettings()
+	originalFISBCacheSettings := loadFISBCacheSettings()
 
 	rollback := func() bool {
 		clean := true
@@ -878,6 +910,14 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 			trafficCPASettingsCache = originalTrafficCPASettings
 			trafficCPAMu.Unlock()
 		}
+		if err := saveFISBCacheSettings(originalFISBCacheSettings); err != nil {
+			clean = false
+			log.Printf("configbackup: rollback could not restore fisb weather cache settings: %s\n", err)
+		} else {
+			fisbCacheMu.Lock()
+			fisbCacheSettingsCache = originalFISBCacheSettings
+			fisbCacheMu.Unlock()
+		}
 		return clean
 	}
 
@@ -917,6 +957,18 @@ func applyConfigBackupTransaction(doc configbackup.Document) (sectionsApplied []
 	trafficCPASettingsCache = newTrafficCPASettings
 	trafficCPAMu.Unlock()
 	sectionsApplied = append(sectionsApplied, "trafficCpaSettings")
+	// Rolling FIS-B Weather Cache settings - same atomic-write pattern.
+	// Applying this never touches the cache's own stored entries, only
+	// the going-forward configuration (see applyFISBCacheSettingsSection).
+	newFISBCacheSettings := applyFISBCacheSettingsSection(originalFISBCacheSettings, doc.FISBCacheSettings)
+	if err := saveFISBCacheSettings(newFISBCacheSettings); err != nil {
+		clean := rollback()
+		return sectionsApplied, true, !clean, fmt.Errorf("applying fisb weather cache settings: %w", err)
+	}
+	fisbCacheMu.Lock()
+	fisbCacheSettingsCache = newFISBCacheSettings
+	fisbCacheMu.Unlock()
+	sectionsApplied = append(sectionsApplied, "fisbCacheSettings")
 
 	profilesMu.Lock()
 	for _, p := range doc.CalibrationProfiles {

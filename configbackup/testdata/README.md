@@ -1,5 +1,30 @@
 # configbackup/testdata
 
+## `legacy-pre-fisbcache-backup.json`
+
+An **authentic** Configuration Backup document, produced by literally
+running commit `8af40b10f71e4c9e7a534889f33e0becefa87906`'s (`master`, the
+merge of the package-ownership remediation, the state of `master` immediately
+before the Rolling FIS-B Weather Cache was merged) exact
+`configbackup.BuildDocument` - not hand-written or simulated. Its
+section-checksum key set is exactly `{configuration, calibrationProfiles,
+alertSettings, autoRecordSettings, trafficCpaSettings, epaperSettings}` - no
+`fisbCacheSettings` key, and no such field in the document body at all - the
+shape `legacy.go`'s `verifyLegacyPreFISBCacheChecksum` recognizes. The inputs
+(settings, profile) were taken from `legacy-pre-epaper-backup.json`; only the
+document was rebuilt by that commit's `BuildDocument`, so every checksum comes
+from that commit's real code.
+
+Its one calibration profile is named "Legacy Backup Aircraft
+(pre-fisbcache)" for the same name-uniqueness reason given for the other
+fixtures.
+
+An earlier revision of this file (produced by an earlier commit of the FIS-B
+branch, before `trafficCpaSettings` and `epaperSettings` existed on `master`)
+had the shape `{configuration, calibrationProfiles, alertSettings,
+autoRecordSettings}`. That shape is identical to
+`legacy-pre-trafficcpa-backup.json`'s and is covered by it.
+
 ## `legacy-pre-epaper-backup.json`
 
 An **authentic** Configuration Backup document, produced by literally
