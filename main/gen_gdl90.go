@@ -1567,6 +1567,23 @@ func addSingleSystemErrorf(ident string, format string, a ...interface{}) {
 	systemErrsMutex.Unlock()
 }
 
+// overlayCtlMu serializes every "unlock /overlay/robase, do some work,
+// lock it again" critical section against every other one in this
+// process. /sbin/overlayctl toggles a single, process-global, shared
+// mutable resource - it has no notion of "my own" critical section - and
+// this process has at least three independent, unsynchronized callers of
+// it: the OTA update's own overlay-disable-marker write
+// (requestOverlayDisable, main/ota.go), applying Wi-Fi admin settings
+// (wifiadminexecutor.go), and applying general network settings
+// (networksettings.go). Without this mutex, two of them running at once
+// can interleave as "A unlocks; B unlocks (no-op); B finishes and locks;
+// A's own write now hits a read-only filesystem" - exactly issue #49's
+// observed symptom (an OTA overlay-disable-marker write failing with
+// "read-only file system" despite unlock having just succeeded). See
+// docs/ota-overlayctl-race-investigation.md for the fuller analysis; a
+// concurrency test proving this fix lives in main/overlayctl_test.go.
+var overlayCtlMu sync.Mutex
+
 func overlayctl(cmd string) {
 	out, err := exec.Command("/bin/sh", "/sbin/overlayctl", cmd).Output()
 	if err != nil {

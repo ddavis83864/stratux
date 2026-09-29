@@ -197,12 +197,23 @@ func applyNetworkSettings(force bool, onlyWriteFiles bool) {
 			}
 		}
 
-		overlayctl("unlock")
-		writeTemplate(STRATUX_HOME + "/cfg/stratux-dnsmasq.conf.template", "/overlay/robase/etc/dnsmasq.d/stratux-dnsmasq.conf", tplSettings)
-		writeTemplate(STRATUX_HOME + "/cfg/interfaces.template", "/overlay/robase/etc/network/interfaces", tplSettings)
-		writeTemplate(STRATUX_HOME + "/cfg/wpa_supplicant.conf.template", "/overlay/robase/etc/wpa_supplicant/wpa_supplicant.conf", tplSettings)
-		writeTemplate(STRATUX_HOME + "/cfg/wpa_supplicant_ap.conf.template", "/overlay/robase/etc/wpa_supplicant/wpa_supplicant_ap.conf", tplSettings)
-		overlayctl("lock")
+		// overlayCtlMu (main/gen_gdl90.go): serializes this unlock..lock
+		// critical section against every other overlayctl caller in this
+		// process (notably the OTA update's own overlay-disable-marker
+		// write) - see issue #49 and that variable's own doc comment. An
+		// immediately-invoked function so defer still releases the mutex
+		// (and locks the overlay back) even if a future change here
+		// panics.
+		func() {
+			overlayCtlMu.Lock()
+			defer overlayCtlMu.Unlock()
+			overlayctl("unlock")
+			defer overlayctl("lock")
+			writeTemplate(STRATUX_HOME + "/cfg/stratux-dnsmasq.conf.template", "/overlay/robase/etc/dnsmasq.d/stratux-dnsmasq.conf", tplSettings)
+			writeTemplate(STRATUX_HOME + "/cfg/interfaces.template", "/overlay/robase/etc/network/interfaces", tplSettings)
+			writeTemplate(STRATUX_HOME + "/cfg/wpa_supplicant.conf.template", "/overlay/robase/etc/wpa_supplicant/wpa_supplicant.conf", tplSettings)
+			writeTemplate(STRATUX_HOME + "/cfg/wpa_supplicant_ap.conf.template", "/overlay/robase/etc/wpa_supplicant/wpa_supplicant_ap.conf", tplSettings)
+		}()
 
 		if !onlyWriteFiles {
 			cmd := exec.Command("ifup", "wlan0")

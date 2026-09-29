@@ -431,6 +431,14 @@ func (realWifiExecutor) Apply(cfg wifiadmin.Config) error {
 		return fmt.Errorf("wifiadmin: could not snapshot the current configuration before applying: %w", err)
 	}
 
+	// overlayCtlMu (main/gen_gdl90.go): serializes this unlock..lock
+	// critical section against every other overlayctl caller in this
+	// process (notably the OTA update's own overlay-disable-marker write)
+	// - see issue #49 and that variable's own doc comment. Locked before
+	// unlock and released after lock, via defer's LIFO order: the two
+	// defers below run "overlayctl(lock)" first, then Unlock() the mutex.
+	overlayCtlMu.Lock()
+	defer overlayCtlMu.Unlock()
 	overlayctl("unlock")
 	defer overlayctl("lock")
 
