@@ -23,6 +23,13 @@ established by this project's prior field sessions -
 - adapted to PR #51's specific candidate. It does not replace either; it
 is the next session's own instance of the same pattern.
 
+**Results template:** [`docs/pr51-field-results-template.md`](pr51-field-results-template.md)
+- a compact table mapping each gate below to its evidence file, observation
+time, result, and reviewer conclusion, with separate rows for reception,
+cache behavior, the Stratux web UI, and each of the three ForeFlight
+results (traffic, live weather, weather after reconnect) kept distinct.
+Copy it into the session's own evidence directory and fill it in there.
+
 ## Result classification (used throughout)
 
 - **PASS** - directly observed, evidence captured.
@@ -101,16 +108,23 @@ below. Either way, confirm every row before proceeding.
 | B9 | FIS-B cache inventory baseline | `getFISBCacheInventory` recorded (or its absence noted, if disabled) | `$EV/pre/getFISBCacheInventory.json` |
 | B10 | Persisted cache file count/integrity | File count under `fisb-weather-cache/` on the device recorded; each filename is content-addressed (matches `fisbcache/schema.go`'s own key derivation) - a changed count after deployment is itself evidence, not assumed corruption | `$EV/pre/fisb-cache-files.txt` (via SSH `find ... | wc -l` and a full listing) |
 | B11 | Free space | `/var/lib/stratux-data`, `/boot/firmware`, `/` all have headroom for the OTA (a bare-ext4 install needs room on the real partition, not just the overlay) | `df -h`, `$EV/pre/df.txt` |
-| B12 | Rollback package ready | The known-good `.deb` (matching B3's build) is present locally, hash re-verified immediately before use | `sha256sum`, `$EV/pre/rollback.sha256` |
+| B12 | Rollback package ready **on the actual field laptop** | The known-good `.deb` (matching B3's build) is present **on the physical machine that will run this session**, hash re-verified immediately before use there. **Verified on ARS01** (`/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/rollback/stratux-2.0.0~rc2-arm64.deb`, SHA-256 `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce`, embedded build string confirmed `2002ad4e8294e1b475d6ca9ee3f838971f35a119` - matches the device's currently installed build exactly) - **but do not assume ARS01 is the field laptop.** If the field session runs from a different physical machine, copy this exact file there first and re-run `sha256sum` on that machine before relying on it; a package verified only on ARS01 is not evidence it is available in the field. | `sha256sum` **on the field laptop itself**, `$EV/pre/rollback.sha256` |
 
 ## Deployment and immediate recovery checks
 
 **[OWNER]** for the OTA operation itself, per this project's established
 practice for any real OTA against the grounded device (a stuck/bricked
 state needs someone there to physically recover it) - see
-`docs/ota-overlayctl-race-investigation.md` (issue #49) for the one known,
-non-blocking failure mode to expect and how to handle it (wait ~30s and
-retry once if the first attempt rolls back with that specific error).
+[`docs/ota-overlayctl-race-investigation.md` on PR #52](https://github.com/ddavis83864/stratux/blob/fix/ota-overlayctl-race/docs/ota-overlayctl-race-investigation.md)
+(issue #49; that document lives on PR #52's own branch, not this one -
+PR #52 is deliberately kept separate from and unmerged into this
+candidate) for the known, non-blocking failure mode to expect and how to
+handle it (wait ~30s and retry once if the first attempt rolls back with
+that specific error) **and** for the confirmed limitation that this
+candidate does not include PR #52's mutex fix at all (PR #52 is not
+merged into `master`, and this candidate branches from `master` before
+it) - the field session may encounter the original, unmitigated race,
+not a fixed build.
 
 | # | Check | Pass criterion | Evidence |
 |---|---|---|---|
@@ -166,6 +180,44 @@ authorized and performed:
 | R3 | Cache persistence across restart | Same entry count (± natural aging/eviction) as before the restart - text-class entries specifically, per `docs/fisb-weather-cache.md`'s own noted restart-persistence gap for `nexrad_tile`-class entries | before/after `getFISBCacheInventory.json` |
 | R4 | Cache re-indexing | `getFISBCacheStatus` reflects the persisted entries again after restart (not stuck at 0 the way this session's own device preflight found - see the reconciliation doc's device-evidence section) | `getFISBCacheStatus.json` post-restart |
 | R5 | ForeFlight behavior after restart | Reconnects normally, weather/traffic resume | photo |
+
+## Rollback mechanism, verified against the actual code (paper rehearsal)
+
+Rollback (P4 below, or the explicit stop-condition trigger) is a normal
+`POST /updateUpload` of the known-good `.deb` - **the same mechanism as
+installing the candidate**, not a distinct code path. Confirmed safe by
+reading the code, not assumed:
+
+- [`docs/ota-version-ordering-audit.md`](ota-version-ordering-audit.md)
+  (existing, current `master`): "`dpkg -i --force-depends` does not
+  itself refuse a downgrade" - no version-ordering check exists anywhere
+  in the OTA code that would refuse installing the older, known-good
+  build over the newer candidate. Rolling back does not need any special
+  flag, confirmation, or workaround.
+- The OTA state machine's own rollback path
+  (`ota/state.go`/`ota/decide.go`, `debian/stratux-pre-start.sh`'s
+  `ota_begin_install`/backup-restore logic) is independent of *which*
+  package is uploaded - it backs up before installing and can restore
+  that backup on a detected failure regardless of version direction.
+
+**Rehearsed sequence** (paper only - not run against the device in this
+task):
+1. `POST /updateUpload` with the verified rollback `.deb` (B12).
+2. Poll `getOTAStatus` until `Stage == "idle"` (same polling pattern as
+   any other install - see the "Deployment" section above).
+3. Confirm `getStatus.Build` == the rollback build's own embedded string
+   exactly (D1's own check, applied to the rollback build instead).
+4. Confirm boot ID changed (D2), 0 failed units / clean audit (D4), FIS-B
+   cache API and file count match the original pre-session baseline
+   (D7/D8, now compared against B8-B10 rather than the candidate's own
+   post-deploy values).
+
+**Required for this to actually work in the field:** connectivity to
+192.168.10.1 (see "Connectivity" above), the device powered and
+reachable, the exact rollback `.deb` present and hash-verified *on the
+machine performing the upload* (B12 - see its own field-laptop-vs-ARS01
+caveat), and - per this project's established practice - the owner
+physically present for the OTA operation itself.
 
 ## Post-test
 
