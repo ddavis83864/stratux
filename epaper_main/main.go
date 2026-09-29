@@ -21,8 +21,12 @@ This process:
     for FanControllerStatus - the main daemon reads this for dashboard
     display, never the reverse;
   - on SIGTERM/SIGINT (a controlled stop, including a full system
-    shutdown), renders the fixed shutdown screen and puts the panel to
-    sleep before exiting - see epaper.ShutdownLines.
+    shutdown), puts the panel to sleep and releases the bus before
+    exiting, leaving its last-drawn frame on screen (e-paper is
+    bistable) - it no longer draws its own "shut down" text; on a real
+    power-off, the separate stratux_epaper_shutdown.service draws the
+    single, final retained splash with its own "Safe to remove power"
+    message baked in (issue #43; see epaper_main/splashshutdown.go).
 
 See docs/waveshare-epaper-display.md for the full design, GPIO ownership
 matrix, wiring table, and aviation disclaimer.
@@ -130,13 +134,28 @@ func run(ctx context.Context, statusSrc, settingsSrc *StatusSource, dashSrc dash
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	// shutdown puts the panel to sleep and releases the bus on any
+	// controlled stop (SIGTERM/SIGINT), including a full system
+	// shutdown. It deliberately does NOT draw a "Stratux is shut down"
+	// text screen any more (issue #43): the panel is bistable, so
+	// whatever this process was last displaying (the operational
+	// dashboard) simply stays on screen, unchanged, until the separate
+	// stratux_epaper_shutdown.service draws the single, final retained
+	// shutdown splash - which now carries its own "Safe to remove
+	// power" message baked into its own artwork (see splashshutdown.go
+	// and epaper/splash/assets). Two independent attempts to instead
+	// make an intermediate text screen drawn *here* legible (a pause
+	// before the next process's own draw, tried both cancellable and
+	// unconditional) were physically tested and both failed - see
+	// docs/shutdown-splash-legibility-investigation.md on the
+	// now-superseded fix/shutdown-splash-legibility branch. Removing
+	// this draw also means one fewer full refresh (~1.8s) on every
+	// controlled stop, including the common case of a plain service
+	// restart, where drawing "shut down" text was never accurate
+	// messaging in the first place.
 	shutdown := func() {
 		stopDash()
 		if driver != nil {
-			lines := append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine})
-			w, h := epaper.Dimensions(cfg.Panel, cfg.Rotation)
-			bmp := Render(lines, w, h, cfg.Rotation)
-			_ = driver.Update(context.Background(), bmp, true)
 			_ = driver.Sleep()
 		}
 		if bus != nil {

@@ -52,19 +52,37 @@ const (
 	exitRefused = 2 // bad usage, or refused before touching hardware
 )
 
-// loadBitmap returns the embedded production bitmap. A variable so tests
-// can substitute a corrupt asset.
+// loadBitmap returns the embedded production boot-splash bitmap (plain
+// ARS logo). A variable so tests can substitute a corrupt asset.
 var loadBitmap = assets.Bitmap
 
-// splashBitmap returns the production splash for the given content
-// rotation. 0 is the bitmap exactly as generated; 180 is a pure
-// point-symmetric transform of it using the same rotateImage and
-// packMonochrome the validated (rotation-fixed, c0dcd19c) status
-// renderer uses. 90/270 are refused: the approved artwork is 4:3
-// landscape, and a portrait 300x400 logical canvas would need a
-// separately generated and separately approved layout.
+// loadShutdownBitmap returns the embedded production final-shutdown-
+// splash bitmap (ARS logo plus the "Safe to remove power" message - see
+// issue #43 and docs/epaper-shutdown-splash.md). A variable so tests can
+// substitute a corrupt asset.
+var loadShutdownBitmap = assets.ShutdownBitmap
+
+// splashBitmap returns the production boot splash for the given content
+// rotation.
 func splashBitmap(rotation int) ([]byte, error) {
-	bm := loadBitmap()
+	return rotatedBitmap(loadBitmap(), rotation)
+}
+
+// shutdownSplashBitmap returns the production final shutdown splash
+// (logo plus "Safe to remove power") for the given content rotation.
+func shutdownSplashBitmap(rotation int) ([]byte, error) {
+	return rotatedBitmap(loadShutdownBitmap(), rotation)
+}
+
+// rotatedBitmap applies the requested content rotation to an already-
+// loaded 400x300 splash bitmap. 0 is the bitmap exactly as generated;
+// 180 is a pure point-symmetric transform of it using the same
+// rotateImage and packMonochrome the validated (rotation-fixed,
+// c0dcd19c) status renderer uses. 90/270 are refused: every splash
+// asset's approved artwork is 4:3 landscape, and a portrait 300x400
+// logical canvas would need a separately generated and separately
+// approved layout.
+func rotatedBitmap(bm []byte, rotation int) ([]byte, error) {
 	switch rotation {
 	case 0:
 		return bm, nil
@@ -143,21 +161,51 @@ func openRealBus(m epaper.GPIOMapping) (Bus, func(), error) {
 	return b, closeGPIOBus, nil
 }
 
-// runSplash is the whole `-splash` command; it returns a process exit
-// code. Every check that can refuse runs before any hardware is opened.
-func runSplash(ctx context.Context, panel string, rotation int, force bool, statusPath string, open busOpener, out, errOut io.Writer) int {
+// splashSource pairs a rotation-aware bitmap accessor with a name, so
+// runSplash can draw either the boot splash or the final shutdown splash
+// without knowing which - each has its own committed, embedded asset (see
+// epaper/splash/assets), never mixed at runtime. bitmap is a genuine
+// top-level function reference (splashBitmap/shutdownSplashBitmap), not a
+// closure over loadBitmap/loadShutdownBitmap: it re-reads those package
+// vars fresh on every call, so tests overriding them (to inject a corrupt
+// asset) take effect on the very next call, before any hardware is
+// opened. A `load func() []byte` field would look equivalent but is not:
+// copying the var's value into a struct literal snapshots it once, at
+// package-init time, and a later test-time reassignment of the var would
+// not reach that already-built struct.
+type splashSource struct {
+	bitmap func(rotation int) ([]byte, error)
+	name   string // for error/log messages: "splash" or "shutdown splash"
+}
+
+var bootSplashSource = splashSource{bitmap: splashBitmap, name: "splash"}
+var shutdownSplashSource = splashSource{bitmap: shutdownSplashBitmap, name: "shutdown splash"}
+
+// runSplash draws one of the two committed splash assets (src); it
+// returns a process exit code. Every check that can refuse runs before
+// any hardware is opened.
+func runSplash(ctx context.Context, src splashSource, panel string, rotation int, force bool, statusPath string, open busOpener, out, errOut io.Writer) int {
 	if panel != epaper.PanelWaveshare42V2 {
-		fmt.Fprintf(errOut, "splash: the approved artwork is generated for %q only, not %q\n", epaper.PanelWaveshare42V2, panel)
+		fmt.Fprintf(errOut, "%s: the approved artwork is generated for %q only, not %q\n", src.name, epaper.PanelWaveshare42V2, panel)
 		return exitRefused
 	}
 	// The asset is embedded, so it cannot be "missing" at runtime, but
 	// prove it is intact before any hardware is opened: a bad build must
-	// fail here, not put garbage on the panel.
-	if _, err := splash.Validate(loadBitmap()); err != nil {
-		fmt.Fprintln(errOut, "splash: embedded splash asset is invalid:", err)
+	// fail here, not put garbage on the panel. Validate at rotation 0
+	// (identity transform) rather than loading the raw asset separately:
+	// src.bitmap is a genuine function reference and always re-reads the
+	// current loader, where a separate `.load()` field would not (see
+	// the splashSource doc comment).
+	unrotated, err := src.bitmap(0)
+	if err != nil {
+		fmt.Fprintln(errOut, "splash:", err)
+		return exitRefused
+	}
+	if _, err := splash.Validate(unrotated); err != nil {
+		fmt.Fprintf(errOut, "%s: embedded splash asset is invalid: %v\n", src.name, err)
 		return exitFailure
 	}
-	bitmap, err := splashBitmap(rotation)
+	bitmap, err := src.bitmap(rotation)
 	if err != nil {
 		fmt.Fprintln(errOut, "splash:", err)
 		return exitRefused
@@ -205,5 +253,5 @@ func runSplash(ctx context.Context, panel string, rotation int, force bool, stat
 func runSplashCommand(panel string, rotation int, force bool) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return runSplash(ctx, panel, rotation, force, common.EpaperStatusPath, openRealBus, os.Stdout, os.Stderr)
+	return runSplash(ctx, bootSplashSource, panel, rotation, force, common.EpaperStatusPath, openRealBus, os.Stdout, os.Stderr)
 }

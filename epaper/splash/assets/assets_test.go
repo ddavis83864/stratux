@@ -119,8 +119,8 @@ func TestChecksumsMatchFiles(t *testing.T) {
 		}
 		seen++
 	}
-	if seen != 2 {
-		t.Errorf("CHECKSUMS.sha256 lists %d files, want 2 (source and production bitmap)", seen)
+	if seen != 4 {
+		t.Errorf("CHECKSUMS.sha256 lists %d files, want 4 (source and production bitmap for each of the two assets: boot splash and shutdown splash)", seen)
 	}
 }
 

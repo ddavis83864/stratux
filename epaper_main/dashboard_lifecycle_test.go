@@ -180,8 +180,22 @@ func TestRunLifecycleWithFakePanelAndDaemon(t *testing.T) {
 		t.Error("service never reported RUNNING with a refresh count")
 	}
 
-	// 4. Shutdown: the shutdown screen is drawn, the panel sleeps, the bus is
-	// released, and run returns promptly.
+	// 4. Shutdown (issue #43): the shutdown() closure itself no longer
+	// draws anything - the panel is bistable, so whatever it was last
+	// showing simply stays, and the closure only sleeps the panel and
+	// releases the bus (its whole body is: stop the dashboard runner if
+	// any, Sleep, release - nothing in between could draw). The single,
+	// final retained shutdown splash (with its own "Safe to remove
+	// power" message) is drawn separately, by
+	// stratux_epaper_shutdown.service, not by this process - see
+	// splashshutdown.go. "sleep" being the absolute last event, with
+	// nothing after it, is exactly what proves this: a draw from
+	// shutdown() itself could only appear before Sleep(), which is
+	// already the last call in its body. (A legitimate, unrelated race
+	// can still let one last in-flight periodic tick's own update land
+	// just before cancel() is even observed - that update is not
+	// asserted against here, since it predates shutdown() running at
+	// all.)
 	cancel()
 	select {
 	case <-done:
@@ -189,10 +203,6 @@ func TestRunLifecycleWithFakePanelAndDaemon(t *testing.T) {
 		t.Fatal("run did not return promptly after cancel")
 	}
 	ev, up = drv.snapshot()
-	wantShutdown := Render(append(epaper.ShutdownLines(), epaper.Line{Text: epaper.DisclaimerLine}), 400, 300, 0)
-	if last := up[len(up)-1]; !last.full || string(last.bmp) != string(wantShutdown) {
-		t.Error("the last frame is not the (unchanged) full-refresh shutdown screen")
-	}
 	if ev[len(ev)-1] != "sleep" || !drv.slept {
 		t.Errorf("panel not put to sleep: %v", ev)
 	}

@@ -363,9 +363,15 @@ func (d *Driver) Update(ctx context.Context, bitmap []byte, full bool) error {
 
 // Sleep puts the controller into deep sleep (register/RAM contents
 // retained) and de-asserts PWR, per this Rev2.3 driver board's own
-// power-control convention. Called on every controlled shutdown/stop -
-// see docs/waveshare-epaper-display.md's shutdown-screen policy: Update
-// with ShutdownLines should be called before Sleep, not after.
+// power-control convention. Called on every controlled shutdown/stop of
+// the operational renderer (epaper_main/main.go's shutdown()); the panel
+// is bistable, so whatever was last drawn simply stays visible - the
+// operational renderer itself draws nothing more before sleeping. The
+// single, final retained image on an orderly power-off (issue #43, the
+// ARS logo plus "Safe to remove power") is drawn separately and later, by
+// the dedicated shutdown-splash command (splashshutdown.go) as its own
+// Init/Clear/Update(full)/Sleep sequence, after this process has already
+// released the panel - see docs/epaper-shutdown-splash.md.
 func (d *Driver) Sleep() error {
 	if err := d.cmdData(cmdDeepSleep, deepSleepModeRetainRAM); err != nil {
 		return err
