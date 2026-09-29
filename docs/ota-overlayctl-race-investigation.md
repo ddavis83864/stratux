@@ -267,14 +267,26 @@ requires the actual device, which this task's own constraints exclude
 the mechanism; each of the three call sites' own correct use of it was
 verified by code review (the diff above), not by an integration test.
 
-**Environment note:** the race detector (`go test -race`) could not run
-for the cgo-linked `main` package in this session's Docker/QEMU
-arm64 cross-build environment (`FATAL: ThreadSanitizer: unsupported VMA
-range` - a QEMU user-mode emulation limitation unrelated to this change).
-The concurrency test above does not depend on `-race`; its own
-atomic-compare-and-swap-based overlap detection is architecture-independent
-and does not need it. `go test ./main/... ./ota/...` (no `-race`): all
-existing tests plus the new one pass, 18.4s total, no regressions. `go
+**Race detector: confirmed working on real arm64 CI hardware, unavailable
+locally.** `go test -race` for the cgo-linked `main` package failed in
+this session's local Docker/QEMU arm64 cross-build environment (`FATAL:
+ThreadSanitizer: unsupported VMA range` - a QEMU user-mode emulation
+limitation, confirmed unrelated to this change: the same failure occurs
+regardless of what test is run). CI's own runner
+(`runs-on: ubuntu-24.04-arm`) is native arm64 hardware, not QEMU - `-race`
+was added to the `gotest` Makefile target and verified there directly: CI
+run [`36521406067`](https://github.com/ddavis83864/stratux/actions/runs/36521406067),
+job log shows `go test -race -run TestOverlayCtlMu -v ./main/...` and
+`--- PASS: TestOverlayCtlMu_SerializesConcurrentCriticalSections (0.13s)`.
+This is genuine race-detector confirmation, not the atomic-compare-and-swap
+test's own overlap detection standing in for it - per this task's own
+instruction not to treat an alternate test as equivalent to `-race` when
+real race testing is available. `-race` is now permanently part of the
+`gotest` target (`Makefile`), so this runs on every future PR's CI, not
+just this one-time check.
+
+`go test ./main/... ./ota/...` (no `-race`, this session's own local run):
+all existing tests plus the new one pass, 18.4s total, no regressions. `go
 vet ./main/...`: the same two pre-existing `main/datalog.go` findings this
 project already carries on unmodified `master` (confirmed by direct
 comparison); nothing new.
