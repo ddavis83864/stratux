@@ -91,6 +91,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 			AutoRecordSettings:         doc.AutoRecordSettings,
 			TrafficCPASettings:         doc.TrafficCPASettings,
 			EpaperSettings:             doc.EpaperSettings,
+			FISBCacheSettings:          doc.FISBCacheSettings,
 		})
 		if err != nil {
 			res.addErrorf("configbackup: could not verify checksums: %s", err)
@@ -124,6 +125,7 @@ func Validate(doc Document, rawSize int) ValidationResult {
 	validateAutoRecordSettings(doc.AutoRecordSettings, &res)
 	validateTrafficCPASettings(doc.TrafficCPASettings, &res)
 	validateEpaperSettings(doc.EpaperSettings, &res)
+	validateFISBCacheSettings(doc.FISBCacheSettings, &res)
 	validateProfiles(doc.CalibrationProfiles, doc.ActiveCalibrationProfileID, &res)
 
 	// A document cannot honestly disclaim "no privacy-sensitive data" while
@@ -330,6 +332,41 @@ func validateEpaperSettings(e EpaperSettingsSection, res *ValidationResult) {
 	}
 	if e.FullRefreshEvery > epaperMaxFullRefreshEvery {
 		res.addErrorf("%s: epaperSettings.fullRefreshEvery must be <= %d, got %d", ErrInvalidField, epaperMaxFullRefreshEvery, e.FullRefreshEvery)
+	}
+}
+
+// FISBCacheMaxEntries mirrors main.FISBCacheMaxEntriesLimit (this package cannot
+// import main); main's tests fail if the two ever differ.
+const FISBCacheMaxEntries = 10000
+
+// validateFISBCacheSettings mirrors main.FISBCacheSettings.Validate's own
+// bounds - this package cannot import main (leaf-dependency direction),
+// so the rules are independently re-checked here against the same
+// documented bounds, exactly as validateAutoRecordSettings re-checks
+// autorecord.Settings.Validate's rules. ReplayEnabled:true is always
+// rejected: no build of this feature has ever shipped a proven-safe
+// replay path (see main.FISBCacheSettings.Validate's doc comment), so a
+// backup claiming it is either from an incompatible future build or
+// corrupt/tampered - either way, not safe to silently apply.
+func validateFISBCacheSettings(f FISBCacheSettingsSection, res *ValidationResult) {
+	if f == (FISBCacheSettingsSection{}) {
+		// Entirely zero-valued - never explicitly configured (a document
+		// verified as a pre-fisbCacheSettings historical shape is
+		// normalized to a disabled default before this function ever
+		// runs, so it never reaches this branch for a genuine legacy
+		// backup). MaxCacheBytes==0/MaxEntries==0 would otherwise fail
+		// the bounds checks below despite Enabled necessarily being
+		// false here and posing no actual risk.
+		return
+	}
+	if f.ReplayEnabled {
+		res.addErrorf("%s: fisbCacheSettings.replayEnabled is not supported by this build", ErrInvalidField)
+	}
+	if f.MaxCacheBytes <= 0 || f.MaxCacheBytes > 256*1024*1024 {
+		res.addErrorf("%s: fisbCacheSettings.maxCacheBytes must be between 1 and 268435456 bytes", ErrInvalidField)
+	}
+	if f.MaxEntries <= 0 || f.MaxEntries > FISBCacheMaxEntries {
+		res.addErrorf("%s: fisbCacheSettings.maxEntries must be between 1 and %d", ErrInvalidField, FISBCacheMaxEntries)
 	}
 }
 

@@ -1,0 +1,293 @@
+# PR #51 field acceptance kit
+
+> **Status: logistics prepared and rehearsed; the actual field gates are
+> NOT RUN.** This is a checklist and bounded capture tooling for a later,
+> separately authorized owner-attended acceptance session. The rollback
+> and candidate packages, and this kit itself, are verified present on
+> the field laptop, and the "Before deployment" section's read-only
+> checks were successfully rehearsed from it against the device's
+> current, known-good build (see "Read-only rehearsal record" below).
+> **None of that is PR #51 acceptance** - the candidate has not been
+> installed, and no live-RF/cache/ForeFlight gate below has been
+> executed. Do not treat any gate row as PASS until it has actually been
+> observed during the real field session.
+
+Candidate: branch `integrate/fisb-onto-master`, code-bearing commit
+**`cdb4d798fec721e0a6cd5cb1543d442ac4893eb4`** (a later commit,
+`8f6f3041` and beyond, adds only documentation - see
+[`release-candidate-reconciliation-2026-09-29.md`](release-candidate-reconciliation-2026-09-29.md)
+for the full reconciliation record and why this candidate exists: current
+`master` alone is missing the FIS-B rolling weather cache, PR #15, and its
+native Web UI viewer, PR #41 - both accepted in the lab/bench but still
+gated on live-RF/ForeFlight field acceptance). Draft PR:
+[#51](https://github.com/ddavis83864/stratux/pull/51).
+
+This kit follows the same gate-table and evidence conventions already
+established by this project's prior field sessions -
+[`docs/fisb-weather-cache.md`](fisb-weather-cache.md)'s "Field session,
+2026-09-27" section and `~/acceptance-evidence/stratux-fisb-live-kit/RUNBOOK.md`
+- adapted to PR #51's specific candidate. It does not replace either; it
+is the next session's own instance of the same pattern.
+
+**Results template:** [`docs/pr51-field-results-template.md`](pr51-field-results-template.md)
+- a compact table mapping each gate below to its evidence file, observation
+time, result, and reviewer conclusion, with separate rows for reception,
+cache behavior, the Stratux web UI, and each of the three ForeFlight
+results (traffic, live weather, weather after reconnect) kept distinct.
+Copy it into the session's own evidence directory and fill it in there.
+
+## Result classification (used throughout)
+
+- **PASS** - directly observed, evidence captured.
+- **FAIL** - directly observed and did not meet the criterion; evidence
+  captured; treat as a stop condition (see below) unless explicitly
+  overridden by the owner in the moment, with that override recorded.
+- **NOT RUN** - not attempted this session (e.g. no RF reception, no
+  ForeFlight available, owner not present for a step that requires them).
+- **INCONCLUSIVE** - attempted, but the evidence does not cleanly support
+  PASS or FAIL (e.g. ambiguous timing, a tool failure unrelated to the
+  candidate). Record what was seen and why it doesn't resolve either way;
+  never silently upgrade to PASS.
+
+Every gate below states its own pass/fail criterion and where its
+evidence goes. Gates marked **[OWNER]** need the owner physically present
+at the device. Gates marked **[978 MHz]** need real 978 MHz UAT reception
+in range of a ground station - they cannot be forced or simulated live
+(see `docs/fisb-weather-cache.md`'s own explicit non-goal: no live-frame
+injection into the daemon, ever).
+
+## Evidence directory
+
+Same pattern as the existing kit:
+
+```bash
+export EV=~/acceptance-evidence/stratux-pr51-field-$(date -u +%F)
+mkdir -p -m 700 "$EV"/{pre,deploy,live,foreflight,post}
+```
+
+Everything below writes under `$EV`. Nothing here is committed to the
+repository; it is durable local evidence, referenced by path and hash in
+the closing report the way every prior session's evidence has been.
+
+## Connectivity
+
+The field laptop joins the Stratux Wi-Fi AP directly - confirmed from the
+existing field kit (`RUNBOOK.md`): `nmcli con up Stratux`. The AP has **no
+internet route**; this laptop's other network profile (home/hotspot) is
+what internet access (GitHub, this repository, `gh`) comes from, and the
+two are mutually exclusive on one Wi-Fi radio. In practice, this session's
+own preparation repeatedly needed both:
+
+```bash
+nmcli con up Stratux    # reach the device at 192.168.10.1
+nmcli con up MQ95B       # (or the actual home/hotspot profile name) for internet
+```
+
+A repeated flake already observed this session and in prior ones: the
+laptop can silently roam off the Stratux AP back to the last-known network
+during/after a device reboot. After any device reboot, re-run
+`nmcli con up Stratux` before assuming a connectivity failure is real. All
+device-facing commands below use a short `curl -m` timeout precisely so a
+stale/roamed connection fails fast and visibly rather than hanging.
+
+Evidence capture that needs internet (pushing to GitHub, updating the
+issue/PR) is not part of the live session itself - do it afterward, back
+on the home/hotspot profile, exactly as this session's own work did.
+
+## Before deployment
+
+Run `test/pr51_field_preflight_capture.sh` (added by this kit; read-only,
+never touches OTA state, settings, or the cache - see its own header) to
+capture the full baseline in one pass, or do each check individually
+below. Either way, confirm every row before proceeding.
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| B1 | Candidate commit, **on the field laptop** | `~/stratux-field-acceptance/candidate/stratux-cdb4d798-candidate.deb`'s embedded build string = `cdb4d798fec721e0a6cd5cb1543d442ac4893eb4` - re-verify immediately before use, do not trust a prior session's check alone | `strings`/`dpkg-deb -x` + `grep -E '^[0-9a-f]{40}$'` on the laptop's own copy, `$EV/pre/candidate-build-string.txt` |
+| B2 | Candidate package hash, **on the field laptop** | SHA-256 = `1b0a8b432d68cea82a33bcebd5885bd5ea13871b3b5da19b43337961626d8f19`, calculated on the laptop itself (not assumed from the transfer) - if it doesn't match, do not deploy; get a fresh, correctly-verified copy first | `sha256sum` on the laptop, `$EV/pre/candidate.sha256` |
+| B3 | Device build (before) | Matches the last-known-good build recorded in this session's report | `getStatus.Build`, `$EV/pre/getStatus.json` |
+| B4 | Device boot ID | Recorded for later before/after comparison. **Rehearsed successfully from the field laptop, 2026-09-29** (owner provisioned the laptop's SSH key on the device) - see the "Read-only rehearsal" section below | `ssh pi@192.168.10.1 cat /proc/sys/kernel/random/boot_id`, `$EV/pre/boot-id.txt` |
+| B5 | Service/package health | 0 failed units, `dpkg --audit` clean. Rehearsed successfully - `sudo` is passwordless for `pi` on the device, no `sudoers` change was needed or made | `$EV/pre/ssh-health.txt` |
+| B6 | Settings | `EpaperEnabled`/panel/rotation and FIS-B-relevant settings captured (never posted anywhere - local evidence only) | `getSettings`, `$EV/pre/getSettings.json` |
+| B7 | OTA state | `getOTAStatus.Stage == "idle"` - **do not proceed if it is not**; this is a hard precondition, not a warning | `$EV/pre/getOTAStatus.json` |
+| B8 | FIS-B cache API baseline | `getFISBCacheStatus` returns 200, current `totalEntries`/`state`/settings recorded | `$EV/pre/getFISBCacheStatus.json` |
+| B9 | FIS-B cache inventory baseline | `getFISBCacheInventory` recorded (or its absence noted, if disabled) | `$EV/pre/getFISBCacheInventory.json` |
+| B10 | Persisted cache file count/integrity | File count under `fisb-weather-cache/` on the device recorded; each filename is content-addressed (matches `fisbcache/schema.go`'s own key derivation) - a changed count after deployment is itself evidence, not assumed corruption. Rehearsed successfully: 12 files, matching the established baseline exactly | `$EV/pre/fisb-cache-files.txt` (via SSH `find ... | wc -l` and a full listing) |
+| B11 | Free space | `/var/lib/stratux-data`, `/boot/firmware`, `/` all have headroom for the OTA (a bare-ext4 install needs room on the real partition, not just the overlay) | `df -h`, `$EV/pre/df.txt` |
+| B12 | Rollback package ready **on the actual field laptop** | **Done and verified, 2026-09-29.** Laptop identified and confirmed (`ARS-Macbook`, `MacBookPro8,2`, Ubuntu 24.04.5 LTS, reachable as `ddavis@192.168.0.101` over its established home-network path, SSH host key `SHA256:KWQYKAgtJ7wvgSiv5DJmhGyuz7MqzthFtgHxwIyKdhQ` already trusted). Rollback package at `~/stratux-field-acceptance/rollback/stratux-2002ad4e-rollback.deb`, SHA-256 recalculated **on the laptop itself**: `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce` - exact match. Embedded build `2002ad4e8294e1b475d6ca9ee3f838971f35a119` also independently confirmed on the laptop. Full manifest: `~/stratux-field-acceptance/MANIFEST.md` on the laptop; ARS01-side record: `~/acceptance-evidence/stratux-pr51-rollback-transfer-20260929/TRANSFER-STATUS.md`. **The laptop's SSH key is now authorized on the device** (owner-provisioned) - confirmed by the full read-only rehearsal below; no remaining prerequisite. | `sha256sum` **on the field laptop itself** (done, matches), `$EV/pre/rollback.sha256`; `~/stratux-field-acceptance/MANIFEST.md` |
+
+## Read-only rehearsal record (2026-09-29)
+
+A full, non-mutating rehearsal of this kit's "Before deployment" section
+was run from the field laptop against the real device (still on its
+known-good build, not the candidate). **This is a capture-workflow
+rehearsal, not PR #51 acceptance** - the candidate is not installed, and
+none of the cache/reception counters observed below constitute a field
+gate result.
+
+- **SSH**: host key verified against ARS01's own previously-trusted
+  fingerprint (`SHA256:RfByAnLQhiPgDEaZMt9RD6aCpKcfwcu72OnMnEwrjfM`,
+  ED25519) - matched exactly, both via a fresh `ssh-keyscan` and the
+  laptop's own `known_hosts`; `StrictHostKeyChecking=yes` (not relaxed).
+  `ssh -o BatchMode=yes pi@192.168.10.1` succeeded with no password
+  prompt - genuine public-key auth. `sudo -n` (non-interactive) succeeded
+  for `dpkg --audit` and the cache-directory listing - passwordless
+  `sudo` was already configured; nothing here was changed to make it
+  work.
+- **Script run**: `EV=~/stratux-field-acceptance/rehearsal-2026-09-29
+  bash ~/stratux-field-acceptance/kit/pr51_field_preflight_capture.sh` -
+  exit 0, every check (B3-B11) captured successfully, all 8 output files
+  present and non-empty with real data (the 3-byte
+  `getFISBCacheInventory.json`, `[]`, is a genuine, correctly-captured
+  empty-array response, not a script error - the live in-memory index
+  reports 0 while the 12 persisted files remain on disk, matching every
+  prior session's own documented observation).
+- **Non-mutating, confirmed**: device build, boot ID
+  (`de586474-3c7d-44d8-bea7-4d1cd4da2631`), `dpkg --audit` (clean), and
+  persisted cache file count (12) were identical immediately before and
+  immediately after the rehearsal.
+- **Package hashes** re-verified unchanged on the laptop after the
+  rehearsal: rollback `fe8ddc15...`, candidate `1b0a8b43...` - both exact.
+- **Network**: default route and DNS still held by the laptop's Ethernet
+  connection throughout; the Stratux `/24` route via Wi-Fi remained
+  non-default. Unchanged by the rehearsal.
+
+**Field-kit logistics: READY.**
+
+## Deployment and immediate recovery checks
+
+**[OWNER]** for the OTA operation itself, per this project's established
+practice for any real OTA against the grounded device (a stuck/bricked
+state needs someone there to physically recover it) - see
+[`docs/ota-overlayctl-race-investigation.md` on PR #52](https://github.com/ddavis83864/stratux/blob/fix/ota-overlayctl-race/docs/ota-overlayctl-race-investigation.md)
+(issue #49; that document lives on PR #52's own branch, not this one -
+PR #52 is deliberately kept separate from and unmerged into this
+candidate) for the known, non-blocking failure mode to expect and how to
+handle it (wait ~30s and retry once if the first attempt rolls back with
+that specific error) **and** for the confirmed limitation that this
+candidate does not include PR #52's mutex fix at all (PR #52 is not
+merged into `master`, and this candidate branches from `master` before
+it) - the field session may encounter the original, unmitigated race,
+not a fixed build.
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| D1 | Artifact identity on the device | Post-install `getStatus.Build` = B1's build string exactly | `$EV/deploy/post-getStatus.json` |
+| D2 | Boot ID changed | New boot ID != B4's | `$EV/deploy/post-boot-id.txt` |
+| D3 | Web UI | Root page returns 200, loads normally | `$EV/deploy/webui-check.txt` |
+| D4 | Services | 0 failed units, `dpkg --audit` clean, all epaper/stratux units active | `$EV/deploy/post-ssh-health.txt` |
+| D5 | OTA result | `getOTAStatus.Stage == "idle"`, no `LastError` | `$EV/deploy/post-getOTAStatus.json` |
+| D6 | Configuration retention | B6's settings unchanged post-install | diff against `$EV/pre/getSettings.json` |
+| D7 | FIS-B cache API availability | `getFISBCacheStatus` returns 200 (**this is the core regression this whole candidate exists to prevent** - see the reconciliation doc's route table) | `$EV/deploy/post-getFISBCacheStatus.json` |
+| D8 | Persisted cache entries reappear/remain | File count under `fisb-weather-cache/` unchanged from B10 (OTA installs new code, never touches `/var/lib/stratux-data`'s own contents - if this count changed, stop and investigate before continuing) | `$EV/deploy/post-fisb-cache-files.txt` |
+| D9 | FIS-B cache inventory reflects existing entries | `getFISBCacheInventory` shows the same entries as B9 (allowing for natural aging/freshness-label changes, not count changes) | `$EV/deploy/post-getFISBCacheInventory.json` |
+
+**Explicit rollback trigger**: any of D1-D5 FAIL, or D7/D8 show the FIS-B
+route/data genuinely gone (not just still-indexing) → stop, do not proceed
+to live-reception testing, go to **Post-test / rollback** below.
+
+## Live reception **[978 MHz]** **[OWNER]** (owner present, in range of a real ground station)
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| L1 | Timestamped UAT/978 counters | `UAT_messages_total` increasing over the session, with wall-clock timestamps on each sample | periodic `getStatus` snapshots, `$EV/live/status-samples/` |
+| L2 | Tower reception | `getTowers` shows at least one tower with recent activity | `$EV/live/getTowers-*.json` |
+| L3 | FIS-B product counters | `UAT_METAR_total`/`TAF`/`NEXRAD`/`PIREP`/etc. increase during the window | before/after deltas, `$EV/live/product-counters.txt` |
+| L4 | Cache admission | `getFISBCacheStatus.totalEntries` increases during real reception (cache enabled) | before/after `getFISBCacheStatus.json` |
+| L5 | Cache persistence | Entries appear under `fisb-weather-cache/` on disk during/after the session (not just in memory) | `$EV/live/fisb-cache-files-during.txt` |
+| L6 | Decoded weather products, representative sample | At least one real METAR/TAF/PIREP/NEXRAD-metadata entry captured via `getFISBCachePayload` or the Weather page, content sane (station ID, plausible text/tile metadata) | `$EV/live/sample-products/` |
+| L7 | No-RF vs. defect distinction | If L1-L3 show zero movement for the whole window, this is **NOT RUN** for L4-L6 (no reception occurred - not a cache/UI defect) - record `getPowerHealth` and SDR/tower status to rule out a receiver fault as the reason for zero reception, distinct from simply being out of range | `$EV/live/getPowerHealth.json`, SDR status |
+
+## ForeFlight **[OWNER]** **[978 MHz]** (separate device, e.g. the field kit's iPad)
+
+Distinguish these as **three separate results** - do not conflate:
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| F1 | Traffic | ForeFlight's own traffic display shows targets consistent with what Stratux is receiving, observed directly on ForeFlight | photo of ForeFlight, iPad clock visible, `$EV/foreflight/traffic-*.jpg` |
+| F2 | Live weather | ForeFlight's own weather display shows current products, observed directly on ForeFlight (Stratux's own counters are not evidence of what ForeFlight received or displayed - see `docs/fisb-weather-viewer.md`'s own explicit warning) | photo, `$EV/foreflight/weather-*.jpg` |
+| F3 | Cached weather (reconnect with a populated cache) | ForeFlight disconnects and reconnects after the cache already holds entries (see the existing kit's Step 7 pattern: Wi-Fi off >2 min, back on); note time-to-display and whether shown products carry a visible age/staleness indication in ForeFlight itself, not just in Stratux | timestamped disconnect/reconnect, photo, `$EV/foreflight/reconnect-*.jpg` |
+
+Record any time-to-display delay or freshness limitation observed in
+ForeFlight itself (not inferred from Stratux) as a note against F3, even
+if F3 otherwise passes.
+
+## Restart/reconnect (later authorized acceptance run only)
+
+**Not part of this preparation.** For the record, once actually
+authorized and performed:
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| R1 | Clean restart | New boot ID, `previousSessionEndedCleanly: true` (or the exact equivalent field), 0 failed units | `getPowerHealth`/`getStatus` post-restart |
+| R2 | Wi-Fi reconnection | Field laptop and ForeFlight's device both rejoin the Stratux AP without manual intervention beyond the normal `nmcli`/iOS reconnect | timestamped |
+| R3 | Cache persistence across restart | Same entry count (± natural aging/eviction) as before the restart - text-class entries specifically, per `docs/fisb-weather-cache.md`'s own noted restart-persistence gap for `nexrad_tile`-class entries | before/after `getFISBCacheInventory.json` |
+| R4 | Cache re-indexing | `getFISBCacheStatus` reflects the persisted entries again after restart (not stuck at 0 the way this session's own device preflight found - see the reconciliation doc's device-evidence section) | `getFISBCacheStatus.json` post-restart |
+| R5 | ForeFlight behavior after restart | Reconnects normally, weather/traffic resume | photo |
+
+## Rollback mechanism, verified against the actual code (paper rehearsal)
+
+Rollback (P4 below, or the explicit stop-condition trigger) is a normal
+`POST /updateUpload` of the known-good `.deb` - **the same mechanism as
+installing the candidate**, not a distinct code path. Confirmed safe by
+reading the code, not assumed:
+
+- [`docs/ota-version-ordering-audit.md`](ota-version-ordering-audit.md)
+  (existing, current `master`): "`dpkg -i --force-depends` does not
+  itself refuse a downgrade" - no version-ordering check exists anywhere
+  in the OTA code that would refuse installing the older, known-good
+  build over the newer candidate. Rolling back does not need any special
+  flag, confirmation, or workaround.
+- The OTA state machine's own rollback path
+  (`ota/state.go`/`ota/decide.go`, `debian/stratux-pre-start.sh`'s
+  `ota_begin_install`/backup-restore logic) is independent of *which*
+  package is uploaded - it backs up before installing and can restore
+  that backup on a detected failure regardless of version direction.
+
+**Rehearsed sequence** (paper only - not run against the device in this
+task):
+1. `POST /updateUpload` with the verified rollback `.deb` (B12).
+2. Poll `getOTAStatus` until `Stage == "idle"` (same polling pattern as
+   any other install - see the "Deployment" section above).
+3. Confirm `getStatus.Build` == the rollback build's own embedded string
+   exactly (D1's own check, applied to the rollback build instead).
+4. Confirm boot ID changed (D2), web UI reachable and loading (D3), 0
+   failed units / clean audit (D4), FIS-B cache API and file count match
+   the original pre-session baseline (D7/D8, now compared against
+   B8-B10 rather than the candidate's own post-deploy values).
+
+**Required for this to actually work in the field:** connectivity to
+192.168.10.1 (see "Connectivity" above), the device powered and
+reachable, the exact rollback `.deb` present and hash-verified *on the
+machine performing the upload* (B12 - see its own field-laptop-vs-ARS01
+caveat), and - per this project's established practice - the owner
+physically present for the OTA operation itself.
+
+## Post-test
+
+| # | Check | Pass criterion | Evidence |
+|---|---|---|---|
+| P1 | Final health/package audit | 0 failed units, `dpkg --audit` clean | `$EV/post/final-ssh-health.txt` |
+| P2 | Evidence hashes | Every captured file listed with its SHA-256 | `$EV/post/SHA256SUMS` (`cd "$EV" && find . -type f \| sort \| xargs sha256sum > post/SHA256SUMS`) |
+| P3 | Result classification | Every gate above assigned exactly one of PASS/FAIL/NOT RUN/INCONCLUSIVE, with its evidence path | this session's own closing report |
+| P4 | Rollback (if not already triggered) | Owner decides whether to keep the candidate or restore the prior build; if restoring, re-install the verified rollback `.deb`, confirm build string/boot ID/0 failed units/clean audit match the pre-session baseline | `$EV/post/rollback-verify.txt` |
+| P5 | FIS-B cache data not lost | Final persisted file count/hashes under `fisb-weather-cache/` match B10 (or L5's grown count if reception occurred and the candidate was kept) - never fewer than the session started with, whichever build ends up installed | `$EV/post/final-fisb-cache-files.txt` |
+
+## Stop conditions (any of these → stop, preserve evidence, do not continue to the next section)
+
+- Candidate package hash or embedded build string does not match B1/B2 exactly.
+- `getOTAStatus` reports anything other than `idle` for more than a few
+  minutes outside the expected transitional stages.
+- FIS-B cache API still 404s (or otherwise absent) after an install that
+  otherwise looks healthy.
+- Persisted cache file count drops between any two consecutive checks
+  without an explained, expected cause (aging/eviction is expected and
+  logged; a install/restart-caused drop is not).
+- Any failed unit, or `dpkg --audit` dirty.
+- Device does not recover to a reachable, healthy state within a
+  reasonable window after any reboot.
+
+On a stop condition: mark the triggering gate FAIL, capture whatever
+evidence is available, and move to rollback (P4) rather than attempting
+to diagnose live on the grounded device without the owner's separate
+authorization to do so.

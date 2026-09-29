@@ -2,91 +2,182 @@
 	<div class="panel panel-default">
 		<div class="panel-heading">
 			<span class="panel_label">Weather</span>
-			<span ng-show="ConnectState == 'Connected'" class="label label-success">{{ConnectState}}</span>
-			<span ng-hide="ConnectState == 'Connected'" class="label label-danger">{{ConnectState}}</span>
+			<span class="label" ng-class="receiverFreshnessClass(ReceiverFreshnessLabel)">{{ReceiverFreshnessLabel}}</span>
+			<span ng-show="WeatherConnectState == 'Connected'" class="label label-success">Live feed connected</span>
+			<span ng-hide="WeatherConnectState == 'Connected'" class="label label-danger">Live feed {{WeatherConnectState}}</span>
 		</div>
-	</div>
-
-	<div class="panel-group" ui-state="weatherAccordion" ui-default="1">
-		<div class="panel panel-default">
-			<div class="panel-heading" ui-set="{'weatherAccordion':1}">
-				<div class="panel-title">Watching <span class="text-normal">{{watching}}</span> ({{watch_count}})</div>
-			</div>
-			<div ui-if="weatherAccordion == 1">
-				<div class="panel-body weather-page">
-					<div class="row">
-						<div class="col-sm-6">
-							<span class="col-xs-3"><strong>Location</strong></span>
-							<span class="col-xs-3">Type</span>
-							<span class="col-xs-6 text-right">Time</span>
-						</div>
-						<div class="col-sm-6">
-							<span class="col-xs-2">&nbsp;</span>
-							<span class="col-xs-10">Report</span>
-						</div>
-					</div>
-					<div class="row" ng-repeat="weather in watch_list | orderBy: -age">
-						<div class="separator"></div>
-						<div class="col-sm-12">
-							<span class="col-xs-3"><strong>{{weather.location}}</strong></span>
-                            <span class="col-xs-3" align="center">
-							<div align="center" ng-class="weather.flight_condition ? ' label label-success flight_condition_{{weather.flight_condition}}' : 'label label-success report_{{weather.type}}'">{{weather.type}}</div>
-                            </span>
-                            <span class="col-xs-4">&nbsp;</span>
-							<span class="col-xs-2 text-right" style="background-color: {{weather.backcolor}}">{{weather.time}}</span>
-						</div>
-						<div class="col-sm-12">
-							<span class="col-xs-10">{{weather.data}}</span>
-						</div>
-					</div>
-				</div>
-			</div>
-		</div>
-
-		<div class="panel panel-default">
-			<div class="panel-heading" ui-set="{'weatherAccordion':2}">
-				<div class="panel-title">Recent Reports ({{data_count}})</div>
-			</div>
-			<div ui-if="weatherAccordion == 2">
-				<div class="panel-body weather-page">
-					<div class="row">
-						<div class="col-sm-6">
-							<span class="col-xs-3"><strong>Location</strong></span>
-							<span class="col-xs-3">Type</span>
-							<span class="col-xs-6 text-right">Time</span>
-						</div>
-						<div class="col-sm-6">
-							<span class="col-xs-2">&nbsp;</span>
-							<span class="col-xs-10">Report</span>
-						</div>
-					</div>
-
-					<div class="row" ng-repeat="weather in data_list | orderBy: -age">
-						<div class="separator"></div>
-						<div class="col-sm-12">
-							<span class="col-xs-3"><strong>{{weather.location}}</strong></span>
-                            <span class="col-xs-3" align="center">
-							<div align="center" ng-class="weather.flight_condition ? ' label label-success flight_condition_{{weather.flight_condition}}' : 'label label-success report_{{weather.type}}'">{{weather.type}}</div>
-                            </span>
-                            <span class="col-xs-4">&nbsp;</span>
-							<span class="col-xs-2 text-right" style="background-color: {{weather.backcolor}}">{{weather.time}}</span>
-						</div>
-						<div class="col-sm-12">
-							<span class="col-xs-10">{{weather.data}}</span>
-						</div>
-					</div>
-				</div>
-			</div>
-		</div>
-	</div>
-</div>
-<!--
-<div class="col-sm-12">
-	<div class="panel panel-default">
-		<div class="panel-heading">Raw Weather Data</div>
 		<div class="panel-body">
-			<pre>{{raw_data}}</pre>
+			<div class="row">
+				<div class="col-xs-6 col-sm-3 label_adj">
+					<strong class="col-xs-7">Active towers:</strong>
+					<span class="col-xs-5">{{Towers}}</span>
+				</div>
+				<div class="col-xs-6 col-sm-3 label_adj">
+					<strong class="col-xs-7">Last WX frame:</strong>
+					<span class="col-xs-5">{{fmtAge(LastWeatherFrameAgeSeconds)}} ago</span>
+				</div>
+				<div class="col-xs-6 col-sm-3 label_adj">
+					<strong class="col-xs-7">Cached products:</strong>
+					<span class="col-xs-5">{{Rows.length}}</span>
+				</div>
+				<div class="col-xs-6 col-sm-3 label_adj">
+					<strong class="col-xs-7">Persistence:</strong>
+					<span class="col-xs-5">{{CachePersistenceEnabled ? 'on' : 'off'}}</span>
+				</div>
+			</div>
+			<div class="row" ng-if="!CacheStatus || CacheStatus.enabled === false">
+				<div class="col-sm-12">
+					<p class="text-muted">
+						The rolling FIS-B Weather Cache is disabled, so no history is kept between visits to this page.
+						Live reports still appear below as they arrive. Enable the cache on the
+						<a href="#/fisbcache">Weather Cache</a> page to keep products cached (and, with persistence
+						on, their raw text recoverable) across page visits and daemon restarts.
+					</p>
+				</div>
+			</div>
+			<div class="row" ng-if="LiveTicker.length > 0">
+				<div class="col-sm-12">
+					<strong>Most recently received:</strong>
+					<span ng-repeat="item in LiveTicker | limitTo:5">{{item.identity}}<span ng-if="!$last">, </span></span>
+				</div>
+			</div>
+			<div class="row">
+				<div class="col-sm-12">
+					<p class="disclaimer"><em>{{DISCLAIMER}}</em></p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<ul class="nav nav-tabs weather-tabs">
+		<li ng-repeat="cat in Categories" ng-class="{active: ActiveCategory === cat.key}">
+			<a ng-click="setActiveCategory(cat.key)">
+				{{cat.label}}
+				<span class="badge" ng-if="cat.key !== 'unsupported'">{{rowsInCategoryCount(cat.key)}}</span>
+			</a>
+		</li>
+	</ul>
+
+	<!-- METAR/SPECI, TAF, PIREP, Winds/Temps Aloft, Other: identical table shape -->
+	<div class="panel panel-default" ng-if="ActiveCategory !== 'nexrad' && ActiveCategory !== 'unsupported'">
+		<div class="panel-body weather-page">
+			<div class="row filter-row">
+				<div class="col-xs-6">
+					<input type="text" class="form-control" placeholder="Station (e.g. KSEA)" ng-model="StationFilter">
+				</div>
+				<div class="col-xs-6">
+					<input type="text" class="form-control" placeholder="Search raw text" ng-model="SearchQuery">
+				</div>
+			</div>
+
+			<div ng-if="visibleRows().length === 0">
+				<p class="text-muted" ng-if="LastWeatherFrameAgeSeconds === null">
+					<strong>NO WX FRAMES YET.</strong> FIS-B requires reception of a 978 MHz ADS-B ground station and
+					may not be available while on the ground or outside tower coverage.
+				</p>
+				<p class="text-muted" ng-if="LastWeatherFrameAgeSeconds !== null">
+					No {{categoryLabel(ActiveCategory)}} products currently cached.
+				</p>
+			</div>
+
+			<div class="row weather-row" ng-repeat="row in visibleRows()">
+				<div class="separator"></div>
+				<div class="col-sm-12">
+					<span class="col-xs-3"><strong>{{row.location}}</strong></span>
+					<span class="col-xs-2" align="center">
+						<div align="center" class="label" ng-class="freshnessClass(row.freshness)">{{row.freshness}}</div>
+					</span>
+					<span class="col-xs-3 text-right">{{fmtAge(row.ageSeconds)}} ({{row.ageBasis || '?'}})</span>
+					<span class="col-xs-4 text-right">
+						<span ng-if="row.sourceTimeUtc">as of {{row.sourceTimeUtc}}</span>
+						<span ng-if="!row.sourceTimeUtc && row.receivedAtUtc">received {{row.receivedAtUtc}}</span>
+					</span>
+				</div>
+				<div class="col-sm-12">
+					<span class="col-xs-12" ng-if="row.rawText">{{row.rawText}}</span>
+					<span class="col-xs-8 text-muted" ng-if="!row.rawText && row.rawTextStatus === 'unavailable'">
+						Raw text not available in this session
+						<a ng-if="canFetchPayload(row)" ng-click="fetchPayload(row)">(try loading from disk)</a>
+						<span ng-if="!CachePersistenceEnabled">- enable persistence on the Weather Cache page to recover cached text</span>
+					</span>
+					<span class="col-xs-8 text-muted" ng-if="row.rawTextStatus === 'fetching'">Loading...</span>
+					<span class="col-xs-8 text-muted" ng-if="row.rawTextStatus === 'fetch-failed'">
+						Not available (never persisted, or since evicted/purged).
+					</span>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- NEXRAD: metadata always; an optional decoded preview on demand -->
+	<div class="panel panel-default" ng-if="ActiveCategory === 'nexrad'">
+		<div class="panel-body weather-page">
+			<div ng-if="rowsInCategoryCount('nexrad') === 0">
+				<p class="text-muted">No NEXRAD tiles currently cached.</p>
+			</div>
+			<div class="row weather-row" ng-repeat="row in visibleRows()">
+				<div class="separator"></div>
+				<div class="col-sm-12">
+					<span class="col-xs-2">
+						<div align="center" class="label" ng-class="freshnessClass(row.freshness)">{{row.freshness}}</div>
+					</span>
+					<span class="col-xs-6">
+						region {{nexradBounds(row.identity).lat}},{{nexradBounds(row.identity).lon}}
+						(h {{nexradBounds(row.identity).h}}&deg; w {{nexradBounds(row.identity).w}}&deg;, scale {{nexradBounds(row.identity).scale}})
+					</span>
+					<span class="col-xs-2 text-right">{{fmtAge(row.ageSeconds)}}</span>
+					<span class="col-xs-2 text-right">{{row.sizeBytes}} B</span>
+				</div>
+				<div class="col-sm-12" ng-if="CachePersistenceEnabled || row.rawText != null">
+					<button class="btn btn-xs btn-default" ng-click="previewNexradTile(row)" ng-disabled="row.rawTextStatus === 'fetching'">
+						Preview tile
+					</button>
+					<span ng-if="row.rawTextStatus === 'fetching'" class="text-muted">Loading...</span>
+					<span ng-if="row.rawTextStatus === 'fetch-failed'" class="text-muted">Not available (never persisted, or since evicted/purged).</span>
+				</div>
+			</div>
+			<div class="row" ng-if="NexradPreview">
+				<div class="col-sm-12">
+					<hr>
+					<p>
+						Preview: {{NexradPreview.identity}} - {{NexradPreview.stats.count}} bins,
+						{{NexradPreview.stats.nonZero}} with a nonzero return, peak intensity {{NexradPreview.stats.max}}/15.
+						Raw intensity levels only (0-15 per bin, per this codebase's own decoder). The color ramp is
+						arbitrary, not a calibrated reflectivity scale, and the square layout below is only this
+						tile's own bins arranged compactly for a quick look at intensity/density - it is
+						<strong>not</strong> a georeferenced reconstruction of the tile's real shape or orientation
+						(this codebase's decoder does not report a row/column layout to reconstruct one from). Use the
+						region shown above, not this image, for where the tile actually is.
+					</p>
+					<canvas id="nexradPreviewCanvas" class="nexrad-canvas"></canvas>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- NOTAM / SIGMET / AIRMET / lightning / turbulence / icing: this codebase decodes none of
+	     these beyond a bare reception counter (NOTAM, SIGMET/AIRMET) or not at all (lightning,
+	     turbulence, icing) - see docs/fisb-weather-cache.md's "not supported" section. Never
+	     fabricate content here. -->
+	<div class="panel panel-default" ng-if="ActiveCategory === 'unsupported'">
+		<div class="panel-body weather-page">
+			<p class="text-muted">
+				This build decodes and caches METAR, SPECI, TAF, TAF.AMD, WINDS, PIREP text reports and NEXRAD
+				radar tiles only. NOTAM and SIGMET/AIRMET frames are received and counted, but their content is
+				not decoded or retained by this receiver - only a reception counter is available below. Lightning,
+				turbulence, and icing products are not decoded by this receiver at all; no count exists for them
+				either.
+			</p>
+			<div class="row">
+				<div class="col-xs-6 label_adj">
+					<strong class="col-xs-9">NOTAM frames received:</strong>
+					<span class="col-xs-3">{{ReceiverStatus.UAT_NOTAM_total != null ? ReceiverStatus.UAT_NOTAM_total : '?'}}</span>
+				</div>
+				<div class="col-xs-6 label_adj">
+					<strong class="col-xs-9">SIGMET/AIRMET frames received:</strong>
+					<span class="col-xs-3">{{ReceiverStatus.UAT_SIGMET_total != null ? ReceiverStatus.UAT_SIGMET_total : '?'}}</span>
+				</div>
+			</div>
 		</div>
 	</div>
 </div>
--->

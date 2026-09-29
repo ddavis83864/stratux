@@ -98,6 +98,19 @@ hardware integration). User-facing how-tos live in the
   "Safe to remove power" message into the final retained image itself; physical
   acceptance of that design is pending (a prior, superseded design's own acceptance run
   is kept for history).
+- **[fisb-weather-cache.md](fisb-weather-cache.md)** — the rolling FIS-B weather cache
+  (PR #15): opt-in, disabled by default, display/diagnostic only; conservative freshness
+  (reception age vs. trusted product age), namespace ownership, the persistence-mount
+  guard, capacity enforcement and its 10,000-entry ceiling, Configuration Backup's
+  `fisbCacheSettings` section, and why GDL90 replay is intentionally not implemented.
+  Final candidate lab- and bench-validated; live FIS-B/ForeFlight field acceptance
+  pending - not merged.
+- **[fisb-weather-viewer.md](fisb-weather-viewer.md)** — the native FIS-B Weather page in
+  the Web UI (PR #41), built on the cache above: decoded METAR/SPECI/TAF/TAF.AMD/WINDS/
+  PIREP and NEXRAD-tile metadata, the read-only `/getFISBCachePayload` raw-content
+  readback, and the field-test procedure separating automated/bench verification from
+  live-RF/ForeFlight verification. Unit/handler-tested; live-RF/ForeFlight field
+  acceptance pending - not merged.
 
 - **[ssh-authorized-keys.md](ssh-authorized-keys.md)** — why `~/.ssh/authorized_keys` is lost at every reboot
   (the RAM-backed overlay), and the persistent-key feature: the authoritative file on the data partition, the

@@ -1527,6 +1527,22 @@ func managementInterface() {
 	http.HandleFunc("/setAutoRecordSettings", handleSetAutoRecordSettingsRequest)
 	http.HandleFunc("/clearAutoRecordError", handleClearAutoRecordErrorRequest)
 
+	// Rolling FIS-B Weather Cache - additive control/status API, disabled
+	// by default; see main/fisbcacheapi.go and
+	// docs/fisb-weather-cache.md.
+	http.HandleFunc("/getFISBCacheStatus", handleGetFISBCacheStatusRequest)
+	http.HandleFunc("/getFISBCacheInventory", handleGetFISBCacheInventoryRequest)
+	// getFISBCachePayload is a Weather-page-only addition (see
+	// main/fisbcachepayload.go's own doc comment): best-effort readback of
+	// one entry's actual decoded content, sourced from its persisted file
+	// when persistence is enabled - never from a new in-memory store.
+	http.HandleFunc("/getFISBCachePayload", handleGetFISBCachePayloadRequest)
+	http.HandleFunc("/getFISBCacheSettings", handleGetFISBCacheSettingsRequest)
+	http.HandleFunc("/setFISBCacheSettings", handleSetFISBCacheSettingsRequest)
+	http.HandleFunc("/prepareFISBCachePurge", handlePrepareFISBCachePurgeRequest)
+	http.HandleFunc("/confirmFISBCachePurge", handleConfirmFISBCachePurgeRequest)
+	http.HandleFunc("/cancelFISBCachePurge", handleCancelFISBCachePurgeRequest)
+
 	addr := fmt.Sprintf(":%d", ManagementAddr)
 	log.Printf("web configuration console on port %s", addr)
 	// A plain http.ListenAndServe(addr, nil) - unchanged for every other

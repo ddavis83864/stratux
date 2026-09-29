@@ -142,6 +142,13 @@ type DiagnosticBundle struct {
 	// trace.
 	AutoRecordSummary interface{} `json:"AutoRecordSummary,omitempty"`
 
+	// FISBCacheSummary is a bounded, sanitized summary of the Rolling
+	// FIS-B Weather Cache's current state at generation time, opaque to
+	// this package for the same import-direction reason as the summaries
+	// above. State/counts only - never a raw weather payload, station
+	// identifier, or exact coordinate.
+	FISBCacheSummary interface{} `json:"FISBCacheSummary,omitempty"`
+
 	// TrafficCPASummary is a bounded, sanitized summary of the closure-
 	// rate/closest-point-of-approach traffic-alerting enhancement's
 	// current state (see the trafficcpa package) at generation time,
@@ -186,7 +193,7 @@ const maxDiagnosticLogLines = 500
 // (e.g. ones containing "passphrase=") filtered by the caller, since log
 // text is unstructured and this package cannot reliably distinguish a
 // logged secret from ordinary text.
-func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, trafficCPASummary interface{}, wifiAdminSummary interface{}) DiagnosticBundle {
+func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthReport, rawSettings map[string]interface{}, recentLogLines []string, profiles []CalibrationProfileSummary, activeProfileID string, preflightReport interface{}, recordingMetadataSummary interface{}, alertingSummary interface{}, configBackupSummary interface{}, powerSummary interface{}, storageLifecycleSummary interface{}, autoRecordSummary interface{}, trafficCPASummary interface{}, wifiAdminSummary interface{}, fisbCacheSummary interface{}) DiagnosticBundle {
 	lines := recentLogLines
 	if len(lines) > maxDiagnosticLogLines {
 		lines = lines[len(lines)-maxDiagnosticLogLines:]
@@ -209,6 +216,7 @@ func BuildDiagnosticBundle(now time.Time, version, commit string, health HealthR
 		AutoRecordSummary:          autoRecordSummary,
 		TrafficCPASummary:          trafficCPASummary,
 		WifiAdminSummary:           wifiAdminSummary,
+		FISBCacheSummary:           fisbCacheSummary,
 	}
 }
 

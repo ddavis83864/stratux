@@ -167,6 +167,14 @@ type Input struct {
 	AutoRecordMachineState string // one of autorecord.State's own values, or "" if not yet initialized
 	AutoRecordReason       string
 
+	// FISBCache* mirrors readiness.FISBCacheHealth without this package
+	// importing fisbcache (the same avoidance pattern as AutoRecord*
+	// above).
+	FISBCacheEnabled      bool
+	FISBCacheState        string // one of fisbcache.State's own values, or "" if not yet initialized
+	FISBCacheReason       string
+	FISBCacheTotalEntries int
+
 	// TrafficCPAEnabled/TrafficCPASettingsValid mirror the closure-rate/
 	// closest-point-of-approach traffic-alerting enhancement's own
 	// state - see main/trafficcpaapi.go. This is a supplemental trend
@@ -233,6 +241,7 @@ func BuildReport(in Input) Report {
 	automated = append(automated, powerSessionChecks(in)...)
 	automated = append(automated, storageLifecycleChecks(in)...)
 	automated = append(automated, autoRecordChecks(in)...)
+	automated = append(automated, fisbCacheChecks(in)...)
 	automated = append(automated, trafficCPAChecks(in)...)
 	automated = append(automated, wifiAdminChecks(in)...)
 

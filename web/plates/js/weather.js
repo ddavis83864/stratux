@@ -1,261 +1,357 @@
 angular.module('appControllers').controller('WeatherCtrl', WeatherCtrl); // get the main module contollers set
 WeatherCtrl.$inject = ['$rootScope', '$scope', '$state', '$http', '$interval']; // Inject my dependencies
 
-// create our controller function with all necessary logic
-function WeatherCtrl($rootScope, $scope, $state, $http, $interval) {
+/*
+WeatherCtrl: the native FIS-B Weather viewer. Combines two independent
+data sources, neither of which alone is enough to show a useful cached-
+weather page:
 
-	var CONF_WATCHLIST = "KBOS KATL KORD KLAX"; // we default to 4 major airports
-	var MAX_DATALIST = 10;
+  - /weather (WebSocket): this codebase's original, live-only text-report
+    feed (main/gen_gdl90.go's WeatherMessage) - works whether or not the
+    rolling FIS-B cache is enabled, but has no history/replay buffer at
+    all (see main/managementinterface.go's handleWeatherWS - a report
+    that arrived before this page connected is invisible until it
+    repeats).
+  - /getFISBCacheStatus + /getFISBCacheInventory (polled): the rolling
+    cache's own metadata-only view (identity/freshness/age/size, never
+    raw content - see main/fisbcacheapi.go's own doc comments) of
+    whatever it has cached, whether or not this page was open when it
+    arrived. Only populated when the cache feature is enabled
+    (Weather Cache page) and only useful for content when this page also
+    fetches a specific entry's raw content on demand via
+    /getFISBCachePayload (see main/fisbcachepayload.go) - itself only
+    possible when the cache's OWN persistence setting is on.
+
+WeatherLogic (weatherlogic.js) owns every pure decision (categorization,
+merging, freshness labels, filtering/sorting, NEXRAD decoding, bounded
+lists) - this controller only owns HTTP/WebSocket/DOM/interval wiring and
+$scope shape.
+*/
+function WeatherCtrl($rootScope, $scope, $state, $http, $interval) {
+	var WL = WeatherLogic;
+	var MAX_LIVE_TICKER = 25; // bounded, per-category-independent "just arrived" ticker
 
 	$scope.$parent.helppage = 'plates/weather-help.html';
-	$scope.data_list = [];
-	$scope.watch_list = [];
-	$scope.data_count = 0;
-	$scope.watch_count = 0;
 
-	function updateWatchList() {
-		$scope.watching = CONF_WATCHLIST;
-		// Simple GET request example (note: responce is asynchronous)
-		$http.get(URL_SETTINGS_GET).
-		then(function (response) {
-			settings = angular.fromJson(response.data);
-			$scope.watching = settings.WatchList.toUpperCase();
-		}, function (response) {
-			// nop
-		});
+	$scope.DISCLAIMER = 'FIS-B data shown here is received over ADS-B. Verify data age and use approved flight-planning/weather sources as appropriate.';
+
+	$scope.CacheStatus = null;
+	$scope.CacheEnabled = false;
+	$scope.CachePersistenceEnabled = false;
+	$scope.Rows = [];
+	$scope.LiveTicker = []; // bounded list of recently-arrived identities, most recent first
+
+	$scope.Towers = 0;
+	$scope.ReceiverFreshnessLabel = 'NO WX FRAMES YET';
+	$scope.LastWeatherFrameAgeSeconds = null;
+	var weatherCounterState = null; // see WeatherLogic.trackWeatherCounterState
+
+	$scope.ActiveCategory = WL.CATEGORY_METAR;
+	$scope.Categories = [
+		{key: WL.CATEGORY_METAR, label: 'METAR/SPECI'},
+		{key: WL.CATEGORY_TAF, label: 'TAF'},
+		{key: WL.CATEGORY_PIREP, label: 'PIREP'},
+		{key: WL.CATEGORY_WINDS, label: 'Winds/Temps Aloft'},
+		{key: WL.CATEGORY_NEXRAD, label: 'NEXRAD'},
+		{key: WL.CATEGORY_OTHER_TEXT, label: 'Other'},
+		{key: 'unsupported', label: 'NOTAM/SIGMET'}
+	];
+
+	$scope.StationFilter = '';
+	$scope.SearchQuery = '';
+
+	$scope.setActiveCategory = function (key) {
+		$scope.ActiveCategory = key;
 	};
 
-	function inList(word, sentence) {
-		// since the watch list is just one long string, we cheat and see if the word in anywhere in the 'sentence'
-		if ((sentence) && (word)) {
-			return sentence.includes(word);
+	// visibleRows only applies the station/search filters for the
+	// categories whose template actually exposes those inputs (every
+	// text category) - NEXRAD rows have no station and no known raw text
+	// until fetched, so applying a leftover filter value from a
+	// previously-viewed tab would otherwise silently hide every NEXRAD
+	// row rather than genuinely finding none.
+	$scope.visibleRows = function () {
+		var rows = WL.rowsInCategory($scope.Rows, $scope.ActiveCategory);
+		if ($scope.ActiveCategory !== WL.CATEGORY_NEXRAD) {
+			rows = WL.filterByStation(rows, $scope.StationFilter);
+			rows = WL.searchRawText(rows, $scope.SearchQuery);
 		}
-		return false;
+		return WL.sortNewestFirst(rows);
+	};
+
+	$scope.rowsInCategoryCount = function (key) {
+		return WL.rowsInCategory($scope.Rows, key).length;
+	};
+
+	$scope.categoryLabel = function (key) {
+		for (var i = 0; i < $scope.Categories.length; i++) {
+			if ($scope.Categories[i].key === key) {
+				return $scope.Categories[i].label;
+			}
+		}
+		return key;
+	};
+
+	$scope.freshnessClass = function (freshness) {
+		// Matches web/plates/js/fisbcache.js's own freshnessClass exactly -
+		// this page and the Weather Cache diagnostics page must never show
+		// two different colors for the same freshness value.
+		switch (freshness) {
+			case 'LIVE':
+			case 'CACHED_FRESH':
+				return 'label-success';
+			case 'CACHED_AGING':
+				return 'label-info';
+			case 'STALE':
+				return 'label-warning';
+			case 'EXPIRED':
+			case 'INVALID':
+				return 'label-danger';
+			default: // UNSUPPORTED
+				return 'label-default';
+		}
+	};
+
+	$scope.fmtAge = WL.formatAge;
+
+	// receiverFreshnessClass colors the top-of-page RECEIVER-level label
+	// (WX RX RECENT/AGING/STALE/NO WX FRAMES YET) - deliberately a
+	// separate mapping from freshnessClass above, since this label is not
+	// itself a fisbcache.FreshnessState value, just a similarly-styled
+	// badge for a different (receiver, not per-product) concept.
+	$scope.receiverFreshnessClass = function (label) {
+		switch (label) {
+			case 'WX RX RECENT':
+				return 'label-success';
+			case 'WX RX AGING':
+				return 'label-info';
+			case 'WX RX STALE':
+				return 'label-warning';
+			default: // NO WX FRAMES YET
+				return 'label-default';
+		}
+	};
+
+	// --- on-demand raw-content fetch (persisted entries only) ---------------
+
+	$scope.canFetchPayload = function (row) {
+		return $scope.CachePersistenceEnabled && row.rawTextStatus !== 'live' &&
+			row.rawTextStatus !== 'fetched' && row.rawTextStatus !== 'fetching';
+	};
+
+	// previewNexradTile is the NEXRAD "Preview tile" button's handler:
+	// re-renders instantly from already-known content (live or
+	// previously fetched) rather than silently no-op'ing just because a
+	// fetch is no longer needed - only reaches the network for content
+	// this session doesn't already have.
+	$scope.previewNexradTile = function (row) {
+		if (row.rawText != null) {
+			$scope.renderNexradPreview(row.identity, row.rawText);
+			return;
+		}
+		$scope.fetchPayload(row);
+	};
+
+	$scope.fetchPayload = function (row) {
+		if (!$scope.canFetchPayload(row)) {
+			return;
+		}
+		$scope.Rows = WL.markFetching($scope.Rows, row.identity);
+		$http.get(URL_FISBCACHE_PAYLOAD_GET, {params: {class: row.productClass, identity: row.identity}}).
+			then(function (response) {
+				$scope.Rows = WL.applyFetchedPayload($scope.Rows, row.identity, response.data.payload);
+				if (row.category === WL.CATEGORY_NEXRAD) {
+					$scope.renderNexradPreview(row.identity, response.data.payload);
+				}
+			}, function (errorResponse) {
+				$scope.Rows = WL.markFetchFailed($scope.Rows, row.identity);
+			});
+	};
+
+	// --- NEXRAD ----------------------------------------------------------------
+
+	$scope.NexradPreview = null; // {identity, bounds, stats, canvasId}
+
+	$scope.nexradBounds = function (identity) {
+		return WL.parseNexradIdentity(identity);
+	};
+
+	// renderNexradPreview decodes a fetched tile's base64 intensity data
+	// and draws a plain per-bin color ramp onto a canvas - metadata (task
+	// section 10's minimum) is always shown regardless; this is the
+	// explicitly-optional visualization on top of it, never a blocker.
+	$scope.renderNexradPreview = function (identity, base64Payload) {
+		var intensity = WL.decodeNexradIntensityBase64(base64Payload);
+		var stats = WL.intensityStats(intensity);
+		$scope.NexradPreview = {identity: identity, bounds: WL.parseNexradIdentity(identity), stats: stats};
+		// Deferred to $timeout-free next digest via requestAnimationFrame so
+		// the canvas element (ng-if'd on NexradPreview) exists in the DOM
+		// first.
+		if (typeof requestAnimationFrame === 'function') {
+			requestAnimationFrame(function () {
+				drawNexradCanvas('nexradPreviewCanvas', intensity);
+			});
+		}
+	};
+
+	function drawNexradCanvas(canvasId, intensity) {
+		var canvas = document.getElementById(canvasId);
+		if (!canvas || !intensity.length) {
+			return;
+		}
+		var side = Math.ceil(Math.sqrt(intensity.length));
+		canvas.width = side;
+		canvas.height = side;
+		var ctx = canvas.getContext('2d');
+		if (!ctx) {
+			return;
+		}
+		var img = ctx.createImageData(side, side);
+		for (var i = 0; i < intensity.length; i++) {
+			var level = Math.min(15, intensity[i]); // really only 4 bits - uatparse.NEXRADBlock's own doc comment
+			var frac = level / 15;
+			var idx = i * 4;
+			img.data[idx] = Math.round(255 * frac);         // R: ramps up with intensity
+			img.data[idx + 1] = Math.round(80 * (1 - frac)); // G: fades out
+			img.data[idx + 2] = Math.round(255 * (1 - frac)); // B: fades from blue
+			img.data[idx + 3] = level === 0 ? 0 : 255;        // fully transparent where no return at all
+		}
+		ctx.putImageData(img, 0, 0);
 	}
 
+	// --- cache status + inventory polling ---------------------------------------
 
-	function parseFlightCondition(msg, body) {
-		if ((msg !== "METAR") && (msg !== "SPECI"))
-			return "";
+	$scope.refreshCache = function () {
+		$http.get(URL_FISBCACHE_STATUS_GET).
+			then(function (response) {
+				$scope.CacheStatus = response.data;
+				$scope.CacheEnabled = !!response.data.enabled;
+				$scope.CachePersistenceEnabled = !!response.data.persistenceEnabled;
+			}, function (errorResponse) {
+				// leave any previously-loaded status in place
+			});
+		$http.get(URL_FISBCACHE_INVENTORY_GET).
+			then(function (response) {
+				var fresh = WL.buildRows(response.data || []);
+				$scope.Rows = WL.mergeRows(fresh, WL.rowsByIdentity($scope.Rows));
+			}, function (errorResponse) {
+				// leave any previously-loaded inventory in place - a
+				// transient fetch error must never blank out already-known
+				// cached weather (task section 13's "do not silently
+				// remove useful cached information" requirement).
+			});
+	};
 
-		// check the visibility: a value preceeding 'SM' which is either a fraction or a whole number
-		// we don't care what value of fraction since anything below 1SM is LIFR
+	var cacheRefreshInterval = $interval(function () {
+		$scope.refreshCache();
+	}, 3000); // matches web/plates/js/fisbcache.js's own polling cadence exactly
 
-		// BTW: now I know why no one wants to parse METARs - ther can be spaces in the numbers ARGH
-		// test for special case of 'X X/X'
-		var exp = new RegExp("([0-9]) ([0-9])/([0-9])SM");
-		var match = exp.exec(body);
-		if ((match !== null) && (match.length === 4)) {
-			visability = parseInt(match[1]) + (parseInt(match[2]) / parseInt(match[3]));
-		} else {
-			exp = new RegExp("([0-9/]{1,5}?)SM");
-			match = exp.exec(body);
-			if (match === null)
-				return "";
-			// the only way we have 3 or more characters is if the '/' is present which means we need to do extra checking
-			if (match[1].length === 3)
-				return "LIFR";
-			// do we have a usable visability distance
-			var visability = parseInt(match[1]);
-			if (visability === 0)
-				return "";
-		}
+	// --- towers (matches web/plates/js/status.js's own polling exactly) --------
 
-		// ceiling is at either the BKN or OVC layer
-		exp = new RegExp("BKN([0-9]{3})");
-		match = exp.exec(body);
-		if (match === null) {
-			exp = new RegExp("OVC([0-9]{3})");
-			match = exp.exec(body);
-		}
-		var ceiling = 999;
-		if (match !== null)
-			ceiling = parseInt(match[1]);
-
-		if ((visability > 5) && (ceiling > 30))
-			return "VFR";
-		if ((visability >= 3) && (ceiling >= 10))
-			return "MVFR";
-		if ((visability >= 1) && (ceiling >= 5))
-			return "IFR";
-		return "LIFR";
+	function refreshTowers() {
+		$http.get(URL_TOWERS_GET).
+			then(function (response) {
+				$scope.Towers = WL.countActiveTowers(response.data);
+			}, function (errorResponse) {
+				// nop - leave the last known count in place
+			});
 	}
+	refreshTowers();
+	var towersInterval = $interval(refreshTowers, 5000);
 
+	// --- receiver-level status, via the existing /status websocket -------------
+	// (1 Hz push - see main/managementinterface.go's handleStatusWS; reused
+	// exactly as web/plates/js/status.js already does, no new polling loop)
 
-	function deltaTimeString(epoc) {
-		var time = "";
-		var val;
-		var d = new Date(epoc);
-		val = d.getUTCDate() - 1; // we got here by subtrracting two dates so we have a delta, not a day of month
-		if (val > 0)
-			time += (val < 10 ? "0" + val : "" + val) + "d ";
-		val = d.getUTCHours();
-		if (val > 0) {
-			time += (val < 10 ? "0" + val : "" + val) + "h ";
-		} else {
-			if (time.length > 0)
-				time += "00h ";
+	function connectStatusSocket() {
+		if ($scope.statusSocket) {
+			return;
 		}
-		val = d.getUTCMinutes();
-		time += (val < 10 ? "0" + val : "" + val) + "m ";
-		// ADS-B weather is only accurate to minutes
-		// val = d.getUTCSeconds();
-		// time += (val < 10 ? "0" + val : "" + val) + "s";
-
-		return time;
-	}
-
-	function parseShortDatetime(sdt) {
-		var d = new Date();
-		var s = String(sdt);
-		if (s.length < 7)
-			return 0;
-		d.setUTCDate(parseInt(s.substring(0, 2)));
-		d.setUTCHours(parseInt(s.substring(2, 4)));
-		if (s.length > 7) { // TAF datetime range
-			d.setUTCMinutes(0);
-		} else {
-			d.setUTCMinutes(parseInt(s.substring(4, 6)));
-		}
-		d.setUTCSeconds(0);
-		d.setUTCMilliseconds(0);
-		return d;
-	}
-
-	function setDataItem(obj, data_item) {
-		if (obj.Type === "TAF.AMD") {
-			data_item.type = "TAF";
-			data_item.update = true;
-		} else {
-			data_item.type = obj.Type;
-			data_item.update = false;
-		}
-
-		data_item.flight_condition = parseFlightCondition(obj.Type, obj.Data);
-		data_item.location = obj.Location;
-		s = obj.Time;
-		// data_item.time = s.substring(0, 2) + '-' + s.substring(2, 4) + ':' + s.substring(4, 6) + 'Z';
-		// we may not get an accurate base time on the stratux device so we use the device time as our base
-		// var dNow = new Date(obj.LocaltimeReceived);
-		var dNow = new Date();
-		var dThen = parseShortDatetime(obj.Time);
-		data_item.age = dThen.getTime();
-		var diff_ms = Math.abs(dThen - dNow);
-
-		// If time is more than two days away, don't attempt to display data age.
-		if (diff_ms > (1000*60*60*24*2)) {
-			data_item.time = "?";
-		} else if (dThen > dNow) {
-			data_item.time = deltaTimeString(dThen - dNow) + " from now";
-		} else {
-			data_item.time = deltaTimeString(dNow - dThen) + " old";
-		}
-
-		// data_item.received = utcTimeString(obj.LocaltimeReceived);
-		data_item.data = obj.Data;
-	}
-
-	function connect($scope) {
-		if (($scope === undefined) || ($scope === null))
-			return; // we are getting called once after clicking away from the status page
-
-		if (($scope.socket === undefined) || ($scope.socket === null)) {
-			socket = new WebSocket(URL_WEATHER_WS);
-			$scope.socket = socket; // store socket in scope for enter/exit usage
-		}
-
-		$scope.ConnectState = "Disconnected";
-
-		socket.onopen = function (msg) {
-			// $scope.ConnectStyle = "label-success";
-			$scope.ConnectState = "Connected";
+		var socket = new WebSocket(URL_STATUS_WS);
+		$scope.statusSocket = socket;
+		socket.onclose = function () {
+			$scope.statusSocket = null;
+			setTimeout(connectStatusSocket, 1000);
 		};
-
-		socket.onclose = function (msg) {
-			// $scope.ConnectStyle = "label-danger";
-			$scope.ConnectState = "Disconnected";
-			$scope.$apply();
-			setTimeout(connect, 1000);
+		socket.onerror = function () {
+			// onclose will fire next and handle reconnection
 		};
-
-		socket.onerror = function (msg) {
-			// $scope.ConnectStyle = "label-danger";
-			$scope.ConnectState = "Problem";
-			$scope.$apply();
-		};
-
 		socket.onmessage = function (msg) {
-			console.log('Received data_list update.');
-
-			$scope.raw_data = angular.toJson(msg.data, true);
-			var message = JSON.parse(msg.data);
-			// we need to use an array so AngularJS can perform sorting; it also means we need to loop to find an aircraft in the data_list set
-			var found = false;
-			if (inList(message.Location, $scope.watching)) {
-				for (var i = 0, len = $scope.watch_list.length; i < len; i++) {
-					if (($scope.watch_list[i].type === message.Type) && ($scope.watch_list[i].location === message.Location)) {
-						setDataItem(message, $scope.watch_list[i]);
-						found = true;
-						break;
-					}
-				}
-				if (!found) {
-					var new_data_item = {};
-					setDataItem(message, new_data_item);
-					$scope.watch_list.unshift(new_data_item); // add to start of array
-				}
+			var status;
+			try {
+				status = JSON.parse(msg.data);
+			} catch (e) {
+				return;
 			}
-			// add to scrolling data_list
-			{
-				var new_data_item = {};
-				setDataItem(message, new_data_item);
-				$scope.data_list.unshift(new_data_item); // add to start of array
-				if ($scope.data_list.length > MAX_DATALIST)
-					$scope.data_list.pop(); // remove last from array
-			}
-			$scope.data_count = $scope.data_list.length;
-			$scope.watch_count = $scope.watch_list.length;
+			var now = Date.now();
+			weatherCounterState = WL.trackWeatherCounterState(weatherCounterState, status, now);
+			$scope.LastWeatherFrameAgeSeconds = weatherCounterState.ageSeconds;
+			$scope.ReceiverFreshnessLabel = WL.receiverFreshnessLabel($scope.LastWeatherFrameAgeSeconds);
+			$scope.ReceiverStatus = status; // raw /getStatus snapshot - only used for the NOTAM/SIGMET counter-only tab
 			$scope.$apply();
 		};
 	}
 
-	// perform cleanup every 5 minutes
-	var clearStaleMessages = $interval(function () {
-		// remove stale data = anything more than 30 minutes old
-		var dirty = false;
-		var cutoff = Date.now() - (30 * 60 * 1000);
+	// --- live /weather text feed -------------------------------------------------
 
-		for (var i = len = $scope.watch_list.length; i > 0; i--) {
-			if ($scope.watch_list[i - 1].age < cutoff) {
-				$scope.watch_list.splice(i - 1, 1);
-				dirty = true;
-			}
+	function connectWeatherSocket() {
+		if ($scope.weatherSocket) {
+			return;
 		}
-		if (dirty) {
-			$scope.raw_data = "";
+		var socket = new WebSocket(URL_WEATHER_WS);
+		$scope.weatherSocket = socket;
+		$scope.WeatherConnectState = 'Disconnected';
+
+		socket.onopen = function () {
+			$scope.WeatherConnectState = 'Connected';
+		};
+		socket.onclose = function () {
+			$scope.WeatherConnectState = 'Disconnected';
+			$scope.weatherSocket = null;
 			$scope.$apply();
-		}
-	}, (5 * 60 * 1000), 0, false);
-
+			setTimeout(connectWeatherSocket, 1000);
+		};
+		socket.onerror = function () {
+			$scope.WeatherConnectState = 'Problem';
+			$scope.$apply();
+		};
+		socket.onmessage = function (msg) {
+			var message;
+			try {
+				message = JSON.parse(msg.data);
+			} catch (e) {
+				return;
+			}
+			var now = Date.now();
+			$scope.Rows = WL.upsertLiveRow($scope.Rows, message, now);
+			var identity = message.Type + ' ' + message.Location;
+			$scope.LiveTicker = WL.boundedUpsert($scope.LiveTicker,
+				{identity: identity, category: WL.classifyReportType(message.Type), atMs: now},
+				function (x) { return x.identity; }, MAX_LIVE_TICKER);
+			$scope.$apply();
+		};
+	}
 
 	$state.get('weather').onEnter = function () {
-		// everything gets handled correctly by the controller
-		updateWatchList();
+		connectWeatherSocket();
+		connectStatusSocket();
 	};
 
 	$state.get('weather').onExit = function () {
-		// disconnect from the socket
-		if (($scope.socket !== undefined) && ($scope.socket !== null)) {
-			$scope.socket.close();
-			$scope.socket = null;
+		if ($scope.weatherSocket) {
+			$scope.weatherSocket.close();
+			$scope.weatherSocket = null;
 		}
-		// stop stale message cleanup
-		$interval.cancel(clearStaleMessages);
+		if ($scope.statusSocket) {
+			$scope.statusSocket.close();
+			$scope.statusSocket = null;
+		}
+		$interval.cancel(cacheRefreshInterval);
+		$interval.cancel(towersInterval);
 	};
 
-
-
-	// Weather Controller tasks
-	updateWatchList();
-	connect($scope); // connect - opens a socket and listens for messages
-};
+	// initial load
+	$scope.refreshCache();
+	connectWeatherSocket();
+	connectStatusSocket();
+}
