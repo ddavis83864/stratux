@@ -1,10 +1,16 @@
 # PR #51 field acceptance kit
 
-> **Status: prepared, not run.** This is a checklist and bounded capture
-> tooling for a later, separately authorized owner-attended acceptance
-> session. No gate below has been executed by this document's own
-> preparation. Do not treat any row as PASS until it has actually been
-> observed on the device.
+> **Status: logistics prepared and rehearsed; the actual field gates are
+> NOT RUN.** This is a checklist and bounded capture tooling for a later,
+> separately authorized owner-attended acceptance session. The rollback
+> and candidate packages, and this kit itself, are verified present on
+> the field laptop, and the "Before deployment" section's read-only
+> checks were successfully rehearsed from it against the device's
+> current, known-good build (see "Read-only rehearsal record" below).
+> **None of that is PR #51 acceptance** - the candidate has not been
+> installed, and no live-RF/cache/ForeFlight gate below has been
+> executed. Do not treat any gate row as PASS until it has actually been
+> observed during the real field session.
 
 Candidate: branch `integrate/fisb-onto-master`, code-bearing commit
 **`cdb4d798fec721e0a6cd5cb1543d442ac4893eb4`** (a later commit,
@@ -100,15 +106,53 @@ below. Either way, confirm every row before proceeding.
 | B1 | Candidate commit, **on the field laptop** | `~/stratux-field-acceptance/candidate/stratux-cdb4d798-candidate.deb`'s embedded build string = `cdb4d798fec721e0a6cd5cb1543d442ac4893eb4` - re-verify immediately before use, do not trust a prior session's check alone | `strings`/`dpkg-deb -x` + `grep -E '^[0-9a-f]{40}$'` on the laptop's own copy, `$EV/pre/candidate-build-string.txt` |
 | B2 | Candidate package hash, **on the field laptop** | SHA-256 = `1b0a8b432d68cea82a33bcebd5885bd5ea13871b3b5da19b43337961626d8f19`, calculated on the laptop itself (not assumed from the transfer) - if it doesn't match, do not deploy; get a fresh, correctly-verified copy first | `sha256sum` on the laptop, `$EV/pre/candidate.sha256` |
 | B3 | Device build (before) | Matches the last-known-good build recorded in this session's report | `getStatus.Build`, `$EV/pre/getStatus.json` |
-| B4 | Device boot ID | Recorded for later before/after comparison. **Needs the laptop's own SSH key authorized on the device first** - see B12's own note; not yet provisioned as of 2026-09-29 | `ssh pi@192.168.10.1 cat /proc/sys/kernel/random/boot_id`, `$EV/pre/boot-id.txt` |
-| B5 | Service/package health | 0 failed units, `dpkg --audit` clean. Same SSH-authorization dependency as B4 | `$EV/pre/ssh-health.txt` |
+| B4 | Device boot ID | Recorded for later before/after comparison. **Rehearsed successfully from the field laptop, 2026-09-29** (owner provisioned the laptop's SSH key on the device) - see the "Read-only rehearsal" section below | `ssh pi@192.168.10.1 cat /proc/sys/kernel/random/boot_id`, `$EV/pre/boot-id.txt` |
+| B5 | Service/package health | 0 failed units, `dpkg --audit` clean. Rehearsed successfully - `sudo` is passwordless for `pi` on the device, no `sudoers` change was needed or made | `$EV/pre/ssh-health.txt` |
 | B6 | Settings | `EpaperEnabled`/panel/rotation and FIS-B-relevant settings captured (never posted anywhere - local evidence only) | `getSettings`, `$EV/pre/getSettings.json` |
 | B7 | OTA state | `getOTAStatus.Stage == "idle"` - **do not proceed if it is not**; this is a hard precondition, not a warning | `$EV/pre/getOTAStatus.json` |
 | B8 | FIS-B cache API baseline | `getFISBCacheStatus` returns 200, current `totalEntries`/`state`/settings recorded | `$EV/pre/getFISBCacheStatus.json` |
 | B9 | FIS-B cache inventory baseline | `getFISBCacheInventory` recorded (or its absence noted, if disabled) | `$EV/pre/getFISBCacheInventory.json` |
-| B10 | Persisted cache file count/integrity | File count under `fisb-weather-cache/` on the device recorded; each filename is content-addressed (matches `fisbcache/schema.go`'s own key derivation) - a changed count after deployment is itself evidence, not assumed corruption. Same SSH-authorization dependency as B4/B5 | `$EV/pre/fisb-cache-files.txt` (via SSH `find ... | wc -l` and a full listing) |
+| B10 | Persisted cache file count/integrity | File count under `fisb-weather-cache/` on the device recorded; each filename is content-addressed (matches `fisbcache/schema.go`'s own key derivation) - a changed count after deployment is itself evidence, not assumed corruption. Rehearsed successfully: 12 files, matching the established baseline exactly | `$EV/pre/fisb-cache-files.txt` (via SSH `find ... | wc -l` and a full listing) |
 | B11 | Free space | `/var/lib/stratux-data`, `/boot/firmware`, `/` all have headroom for the OTA (a bare-ext4 install needs room on the real partition, not just the overlay) | `df -h`, `$EV/pre/df.txt` |
-| B12 | Rollback package ready **on the actual field laptop** | **Done and verified, 2026-09-29.** Laptop identified and confirmed (`ARS-Macbook`, `MacBookPro8,2`, Ubuntu 24.04.5 LTS, reachable as `ddavis@192.168.0.101` over its established home-network path, SSH host key `SHA256:KWQYKAgtJ7wvgSiv5DJmhGyuz7MqzthFtgHxwIyKdhQ` already trusted). Rollback package at `~/stratux-field-acceptance/rollback/stratux-2002ad4e-rollback.deb`, SHA-256 recalculated **on the laptop itself**: `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce` - exact match. Embedded build `2002ad4e8294e1b475d6ca9ee3f838971f35a119` also independently confirmed on the laptop. Full manifest: `~/stratux-field-acceptance/MANIFEST.md` on the laptop; ARS01-side record: `~/acceptance-evidence/stratux-pr51-rollback-transfer-20260929/TRANSFER-STATUS.md`. **Remaining prerequisite (separate from this rollback-package check):** the laptop's own SSH key is not yet authorized on the Stratux device (`Permission denied` when tried) - B4/B5/B10's SSH-dependent checks will not work until it is provisioned there via `docs/ssh-authorized-keys.md`'s own procedure; every HTTP-based check (B3, B6-B9) already works correctly from the laptop today. | `sha256sum` **on the field laptop itself** (done, matches), `$EV/pre/rollback.sha256`; `~/stratux-field-acceptance/MANIFEST.md` |
+| B12 | Rollback package ready **on the actual field laptop** | **Done and verified, 2026-09-29.** Laptop identified and confirmed (`ARS-Macbook`, `MacBookPro8,2`, Ubuntu 24.04.5 LTS, reachable as `ddavis@192.168.0.101` over its established home-network path, SSH host key `SHA256:KWQYKAgtJ7wvgSiv5DJmhGyuz7MqzthFtgHxwIyKdhQ` already trusted). Rollback package at `~/stratux-field-acceptance/rollback/stratux-2002ad4e-rollback.deb`, SHA-256 recalculated **on the laptop itself**: `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce` - exact match. Embedded build `2002ad4e8294e1b475d6ca9ee3f838971f35a119` also independently confirmed on the laptop. Full manifest: `~/stratux-field-acceptance/MANIFEST.md` on the laptop; ARS01-side record: `~/acceptance-evidence/stratux-pr51-rollback-transfer-20260929/TRANSFER-STATUS.md`. **The laptop's SSH key is now authorized on the device** (owner-provisioned) - confirmed by the full read-only rehearsal below; no remaining prerequisite. | `sha256sum` **on the field laptop itself** (done, matches), `$EV/pre/rollback.sha256`; `~/stratux-field-acceptance/MANIFEST.md` |
+
+## Read-only rehearsal record (2026-09-29)
+
+A full, non-mutating rehearsal of this kit's "Before deployment" section
+was run from the field laptop against the real device (still on its
+known-good build, not the candidate). **This is a capture-workflow
+rehearsal, not PR #51 acceptance** - the candidate is not installed, and
+none of the cache/reception counters observed below constitute a field
+gate result.
+
+- **SSH**: host key verified against ARS01's own previously-trusted
+  fingerprint (`SHA256:RfByAnLQhiPgDEaZMt9RD6aCpKcfwcu72OnMnEwrjfM`,
+  ED25519) - matched exactly, both via a fresh `ssh-keyscan` and the
+  laptop's own `known_hosts`; `StrictHostKeyChecking=yes` (not relaxed).
+  `ssh -o BatchMode=yes pi@192.168.10.1` succeeded with no password
+  prompt - genuine public-key auth. `sudo -n` (non-interactive) succeeded
+  for `dpkg --audit` and the cache-directory listing - passwordless
+  `sudo` was already configured; nothing here was changed to make it
+  work.
+- **Script run**: `EV=~/stratux-field-acceptance/rehearsal-2026-09-29
+  bash ~/stratux-field-acceptance/kit/pr51_field_preflight_capture.sh` -
+  exit 0, every check (B3-B11) captured successfully, all 8 output files
+  present and non-empty with real data (the 3-byte
+  `getFISBCacheInventory.json`, `[]`, is a genuine, correctly-captured
+  empty-array response, not a script error - the live in-memory index
+  reports 0 while the 12 persisted files remain on disk, matching every
+  prior session's own documented observation).
+- **Non-mutating, confirmed**: device build, boot ID
+  (`de586474-3c7d-44d8-bea7-4d1cd4da2631`), `dpkg --audit` (clean), and
+  persisted cache file count (12) were identical immediately before and
+  immediately after the rehearsal.
+- **Package hashes** re-verified unchanged on the laptop after the
+  rehearsal: rollback `fe8ddc15...`, candidate `1b0a8b43...` - both exact.
+- **Network**: default route and DNS still held by the laptop's Ethernet
+  connection throughout; the Stratux `/24` route via Wi-Fi remained
+  non-default. Unchanged by the rehearsal.
+
+**Field-kit logistics: READY.**
 
 ## Deployment and immediate recovery checks
 
