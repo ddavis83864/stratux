@@ -1,6 +1,7 @@
 package storagelifecycle
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stratux/stratux/readiness"
@@ -131,4 +132,44 @@ func TestMonitor_NoFlappingOnAlternatingSamples(t *testing.T) {
 	if m.Current() != PressureUnknown {
 		t.Errorf("alternating samples must never confirm a state, got %s", m.Current())
 	}
+}
+
+// TestMonitor_ConcurrentObserveAndCurrentAreRaceSafe is a regression test
+// for a genuine, `go test -race`-confirmed data race: Manager.Status() is
+// documented as safe to call from any goroutine (and is, in production,
+// called concurrently - the periodic storage-lifecycle scan loop, the
+// FIS-B cache's own status snapshot and retention loop, and autorecord's
+// storage-decision check can all call it at once), but Monitor.Observe/
+// Current previously mutated current/candidate/streak with no
+// synchronization of their own, relying on nothing - Status() never held
+// any lock across the call. This test drives many goroutines through
+// both methods concurrently; go test -race must report nothing.
+func TestMonitor_ConcurrentObserveAndCurrentAreRaceSafe(t *testing.T) {
+	m := NewMonitor(2)
+	const goroutines = 20
+	const iterations = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if (i+j)%2 == 0 {
+					m.Observe(PressureNormal)
+				} else {
+					m.Observe(PressureHigh)
+				}
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_ = m.Current()
+			}
+		}()
+	}
+	wg.Wait()
+	// Not asserting a specific final state (concurrent, interleaved
+	// samples make that nondeterministic by design) - only that reaching
+	// this line under -race found nothing to report.
 }

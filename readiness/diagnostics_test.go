@@ -71,7 +71,7 @@ func TestBuildDiagnosticBundle_TruncatesLogLines(t *testing.T) {
 	for i := range lines {
 		lines[i] = "log line"
 	}
-	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, lines, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, lines, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if len(b.RecentLogLines) != maxDiagnosticLogLines {
 		t.Errorf("expected log lines truncated to %d, got %d", maxDiagnosticLogLines, len(b.RecentLogLines))
 	}
@@ -79,7 +79,7 @@ func TestBuildDiagnosticBundle_TruncatesLogLines(t *testing.T) {
 
 func TestWriteDiagnosticBundle_WritesReadableJSON(t *testing.T) {
 	dir := t.TempDir()
-	b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC), "2.0-pre5", "abc123", HealthReport{Overall: StateReady}, map[string]interface{}{"DEBUG": false}, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC), "2.0-pre5", "abc123", HealthReport{Overall: StateReady}, map[string]interface{}{"DEBUG": false}, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	path, err := WriteDiagnosticBundle(dir, b, 10)
 	if err != nil {
 		t.Fatalf("WriteDiagnosticBundle error: %v", err)
@@ -103,7 +103,7 @@ func TestWriteDiagnosticBundle_WritesReadableJSON(t *testing.T) {
 func TestWriteDiagnosticBundle_PrunesOldBundles(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 5; i++ {
-		b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, i, 0, 0, time.UTC), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, i, 0, 0, time.UTC), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		if _, err := WriteDiagnosticBundle(dir, b, 3); err != nil {
 			t.Fatalf("write %d failed: %v", i, err)
 		}
@@ -126,7 +126,7 @@ func TestWriteDiagnosticBundle_PrunesOldBundles(t *testing.T) {
 func TestWriteDiagnosticBundle_RetentionZeroMeansNoPruning(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < 5; i++ {
-		b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, i, 0, 0, time.UTC), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		b := BuildDiagnosticBundle(time.Date(2026, 6, 1, 12, i, 0, 0, time.UTC), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		if _, err := WriteDiagnosticBundle(dir, b, 0); err != nil {
 			t.Fatalf("write %d failed: %v", i, err)
 		}
@@ -147,7 +147,7 @@ func TestWriteDiagnosticBundle_FailureDoesNotPanic(t *testing.T) {
 		t.Fatalf("setup failed: %v", err)
 	}
 	badDir := filepath.Join(blocker, "diagnostics")
-	b := BuildDiagnosticBundle(time.Now(), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	b := BuildDiagnosticBundle(time.Now(), "v", "c", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if _, err := WriteDiagnosticBundle(badDir, b, 10); err == nil {
 		t.Error("expected an error writing under a non-directory path, got nil")
 	}
@@ -166,7 +166,7 @@ func TestPersistenceGuard_RefusesWriteWhenNotSafe(t *testing.T) {
 	defer SetDiagnosticsPersistenceGuard(func() error { return nil })
 
 	dir := t.TempDir()
-	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if _, err := WriteDiagnosticBundle(dir, b, 10); err == nil || !errors.Is(err, guardErr) {
 		t.Fatalf("WriteDiagnosticBundle should refuse to persist when the guard reports unsafe, got: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestPersistenceGuard_RefusesWriteWhenNotSafe(t *testing.T) {
 // SetDiagnosticsPersistenceGuard itself.
 func TestPersistenceGuard_DefaultAllowsWrite(t *testing.T) {
 	dir := t.TempDir()
-	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	b := BuildDiagnosticBundle(time.Now(), "2.0-pre5", "abc123", HealthReport{}, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	if _, err := WriteDiagnosticBundle(dir, b, 10); err != nil {
 		t.Fatalf("WriteDiagnosticBundle should succeed under the default no-op guard: %v", err)
 	}

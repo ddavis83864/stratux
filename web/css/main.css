@@ -34,6 +34,38 @@
 
 .weather-page {}
 
+.weather-tabs {
+	margin-top: 10px;
+}
+
+.weather-row {
+	padding-top: 4px;
+	padding-bottom: 4px;
+	word-wrap: break-word; /* a raw METAR/TAF/PIREP report must stay readable without horizontal scrolling */
+}
+
+.filter-row {
+	margin-bottom: 10px;
+}
+
+.filter-row .form-control {
+	margin-bottom: 4px;
+}
+
+.disclaimer {
+	font-size: 0.85em;
+	color: #777777;
+	margin: 8px 0 0 0;
+}
+
+.nexrad-canvas {
+	width: 100%;
+	max-width: 320px;
+	height: auto;
+	image-rendering: pixelated; /* each bin is a real, distinct intensity level - never blur it into false detail */
+	border: 1px solid #cccccc;
+}
+
 .gps_page {}
 
 .map-container {
