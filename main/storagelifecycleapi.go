@@ -78,12 +78,23 @@ func initStorageLifecycle() {
 		ID: "exports", Root: exportsDir,
 		Criticality: storagelifecycle.CriticalityImportant, ItemKind: storagelifecycle.ItemKindFile,
 	})
+	mustRegisterNamespace(registry, fisbCacheNamespace)
 
 	storageManager = storagelifecycle.NewManager(storagelifecycle.ManagerConfig{
 		Registry: registry,
 		Policy: storagelifecycle.Policy{
 			StaleAfterSeconds:                  5 * storageLifecycleScanInterval.Seconds(),
 			RequiredConsecutivePressureSamples: 3,
+			// No Quota entry for fisb-weather-cache: this foundation's own
+			// scan-based Plan()/quota mechanism is not used for this
+			// namespace's retention - fisbcache.PlanEviction (a pure
+			// function over this feature's own in-memory Store, driven by
+			// FISBCacheSettings.MaxCacheBytes/MaxEntries) makes that
+			// decision instead, since the Store already IS the
+			// authoritative index of what is persisted here - see
+			// docs/fisb-weather-cache.md's Storage Lifecycle integration
+			// section for why. This namespace is still registered so it
+			// participates in inventory/pressure reporting like any other.
 		},
 		FS:                   storagelifecycle.NewOSFS(),
 		Clock:                monotonicSeconds,

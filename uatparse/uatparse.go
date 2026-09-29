@@ -416,7 +416,7 @@ func (f *UATFrame) decodeAirmet() {
 			}
 		case 9: // Extended Range 3D Point (AGL). p.47.
 			if len(record_data) < 6 {
-				fmt.Fprintf(ioutil.Discard, "invalid data: Extended Range 3D Point. Should be 6 bytes; % seen.\n", len(record_data))
+				fmt.Fprintf(ioutil.Discard, "invalid data: Extended Range 3D Point. Should be 6 bytes; %d seen.\n", len(record_data))
 			} else {
 				lng_raw := (int32(record_data[0]) << 11) | (int32(record_data[1]) << 3) | (int32(record_data[2]) & 0xE0 >> 5)
 				lat_raw := ((int32(record_data[2]) & 0x1F) << 14) | (int32(record_data[3]) << 6) | ((int32(record_data[4]) & 0xFC) >> 2)
@@ -436,7 +436,7 @@ func (f *UATFrame) decodeAirmet() {
 			}
 		case 7, 8: // Extended Range Circular Prism (7 = MSL, 8 = AGL)
 			if len(record_data) < 14 {
-				fmt.Fprintf(ioutil.Discard, "invalid data: Extended Range Circular Prism. Should be 14 bytes; % seen.\n", len(record_data))
+				fmt.Fprintf(ioutil.Discard, "invalid data: Extended Range Circular Prism. Should be 14 bytes; %d seen.\n", len(record_data))
 			} else {
 
 				lng_bot_raw := (int32(record_data[0]) << 10) | (int32(record_data[1]) << 2) | (int32(record_data[2]) & 0xC0 >> 6)
@@ -556,7 +556,12 @@ func (u *UATMsg) DecodeUplink() error {
 		data := app_data[pos:]
 		frame_length := (uint32(data[0]) << 1) | (uint32(data[1]) >> 7)
 		frame_type := uint32(data[1]) & 0x0f
-		if pos+int(frame_length) > total_len {
+		// The frame occupies its 2-byte header plus frame_length bytes. The
+		// header is not counted in frame_length, so it must be included here:
+		// without it, a length that fits the remaining data by itself but not
+		// with its own header sliced past the buffer and panicked the live
+		// decoder (a crash of the whole daemon from one malformed frame).
+		if pos+2+int(frame_length) > total_len {
 			break // Overrun?
 		}
 

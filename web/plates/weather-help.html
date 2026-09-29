@@ -1,10 +1,21 @@
 <div class="section text-left help-page">
-	<p>The <strong>Weather</strong> page provides a list of recent reports received.</p>
-	<p>There are two lists available for reference:</p>
-	<ul>
-		<li><strong>Watch List</strong> contains all weather received for locations included in your watch list <span class="fa fa-asterisk icon-blue"></span></li>
-		<li><strong>Recent Reports</strong> contains the most recent 10 reports received of any type for any location</li>
-	</ul>
-	<p><span class="fa fa-asterisk icon-blue"></span> The Watch List setting is found on the <strong>Settings</strong> page.</p>
-	<p class="text-warning">NOTE: When this page becomes active (aka it is selected from the menu) it will display only new weather. Older weather and existing weather will not appear until their next report.</p>
+	<p>The <strong>Weather</strong> page shows FIS-B weather and aeronautical products this receiver has actually
+	received over 978 MHz - a local, offline view, not a replacement for ForeFlight or an official weather
+	briefing.</p>
+	<p>The tabs across the top separate products by type: <strong>METAR/SPECI</strong>, <strong>TAF</strong>,
+	<strong>PIREP</strong>, <strong>Winds/Temps Aloft</strong>, <strong>NEXRAD</strong>, and <strong>Other</strong>
+	(any decoded text report whose type isn't one of those). The <strong>NOTAM/SIGMET</strong> tab is a reception
+	counter only - this receiver counts these frames but does not decode or retain their content.</p>
+	<p>Each product shows a freshness badge (fresh/aging/stale/expired) and its age. Age reflects how long ago the
+	product was <em>received or issued</em> - it is not a statement that the weather itself is still valid for that
+	long, and the absence of a product here never means the absence of a hazard.</p>
+	<p>Freshly-arrived reports appear immediately, live. Older cached products (received before this page was open)
+	show their known metadata immediately; their raw text is recovered from disk automatically when the
+	<strong>Weather Cache</strong> page's persistence setting is on, or can be requested with the "try loading from
+	disk" link otherwise.</p>
+	<p>This page works with no Internet connection, over the Stratux Wi-Fi network. It relies on the
+	<strong>Weather Cache</strong> page's own settings for how much history is kept - enable it there for the fullest
+	picture; live reports appear here either way.</p>
+	<p class="text-warning">NOTE: reception depends on being within range of a 978 MHz ground station. On the ground
+	or far from a tower, this page may show little or nothing - that reflects reception, not a receiver fault.</p>
 </div>
