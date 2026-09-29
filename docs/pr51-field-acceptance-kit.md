@@ -108,7 +108,7 @@ below. Either way, confirm every row before proceeding.
 | B9 | FIS-B cache inventory baseline | `getFISBCacheInventory` recorded (or its absence noted, if disabled) | `$EV/pre/getFISBCacheInventory.json` |
 | B10 | Persisted cache file count/integrity | File count under `fisb-weather-cache/` on the device recorded; each filename is content-addressed (matches `fisbcache/schema.go`'s own key derivation) - a changed count after deployment is itself evidence, not assumed corruption | `$EV/pre/fisb-cache-files.txt` (via SSH `find ... | wc -l` and a full listing) |
 | B11 | Free space | `/var/lib/stratux-data`, `/boot/firmware`, `/` all have headroom for the OTA (a bare-ext4 install needs room on the real partition, not just the overlay) | `df -h`, `$EV/pre/df.txt` |
-| B12 | Rollback package ready **on the actual field laptop** | The known-good `.deb` (matching B3's build) is present **on the physical machine that will run this session**, hash re-verified immediately before use there. **Verified on ARS01** (`/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/rollback/stratux-2.0.0~rc2-arm64.deb`, SHA-256 `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce`, embedded build string confirmed `2002ad4e8294e1b475d6ca9ee3f838971f35a119` - matches the device's currently installed build exactly) - **but do not assume ARS01 is the field laptop.** If the field session runs from a different physical machine, copy this exact file there first and re-run `sha256sum` on that machine before relying on it; a package verified only on ARS01 is not evidence it is available in the field. | `sha256sum` **on the field laptop itself**, `$EV/pre/rollback.sha256` |
+| B12 | Rollback package ready **on the actual field laptop** | **BLOCKED as of 2026-09-29 - not yet transferred.** Source verified on ARS01 only: `/home/ddavis/acceptance-evidence/stratux-power-consolidation-pr42-20260928/rollback/stratux-2.0.0~rc2-arm64.deb`, SHA-256 `fe8ddc15e6810b7da93e933c245e8bde0a0f11c78bc43be6d43791b4817e63ce` (confirmed against three independent sources: this kit's own prior record, and the device's own original `/updateUpload` response when this exact package was installed), embedded build `2002ad4e8294e1b475d6ca9ee3f838971f35a119` - matches the device's currently installed build exactly. **The field laptop itself was not reachable from ARS01 this session** (no known hostname/IP, no established SSH path - see `~/acceptance-evidence/stratux-pr51-rollback-transfer-20260929/TRANSFER-STATUS.md` for exactly what was checked and the exact copy/verify commands to run once it is reachable). **Do not treat ARS01-side verification as field readiness.** This is a hard precondition for the session, not a warning: confirm the laptop-side `sha256sum` equals the hash above before proceeding with any deployment step. | `sha256sum` **on the field laptop itself**, `$EV/pre/rollback.sha256`; interim record: `~/acceptance-evidence/stratux-pr51-rollback-transfer-20260929/TRANSFER-STATUS.md` |
 
 ## Deployment and immediate recovery checks
 
@@ -207,10 +207,10 @@ task):
    any other install - see the "Deployment" section above).
 3. Confirm `getStatus.Build` == the rollback build's own embedded string
    exactly (D1's own check, applied to the rollback build instead).
-4. Confirm boot ID changed (D2), 0 failed units / clean audit (D4), FIS-B
-   cache API and file count match the original pre-session baseline
-   (D7/D8, now compared against B8-B10 rather than the candidate's own
-   post-deploy values).
+4. Confirm boot ID changed (D2), web UI reachable and loading (D3), 0
+   failed units / clean audit (D4), FIS-B cache API and file count match
+   the original pre-session baseline (D7/D8, now compared against
+   B8-B10 rather than the candidate's own post-deploy values).
 
 **Required for this to actually work in the field:** connectivity to
 192.168.10.1 (see "Connectivity" above), the device powered and
