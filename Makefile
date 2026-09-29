@@ -85,11 +85,23 @@ test:
 #     #45, which found (and fixed, separately) two golden-image tests
 #     that had been silently failing on `master` since an earlier commit
 #     specifically because nothing here ever ran them.
+#   - main, narrowly: `./main/...` as a whole needs cgo AND, for most of
+#     its own test suite, real /var/lib/stratux-data permissions and
+#     hardware this environment does not always have - not added here
+#     wholesale. TestOverlayCtlMu_SerializesConcurrentCriticalSections
+#     (issue #49, docs/ota-overlayctl-race-investigation.md) is the one
+#     exception: it touches no filesystem, no hardware, and no real
+#     overlayctl - it only proves overlayCtlMu itself serializes
+#     concurrent goroutines - so it alone is run here, filtered by
+#     -run so the rest of ./main/...'s test suite (and its unrelated
+#     failure modes) is not pulled into this target. It still needs
+#     libdump978.so to satisfy the package's own cgo import.
 .PHONY: gotest
-gotest:
+gotest: libdump978.so
 	go vet ./sdrassign/... ./epaper/... ./epaper_main/...
 	go test ./sdrassign/... -v
 	go test ./epaper/... ./epaper_main/... -v
+	LIBRARY_PATH=$(CURDIR) CGO_CFLAGS_ALLOW="-L$(CURDIR)" go test -race -run TestOverlayCtlMu -v ./main/...
 
 www:
 	make -C web

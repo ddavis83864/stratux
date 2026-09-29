@@ -297,6 +297,13 @@ func requestOverlayDisable() error {
 	if err != nil {
 		return fmt.Errorf("could not stat /overlay/robase: %w", err)
 	}
+	// overlayCtlMu (main/gen_gdl90.go): serializes this whole unlock..lock
+	// critical section against every other overlayctl caller in this
+	// process - see issue #49 and that variable's own doc comment. Held
+	// for every exit path below via defer, matching the mutex's own
+	// documented contract.
+	overlayCtlMu.Lock()
+	defer overlayCtlMu.Unlock()
 	if out, err := exec.Command("/sbin/overlayctl", "unlock").CombinedOutput(); err != nil {
 		return fmt.Errorf("overlayctl unlock: %w: %s", err, out)
 	}
