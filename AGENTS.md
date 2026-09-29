@@ -55,10 +55,16 @@ Notes:
   `-replay -uatlog <file>` (replay a UAT log), `-trace <file> -traceSpeed -traceFilter`
   (replay a recorded trace; filter contexts: `ais,nmea,aprs,ogn-rx,dump1090,godump978,lowpower_uat`),
   `-port <n>`, `-cpuprofile <file>`, `-write-network-config`.
-- **There are no Go unit tests** (`*_test.go`). The `test/` directory is a collection of
-  independent `package main` diagnostic tools (e.g. `icao2reg.go`, `uat_read.go`,
-  `nexrad_annunciator.go`); `make -C test` just compiles each one. Sample input lives in
-  `test-data/`.
+- **There are extensive Go unit tests** (`*_test.go`), e.g. `readiness/`, `epaper/`,
+  `epaper_main/`, `alerting/`, `power/`, `recording/`, `preflight/`, `configbackup/`,
+  `calprofile/`, `storagelifecycle/`, `trafficcpa/`, `sdrassign/`, `wifiadmin/`, `autorecord/`,
+  `common/`, `ota/` — run with `go test ./...` (packages requiring the CGO C submodules/hardware
+  headers, e.g. `godump978`, `main`, and `uatparse`, need the Makefile's `LIBRARY_PATH`/
+  `CGO_CFLAGS_ALLOW` env vars and initialized submodules to build; see "Build" above). The
+  separate `test/` directory is a collection of independent `package main` diagnostic tools
+  (e.g. `icao2reg.go`, `uat_read.go`, `nexrad_annunciator.go`) — not Go tests — and is not meant
+  to build as a single package; `make -C test` compiles each one individually. Sample input
+  lives in `test-data/`.
 - **VSCode** has preconfigured Build + debug tasks (`.vscode/tasks.json`, `launch.json`).
   ⚠️ These still reference an older `gen_gdl90` binary/target; the current Makefile produces
   `stratuxrun`. If using them, expect to update the program/target name.
