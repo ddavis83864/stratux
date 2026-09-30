@@ -40,9 +40,17 @@
 > genuine record-accounting race in `Stop()` was found and fixed (see
 > `fisbrecorder/recorder.go`'s own commit history) - this procedure's own
 > exercise of the real workflow is what caught it, not a synthetic test.
-> A second, real rehearsal after the fix confirmed a clean `valid`
-> result. This is still **not** field acceptance: no real 978 MHz tower
-> or FIS-B product was received in this rehearsal, and no ForeFlight
+> A second, real rehearsal after the fix (session `20260930-175710`, 3,476
+> GDL90 records) confirmed the fix directly: `countedGdl90` exactly
+> matched `manifest.gdl90Count` with no accounting-mismatch warning,
+> versus the pre-fix session's own re-validated `manifest claims 82559
+> gdl90 records, file contains 82557`. `validate`'s classification was
+> still `partial` on this second session too - correctly so, for the
+> unrelated, honest "zero frames captured" reason (no 978 MHz reception
+> at home), not the accounting defect. Do not read "partial" here as the
+> fix having failed; read the counted-vs-manifest numbers directly. This
+> is still **not** field acceptance: no real 978 MHz tower or FIS-B
+> product was received in this rehearsal, and no ForeFlight
 > observation was made - see the final report's explicit separation of
 > synthetic bench proof, grounded-device rehearsal, and real field
 > RF/ForeFlight acceptance.
