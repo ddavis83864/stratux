@@ -15,6 +15,17 @@
 > on the grounded device by the owner. This document does not authorize
 > that installation; it is the procedure to run once it has separately
 > been approved and completed.
+>
+> **Rehearsal status (as of this revision):** every command below has
+> been exercised against the real instrumented daemon in an isolated
+> bench environment on ARS01 (not the grounded device, not the MacBook -
+> see the final report's bench-session evidence). The MacBook/device
+> portion specifically (SSH, Wi-Fi routing, physical hardware) has **not**
+> been rehearsed in this pass - ARS01 had no live network path to
+> ARS-Macbook or the grounded device available. `fisb-recording-tool` was
+> cross-compiled for macOS (`GOOS=darwin GOARCH=arm64`) and confirmed to
+> build cleanly, but not run there. That remains an open gate before a
+> field trip - see the final report's ready/not-ready determination.
 
 ## What this adds to the existing kit
 
@@ -170,14 +181,37 @@ fisb-recording-tool replay -speed=-1 ~/stratux-field-acceptance/evidence/fisb-re
 This proves the recorded frames are readable and well-formed (each line
 is one frame's seq/elapsed/length) - it does **not** re-run them through
 the real parser/cache/GDL90 path, since this CLI tool has no cgo
-dependency and cannot call `main`'s own `handleUatMessage`. A true replay-
-through-the-real-pipeline comparison (Phase 3 bench-proof #2/#3/#4) needs
-the actual daemon wired to replay mode against this bundle - see the
-design doc; that wiring is a separate, still-open item (main's own
-`-replay`/`-uatlog` flags read `TraceLog`'s CSV format, not this bundle's
-JSONL format, so a dedicated replay-mode flag reading `frames.jsonl.gz`
-would need to be added before a same-binary live-vs-replay comparison is
-possible end to end - not yet done as of this document).
+dependency and cannot call `main`'s own `handleUatMessage`.
+
+For a true replay-through-the-real-pipeline comparison, run the actual
+instrumented `stratuxrun` binary itself in `-fisbReplay` mode (added
+after this document's first draft - see
+docs/fisb-field-recorder-design.md's Phase 2 notes and the bench session
+evidence in the final report for a worked example):
+```
+stratuxrun -fisbReplay ~/stratux-field-acceptance/evidence/fisb-recorder/$SESSION -fisbReplaySpeed 1.0
+```
+This replays the bundle's `frames.jsonl.gz` through `handleUatMessage` -
+the exact same function live reception calls - reproducing tower
+identity, FIS-B cache admission, and GDL90 relay via the real production
+code. `-fisbReplaySpeed` follows the same convention as the CLI tool's
+`-speed`: `1.0` = original recorded pacing, `>1` = faster, `<=0` = as
+fast as possible. If `FISBRecordingEnabled` is already `true` (in that
+instance's own persisted settings) when the replay finishes, the daemon
+closes and hashes a second, replay-derived bundle automatically - compare
+it against the original with:
+```
+fisb-recording-tool compare <original-session-dir> <replay-derived-session-dir>
+```
+Frame bytes must match exactly, in order - `-fisbReplaySpeed` only
+changes pacing, never content. GDL90/snapshot **counts** will generally
+differ between the two bundles (the daemon keeps sending its own
+periodic heartbeat/traffic/status output for as long as each session
+runs, so a longer-duration live session accumulates more of that
+background traffic than a short replay of the same handful of frames) -
+that is a real, expected, clock-dependent difference, not a defect; it
+does not need to be explained away to accept the bundle, only understood
+when reading the comparison.
 
 ## Field acceptance criteria for this recorder specifically
 
