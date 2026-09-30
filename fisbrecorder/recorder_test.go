@@ -8,6 +8,44 @@ import (
 	"time"
 )
 
+// TestRecorder_SecondSessionStopDoesNotHang locks in a real bug found in
+// a live daemon bench session: stopOnce (a sync.Once) was never reset in
+// Start(), so Stop() on any session after the first silently never sent
+// on that session's own (freshly made) stopCh - sync.Once.Do only ever
+// runs its function once for that Once value's whole lifetime. The
+// writer goroutine never saw a stop signal, and Stop()'s own <-doneCh
+// wait blocked forever. A single Recorder value is reused across many
+// Start/Stop cycles in production (main/fisbrecorderwiring.go's
+// fisbRecorderWatchdog starts and stops the SAME package-level
+// fisbRecorder instance every time the operator toggles the setting),
+// so this is not a one-off - every session after the first would have
+// hung the watchdog goroutine indefinitely.
+func TestRecorder_SecondSessionStopDoesNotHang(t *testing.T) {
+	dir := t.TempDir()
+	r := New(dir, "build", DefaultOptions())
+
+	for i := 0; i < 3; i++ {
+		if _, err := r.Start(); err != nil {
+			t.Fatalf("session %d: Start: %v", i, err)
+		}
+		r.RecordFrame("frame")
+
+		done := make(chan struct{})
+		go func() {
+			r.Stop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("session %d: Stop() did not return within 3s - stopOnce/doneCh regression", i)
+		}
+		if r.IsActive() {
+			t.Fatalf("session %d: IsActive() true after Stop() returned", i)
+		}
+	}
+}
+
 func TestRecorder_StartRecordStop_BasicRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	r := New(dir, "testbuild1234567890123456789012345678901234", DefaultOptions())

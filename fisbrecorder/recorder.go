@@ -169,6 +169,15 @@ func (r *Recorder) Start() (sessionID string, err error) {
 	r.snapshotCh = make(chan Snapshot, r.opts.QueueSize)
 	r.stopCh = make(chan string, 1)
 	r.doneCh = make(chan struct{})
+	// stopOnce must be a FRESH sync.Once every session: sync.Once.Do only
+	// ever runs its function once for that Once value's whole lifetime,
+	// so without this reset, Stop() on any session after the first would
+	// silently never send on the (also freshly made, per-session) stopCh
+	// above - the writer goroutine would never see a stop signal, and
+	// Stop()'s own <-r.doneCh wait would block forever. Found live: a
+	// second Start()/Stop() cycle on one Recorder hung indefinitely in a
+	// bench session before this fix.
+	r.stopOnce = sync.Once{}
 	r.stopReason = ""
 
 	r.active = true
