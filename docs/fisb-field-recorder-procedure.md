@@ -8,13 +8,13 @@
 > route, and evidence-handling conventions PR #51's kit already
 > established and rehearsed - not re-derived here.
 >
-> **Before this procedure is run in the field, the instrumented build it
-> depends on must first go through the deployment/scope-gate owner review**
-> (exact artifact + SHA-256 + source revision + expected device changes +
-> rollback package + capture resource bounds) and be explicitly installed
-> on the grounded device by the owner. This document does not authorize
-> that installation; it is the procedure to run once it has separately
-> been approved and completed.
+> **Any future re-install of an updated candidate (a new fix, a new
+> commit) still needs its own owner review before installation** - exact
+> artifact + SHA-256 + source revision + expected device changes +
+> rollback package + capture resource bounds - even though the specific
+> candidate this revision documents has already gone through that and
+> been installed; this document itself does not re-authorize a
+> *different* build.
 >
 > **ARS-Macbook is an Intel MacBookPro8,2 running Ubuntu 24.04 - `linux/amd64`,
 > NOT macOS.** Despite its name, it never runs a `darwin` binary. Build
@@ -24,21 +24,28 @@
 > this document incorrectly suggested and which would simply fail to
 > execute there).
 >
-> **Rehearsal status (as of this revision):** every command below has
-> been exercised against the real instrumented daemon in an isolated
-> bench environment on ARS01 (not the grounded device, not the MacBook -
-> see the final report's bench-session evidence). The `linux/amd64`
-> `fisb-recording-tool` binary itself has been built and smoke-tested
-> (usage output, a `validate`/`replay` round trip against a real
-> daemon-produced bundle) on ARS01, which is also `linux/amd64` - that
-> confirms the binary itself works correctly for its target platform, but
-> **not** that it has been transferred to or executed on the actual
-> MacBook hardware. The MacBook/device portion specifically (SSH, Wi-Fi
-> routing, physical hardware) has **not** been rehearsed in this pass -
-> ARS01 had no live network path to ARS-Macbook or the grounded device
-> (confirmed by a direct SSH/ping attempt, not just an idle status flag).
-> That remains an open gate before a field trip - see the final report's
-> ready/not-ready determination.
+> **Rehearsal status (as of this revision): full rehearsal completed on
+> the actual ARS-Macbook and the actual grounded test device**, not just
+> on ARS01 - see the final report for the complete evidence trail. This
+> included: `fisb-recording-tool` (`validate`/`replay`/`compare`/
+> `compare-weather`) run for real on the MacBook against a real
+> daemon-produced bundle; an owner-authorized OTA install of the PR #54
+> candidate onto the grounded device (build confirmed matching, cache
+> recovery proven across the reboot with real, trusted-GNSS-time
+> persisted products); a real, bounded, at-home start->monitor->stop
+> sequence (frame count honestly zero - no 978 MHz reception at that
+> location/time, GDL90/snapshot traffic captured normally); the bundle
+> copied off the device, hash-verified on both the MacBook and the
+> device; and `validate` run on the copy. That real session is *how* a
+> genuine record-accounting race in `Stop()` was found and fixed (see
+> `fisbrecorder/recorder.go`'s own commit history) - this procedure's own
+> exercise of the real workflow is what caught it, not a synthetic test.
+> A second, real rehearsal after the fix confirmed a clean `valid`
+> result. This is still **not** field acceptance: no real 978 MHz tower
+> or FIS-B product was received in this rehearsal, and no ForeFlight
+> observation was made - see the final report's explicit separation of
+> synthetic bench proof, grounded-device rehearsal, and real field
+> RF/ForeFlight acceptance.
 
 ## What this adds to the existing kit
 
@@ -109,13 +116,22 @@ instrumented build per Prerequisite 1).
 ## Monitor (periodically during the field window)
 
 ```
-ssh pi@192.168.10.1 'ls -la /var/lib/stratux-data/fisb-recordings/<session-id>/'
+ssh pi@192.168.10.1 'sudo -n ls -la /var/lib/stratux-data/fisb-recordings/<session-id>/'
 ```
-Growing `frames.jsonl.gz`/`gdl90.jsonl.gz`/`snapshots.jsonl.gz` file sizes
-across successive checks is the simplest live evidence that capture is
-progressing. There is no separate live counter API yet - this direct
-file-size check is deliberately the same low-tech method the design
-favors over adding a new HTTP endpoint mid-trip.
+The session directory is `root:root 0750` (the recorder runs as root) -
+`sudo` is required; a plain `ls` as `pi` fails with "Permission denied"
+(confirmed live, not assumed). Growing `frames.jsonl.gz`/`gdl90.jsonl.gz`/
+`snapshots.jsonl.gz` file sizes across successive checks is the simplest
+live evidence that capture is progressing - a real session showed
+`gdl90.jsonl.gz` growing steadily (real heartbeat/traffic output) even
+with `frames.jsonl.gz` staying at 0 bytes the whole time (no 978 MHz
+reception that session - an honest, valid outcome, not a fault). There is
+no separate live counter API yet - this direct file-size check is
+deliberately the same low-tech method the design favors over adding a new
+HTTP endpoint mid-trip. For free space and settings state, no `sudo`/SSH
+is needed at all - `curl http://192.168.10.1/getStatus` (watch
+`DiskBytesFree`) and `curl http://192.168.10.1/getSettings` (confirm
+`FISBRecordingEnabled`) work directly from the MacBook's own shell.
 
 ## Stop (at the end of the field window, or at the first bounded-stop
 condition)
@@ -142,13 +158,19 @@ report the missing gates honestly in the results template.
 
 ## Verify and preserve (before leaving the site, or immediately on return)
 
+The session directory is `root:root 0750` on the device (the recorder
+runs as root) - a plain `scp -r` as `pi` fails with "Permission denied"
+before it ever sees the files. Stream it through `sudo tar` instead,
+over the same already-open SSH connection:
+
 ```
 SESSION=<session-id-from-the-start-step>
 mkdir -p ~/stratux-field-acceptance/evidence/fisb-recorder/$SESSION
-scp -r pi@192.168.10.1:/var/lib/stratux-data/fisb-recordings/$SESSION \
-  ~/stratux-field-acceptance/evidence/fisb-recorder/
-
+ssh pi@192.168.10.1 'sudo -n tar -czf - -C /var/lib/stratux-data/fisb-recordings '"$SESSION" \
+  > ~/stratux-field-acceptance/evidence/fisb-recorder/$SESSION/session.tar.gz
 cd ~/stratux-field-acceptance/evidence/fisb-recorder/$SESSION
+tar -xzf session.tar.gz && mv "$SESSION"/* . && rmdir "$SESSION" session.tar.gz.d 2>/dev/null
+
 sha256sum -c <(python3 -c "
 import json
 m = json.load(open('manifest.json'))
@@ -159,6 +181,9 @@ for f in m['files']:
 Every file must report `OK`. A `FAILED` here means the copy itself was
 corrupted in transit - re-copy before doing anything else; do not attempt
 to validate or replay a bundle that failed its own hash check on arrival.
+(Requires passwordless `sudo` for `pi` on the device, already the case
+per PR #51's own kit rehearsal - if that ever changes, `sudo -n` fails
+fast with a clear error instead of hanging on a password prompt.)
 
 Then, on the MacBook (or ARS01 once copied further):
 ```
@@ -169,6 +194,21 @@ still exit-codes non-zero but is a usable bundle with caveats printed in
 `warnings` - read them, note them in the results template, do not discard
 the bundle. `"unusable"` means stop: do not claim this session as field
 evidence; report exactly what `errors` says failed.
+
+Finally, transfer the bundle from the MacBook to ARS01 and verify the
+SHA-256 a **third** time there (device manifest -> MacBook -> ARS01, all
+three matching is the actual acceptance bar, not just two):
+```
+# from ARS01:
+scp -r ddavis@192.168.0.101:~/stratux-field-acceptance/evidence/fisb-recorder/$SESSION /path/on/ars01/
+sha256sum -c <(python3 -c "
+import json
+m = json.load(open('/path/on/ars01/$SESSION/manifest.json'))
+for f in m['files']:
+    print(f['sha256'] + '  ' + f['name'])
+")
+fisb-recording-tool validate /path/on/ars01/$SESSION
+```
 
 ## Recovery from an interrupted capture (rehearse this on the bench before
 travel)
@@ -241,24 +281,45 @@ when reading the comparison.
 
 ## Field acceptance criteria for this recorder specifically
 
-In addition to PR #51's own L1-L7/F1-F3/B-series gates, a field trip's
-recording is acceptance-worthy only if **all** of the following hold -
-missing any one means reporting exactly which gate is missing, not
-calling the dataset complete:
+This is the exact, tested acceptance checklist for the **next field
+visit** - not the at-home rehearsal already completed (see the banner
+above), which deliberately did not require any of the reception-specific
+rows below. In addition to PR #51's own L1-L7/F1-F3/B-series gates, a
+field trip's recording is acceptance-worthy only if **all** of the
+following hold - missing any one means reporting exactly which gate is
+missing, not calling the dataset complete:
 
-- [ ] Build verified (Prerequisite 1) and recording confirmed started
-      (the `started` log line) before entering reception range.
-- [ ] At least one real decoded UAT frame captured, and at least one real
-      tower-identification event derivable from it (a non-empty
-      `frames.jsonl.gz`, confirmed via `validate`'s `countedFrames`).
-- [ ] No unexplained capture drops (`manifest.droppedFrames`/
-      `droppedGdl90`/`droppedSnapshots` are all 0, or any non-zero value
-      is explained by an identified bound, e.g. a brief queue-depth spike
-      during a burst - not silently accepted).
-- [ ] At least one text weather product actually received; NEXRAD only if
-      actually received (never claimed if the session captured none -
-      report its absence as a gate not met, not worked around).
-- [ ] A closed, hashed bundle, copied to the MacBook, independently
-      re-validated there (the `sha256sum -c` step above, then `validate`).
-- [ ] A successful offline replay of the bundle's frames (the `replay`
-      step above completing without error).
+- [ ] Recorder confirmed active (the `started` log line, or
+      `/getSettings`'s `FISBRecordingEnabled:true`) **before** entering
+      the reception area - not started after arriving.
+- [ ] At least one real tower derived from actually-captured uplink
+      frames (a non-empty `frames.jsonl.gz`, confirmed via `validate`'s
+      `countedFrames`, and a real `/getTowers` entry while recording).
+- [ ] Sustained decoded 978 MHz input for the duration of the window -
+      not just one frame at the start - with no unexplained recorder
+      drops (`manifest.droppedFrames`/`droppedGdl90`/`droppedSnapshots`
+      all 0, or any non-zero value explained by an identified bound, e.g.
+      a brief queue-depth spike during a burst - never silently
+      accepted).
+- [ ] Useful FIS-B products actually received - text and, if actually
+      received, NEXRAD - with any missing category reported honestly as
+      a gate not met, never manufactured or worked around.
+- [ ] Synchronized time-window snapshots: the Stratux weather/cache/tower
+      state (from this session's own `snapshots.jsonl.gz`, or a live
+      `/getFISBCacheInventory` + `/getTowers` query during the window)
+      **and** the ForeFlight device/weather views (photographed, iPad
+      clock visible) from roughly the same window - see PR #51's own
+      F1-F3 kit for exactly what a ForeFlight observation must show.
+- [ ] A clean stop (`stopReason: requested`), a valid manifest
+      (`fisb-recording-tool validate` classification `valid`), and
+      matching SHA-256 on **all three** machines: the device (via the
+      manifest's own recorded hash), the MacBook (after copying), and
+      ARS01 (after the MacBook-to-ARS01 transfer).
+- [ ] A successful offline replay of the bundle's frames on ARS01 (the
+      `replay` step completing without error, frame count matching the
+      manifest).
+- [ ] If reception was insufficient for the rows above, the **partial**
+      bundle is preserved anyway (see "Recovery from an interrupted
+      capture" above) and reported with its real `validate` classification
+      and exactly which gates were not met - never silently extended or
+      called complete instead.
