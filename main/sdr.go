@@ -617,7 +617,21 @@ func uatReader() {
 	}
 }
 
+// handleUatMessage is the single chokepoint for every decoded UAT uplink
+// string, regardless of origin: live reception (uatReader above),
+// TraceLog.Replay's own CONTEXT_GODUMP978 injection (main/trace.go's
+// injectTraceMessage), the -uatin stdin path, and the -replay/-fisbReplay
+// file-replay paths (all in main/gen_gdl90.go) now call this function
+// directly instead of duplicating parseInput/relayMessage themselves - see
+// the design doc's "precisely where standalone package tests differ from
+// running the instrumented daemon" note. fisbRecorder.RecordFrame is
+// called here, not in uatReader alone, specifically so every one of those
+// paths is captured consistently: a bench replay of a closed bundle
+// (via -fisbReplay) legitimately produces its own new recording too, if
+// FISBRecordingEnabled happens to be on, which is exactly what
+// fisbrecorder.Compare expects to diff against the original session.
 func handleUatMessage(uat string) {
+	fisbRecorder.RecordFrame(uat)
 	o, msgtype := parseInput(uat)
 	if o != nil && msgtype != 0 {
 		relayMessage(msgtype, o)

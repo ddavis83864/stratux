@@ -236,9 +236,17 @@ func handleGetFISBCacheInventoryRequest(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
+	json.NewEncoder(w).Encode(fisbCacheInventorySnapshot())
+}
+
+// fisbCacheInventorySnapshot is the same inventory
+// handleGetFISBCacheInventoryRequest serves, factored out so
+// fisbRecorderSnapshotLoop (main/fisbrecorderwiring.go) can capture it
+// too without an HTTP round trip - the same relationship
+// fisbCacheStatusSnapshot already has with its own handler above.
+func fisbCacheInventorySnapshot() []fisbCacheInventoryItem {
 	if fisbCacheStore == nil {
-		json.NewEncoder(w).Encode([]fisbCacheInventoryItem{})
-		return
+		return []fisbCacheInventoryItem{}
 	}
 	now := monotonicSeconds()
 	snap := fisbCacheStore.Snapshot()
@@ -270,7 +278,7 @@ func handleGetFISBCacheInventoryRequest(w http.ResponseWriter, r *http.Request) 
 		}
 		out = append(out, item)
 	}
-	json.NewEncoder(w).Encode(out)
+	return out
 }
 
 // --- settings --------------------------------------------------------

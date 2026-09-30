@@ -543,6 +543,19 @@ func connectionWriter(connection connection) {
 			totalNetworkMessagesSent++
 			globalStatus.NetworkDataMessagesSent++
 			globalStatus.NetworkDataBytesSent += uint64(written)
+			// The exact bytes actually sent (msg[:written], never the
+			// full buffer on a partial write followed by an error) and
+			// destination, for every real send, regardless of connection
+			// type (UDP/TCP/serial/BLE) - see
+			// docs/fisb-field-recorder-design.md's discussion of why
+			// this is the one place that sees both, correctly, for
+			// any network topology (a capture laptop sniffing UDP
+			// cannot see traffic unicast to a different client).
+			if written >= len(msg) {
+				fisbRecorder.RecordGDL90(connection.GetConnectionKey(), msg)
+			} else if written > 0 {
+				fisbRecorder.RecordGDL90(connection.GetConnectionKey(), msg[:written])
+			}
 			//time.Sleep(532 * time.Millisecond)
 		}
 	}

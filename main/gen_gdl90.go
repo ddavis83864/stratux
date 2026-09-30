@@ -36,6 +36,7 @@ import (
 	humanize "github.com/dustin/go-humanize"
 	"github.com/ricochet2200/go-disk-usage/du"
 	"github.com/stratux/stratux/common"
+	"github.com/stratux/stratux/fisbrecorder"
 	"github.com/stratux/stratux/uatparse"
 )
 
@@ -1315,6 +1316,15 @@ type settings struct {
 	EpaperRefreshIntervalSeconds int
 	EpaperFullRefreshEvery       int
 	EpaperPage                   string
+
+	// FISBRecordingEnabled turns the bounded, opt-in field-recording
+	// session (package fisbrecorder; see
+	// docs/fisb-field-recorder-design.md) on or off. Defaults to false,
+	// same disabled-by-default convention as every other optional
+	// subsystem here. fisbRecorderWatchdog (main/fisbrecorderwiring.go)
+	// polls this and starts/stops the actual session to match, the same
+	// pattern traceLoggerWatchdog already uses for TraceLog.
+	FISBRecordingEnabled bool
 }
 
 type status struct {
@@ -1521,6 +1531,10 @@ func defaultSettings() {
 	// safe, panel-appropriate defaults whenever the display is enabled, so
 	// this daemon never needs to know or duplicate those defaults itself.
 	globalSettings.EpaperEnabled = false
+
+	// Field recording: opt-in, off by default - see FISBRecordingEnabled's
+	// own doc comment.
+	globalSettings.FISBRecordingEnabled = false
 }
 
 func readSettings() {
@@ -1725,10 +1739,7 @@ func uatReplay(f ReadCloser, replaySpeed uint64) {
 
 			p := strings.Trim(linesplit[1], " ;\r\n")
 			buf := fmt.Sprintf("%s;\n", p)
-			o, msgtype := parseInput(buf)
-			if o != nil && msgtype != 0 {
-				relayMessage(msgtype, o)
-			}
+			handleUatMessage(buf)
 			curTick = i
 		}
 	}
@@ -1891,12 +1902,20 @@ func main() {
 	traceSkip := flag.Int64("traceSkip", 0, "Minutes to skip forward in recorded trace")
 	ManagementAddrTmp := flag.Int("port", defaultManagementAddr, "Specify the port to use")
 
+	fisbReplayFlag := flag.String("fisbReplay", "", "Replay a fisbrecorder bundle directory (see the fisbrecorder package) through the normal UAT parsing/cache/GDL90 path and exit")
+	fisbReplaySpeed := flag.Float64("fisbReplaySpeed", 1.0, "fisbReplay pacing multiplier: 1.0=original recorded pacing, >1=faster, <=0=as fast as possible")
+
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 
 	flag.Parse()
 
 	ManagementAddr = *ManagementAddrTmp
 	isTraceReplayMode := *traceReplay != ""
+	// isReplayOnlyMode additionally covers -fisbReplay: same reasoning as
+	// -trace (no real hardware present, no SDR/GPS/I2C init wanted) but a
+	// different dispatch branch further down (fisbReplayFlag's own replay
+	// loop, not TraceLog.Replay).
+	isReplayOnlyMode := isTraceReplayMode || *fisbReplayFlag != ""
 
 	timeStarted = time.Now()
 	runtime.GOMAXPROCS(runtime.NumCPU()) // redundant with Go v1.5+ compiler
@@ -2001,15 +2020,18 @@ func main() {
 	go healthUpdateLoop()
 	go traceLoggerWatchdog()
 	go storageLifecycleUpdateLoop()
+	initFISBRecorder()
+	go fisbRecorderWatchdog()
+	go fisbRecorderSnapshotLoop()
 
 	crcInit() // Initialize CRC16 table.
 
-	if !isTraceReplayMode {
+	if !isReplayOnlyMode {
 		sdrInit()
 		pingInit()
 		pongInit()
 	}
-	initTraffic(isTraceReplayMode)
+	initTraffic(isReplayOnlyMode)
 
 
 	// Disable replay logs when replaying - so that messages replay data isn't copied into the logs.
@@ -2023,7 +2045,7 @@ func main() {
 		log.Printf("Developer mode set\n")
 	}
 
-	if !isTraceReplayMode {
+	if !isReplayOnlyMode {
 		//FIXME: Only do this if data logging is enabled.
 		initDataLog()
 
@@ -2032,7 +2054,7 @@ func main() {
 	}
 
 	// Start the GPS external sensor monitoring.
-	initGPS(isTraceReplayMode)
+	initGPS(isReplayOnlyMode)
 
 	// Start the heartbeat message loop in the background, once per second.
 	go heartBeatSender()
@@ -2064,7 +2086,7 @@ func main() {
 	})
 
 	// Start reading from serial UAT radio.
-	initUATRadioSerial(isTraceReplayMode)
+	initUATRadioSerial(isReplayOnlyMode)
 
 	if isTraceReplayMode {
 		msgTypes := []string{}
@@ -2099,9 +2121,39 @@ func main() {
 				log.Printf("lost stdin.\n")
 				break
 			}
-			o, msgtype := parseInput(buf)
-			if o != nil && msgtype != 0 {
-				relayMessage(msgtype, o)
+			handleUatMessage(buf)
+		}
+	} else if *fisbReplayFlag != "" {
+		// Replays a closed fisbrecorder bundle's frames.jsonl.gz through
+		// this same handleUatMessage chokepoint - the real parser/cache/
+		// GDL90 path, unmodified - so tower identity, cache admission,
+		// and GDL90 relay are reproduced by the actual production code,
+		// not a reimplementation. See fisbrecorder/replay.go's own
+		// FrameHandler doc comment and docs/fisb-field-recorder-design.md.
+		log.Printf("fisbReplay: replaying bundle %s at %gx\n", *fisbReplayFlag, *fisbReplaySpeed)
+		stats, err := fisbrecorder.ReplayFrames(*fisbReplayFlag, func(rec fisbrecorder.FrameRecord) {
+			handleUatMessage(rec.Frame)
+		}, fisbrecorder.ReplayOptions{SpeedMultiplier: *fisbReplaySpeed})
+		if err != nil {
+			log.Printf("fisbReplay: %v\n", err)
+			os.Exit(1)
+		}
+		log.Printf("fisbReplay: done - %d frames replayed (seq %d-%d), %d sequence gap(s)\n",
+			stats.FramesReplayed, stats.FirstSeq, stats.LastSeq, len(stats.SeqGaps))
+		// If FISBRecordingEnabled was already true (persisted setting, or
+		// initFISBRecorder's own boot-time autostart), a recording session
+		// has been running throughout this replay and would otherwise be
+		// abandoned mid-stream when this process exits - no manifest, no
+		// flushed/closed data files, an unusable bundle. Stop it explicitly
+		// so a -fisbReplay run always leaves behind either no bundle at all
+		// (recording was off) or one complete, valid, closed bundle -
+		// exactly the replay-derived bundle fisbrecorder.Compare expects
+		// to diff against the original session.
+		if fisbRecorder.IsActive() {
+			if m, err := fisbRecorder.Stop(); err != nil {
+				log.Printf("fisbReplay: could not cleanly stop the replay-derived recording session: %v\n", err)
+			} else {
+				log.Printf("fisbReplay: replay-derived recording session %s closed (frames=%d, gdl90=%d, snapshots=%d)\n", m.SessionID, m.FrameCount, m.GDL90Count, m.SnapshotCount)
 			}
 		}
 	} else {
