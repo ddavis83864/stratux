@@ -1315,6 +1315,15 @@ type settings struct {
 	EpaperRefreshIntervalSeconds int
 	EpaperFullRefreshEvery       int
 	EpaperPage                   string
+
+	// FISBRecordingEnabled turns the bounded, opt-in field-recording
+	// session (package fisbrecorder; see
+	// docs/fisb-field-recorder-design.md) on or off. Defaults to false,
+	// same disabled-by-default convention as every other optional
+	// subsystem here. fisbRecorderWatchdog (main/fisbrecorderwiring.go)
+	// polls this and starts/stops the actual session to match, the same
+	// pattern traceLoggerWatchdog already uses for TraceLog.
+	FISBRecordingEnabled bool
 }
 
 type status struct {
@@ -1521,6 +1530,10 @@ func defaultSettings() {
 	// safe, panel-appropriate defaults whenever the display is enabled, so
 	// this daemon never needs to know or duplicate those defaults itself.
 	globalSettings.EpaperEnabled = false
+
+	// Field recording: opt-in, off by default - see FISBRecordingEnabled's
+	// own doc comment.
+	globalSettings.FISBRecordingEnabled = false
 }
 
 func readSettings() {
@@ -2001,6 +2014,9 @@ func main() {
 	go healthUpdateLoop()
 	go traceLoggerWatchdog()
 	go storageLifecycleUpdateLoop()
+	initFISBRecorder()
+	go fisbRecorderWatchdog()
+	go fisbRecorderSnapshotLoop()
 
 	crcInit() // Initialize CRC16 table.
 

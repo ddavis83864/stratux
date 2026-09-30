@@ -85,11 +85,20 @@ test:
 #     #45, which found (and fixed, separately) two golden-image tests
 #     that had been silently failing on `master` since an earlier commit
 #     specifically because nothing here ever ran them.
+#
+#   - fisbrecorder: the field-recording/replay/validate facility (see
+#     docs/fisb-field-recorder-design.md). No cgo, no dependency on
+#     package main (main imports this, never the reverse) - every hook
+#     point main wires in (main/sdr.go, main/network.go,
+#     main/fisbrecorderwiring.go) is exercised there, not here, since
+#     that wiring itself needs cgo/libdump978.so. What's tested here is
+#     the package CI can actually reach without a hardware build.
 .PHONY: gotest
 gotest:
-	go vet ./sdrassign/... ./epaper/... ./epaper_main/...
+	go vet ./sdrassign/... ./epaper/... ./epaper_main/... ./fisbrecorder/...
 	go test ./sdrassign/... -v
 	go test ./epaper/... ./epaper_main/... -v
+	go test ./fisbrecorder/... -v
 
 www:
 	make -C web

@@ -661,6 +661,13 @@ func handleSettingsSetRequest(w http.ResponseWriter, r *http.Request) {
 		case "EpaperPage":
 			globalSettings.EpaperPage = val.(string)
 
+		case "FISBRecordingEnabled":
+			// Just sets the field: fisbRecorderWatchdog
+			// (main/fisbrecorderwiring.go) polls this and starts/stops
+			// the actual session to match, the same pattern "TraceLog"
+			// above already uses.
+			globalSettings.FISBRecordingEnabled = val.(bool)
+
 		default:
 			// Unreachable: validateSettingsMessage above already
 			// rejected any key not in settingsFieldTypes.

@@ -99,6 +99,7 @@ var settingsFieldTypes = map[string]settingsFieldKind{
 	"EpaperRefreshIntervalSeconds":   settingsFieldNumber,
 	"EpaperFullRefreshEvery":         settingsFieldNumber,
 	"EpaperPage":                     settingsFieldString,
+	"FISBRecordingEnabled":           settingsFieldBool,
 }
 
 // validateSettingsKeyCount rejects a request carrying more top-level keys

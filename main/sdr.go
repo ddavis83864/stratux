@@ -613,6 +613,7 @@ func uatReader() {
 	for {
 		uat := <-godump978.OutChan
 		TraceLog.Record(CONTEXT_GODUMP978, []byte(uat))
+		fisbRecorder.RecordFrame(uat)
 		handleUatMessage(uat)
 	}
 }
