@@ -8,6 +8,106 @@ import (
 	"time"
 )
 
+// TestRecorder_StopNeverOrphansAnAcceptedRecord locks in a real accounting
+// bug found in a live ~25-minute device session under sustained real
+// GDL90 traffic: the manifest claimed 82559 GDL90 records accepted, but
+// the actual file held only 82557 - a 2-record gap, neither written nor
+// counted dropped. Root cause: RecordGDL90 read active/ch under the
+// lock, then unlocked before its own channel send; a call already past
+// that unlock when Stop() began could still be counted *Accepted and
+// still reach the channel *after* the writer's own final drain had
+// already found it empty and moved on to closing files - orphaned
+// forever. Fixed with an inflight WaitGroup Stop()/run() both wait on
+// before ever doing the final drain.
+//
+// Reproduced here with many goroutines hammering RecordGDL90 as fast as
+// possible while Stop() is called concurrently from another goroutine -
+// accepted (from the manifest) must always exactly equal the number of
+// lines actually in the written file, every single run, not just on
+// average.
+func TestRecorder_StopNeverOrphansAnAcceptedRecord(t *testing.T) {
+	for iter := 0; iter < 20; iter++ {
+		dir := t.TempDir()
+		r := New(dir, "build", DefaultOptions())
+		sid, err := r.Start()
+		if err != nil {
+			t.Fatalf("iter %d: Start: %v", iter, err)
+		}
+
+		const writers = 8
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+		for i := 0; i < writers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						r.RecordGDL90("1.2.3.4:4000", []byte("payload"))
+					}
+				}
+			}()
+		}
+
+		// Let the writers run for a moment so Stop() lands in the middle
+		// of real concurrent traffic, not before it even starts.
+		time.Sleep(2 * time.Millisecond)
+		m, err := r.Stop()
+		close(stop)
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("iter %d: Stop: %v", iter, err)
+		}
+
+		frames := readGDL90(t, filepath.Join(dir, sid))
+		if uint64(len(frames)) != m.GDL90Count {
+			t.Fatalf("iter %d: manifest claims GDL90Count=%d accepted, but the file contains %d records (an orphaned-record accounting gap)", iter, m.GDL90Count, len(frames))
+		}
+	}
+}
+
+// TestRecorder_SelfTriggeredStopReconcilesActive locks in a second bug
+// found alongside the one above: a self-triggered stop (MaxDuration/
+// MaxBytes/MinFreeBytes via checkBounds) never flipped active to false -
+// only an external Stop() call did, and only after waiting for doneCh.
+// IsActive() would keep reporting true forever after a self-triggered
+// stop until something happened to call Stop() - but main's own
+// fisbRecorderWatchdog only calls Stop() when it sees
+// !globalSettings.FISBRecordingEnabled && IsActive(); if the operator's
+// setting was still on, it would never call Stop(), and the daemon would
+// believe recording was still active while the writer goroutine had
+// already exited and abandoned its channels.
+func TestRecorder_SelfTriggeredStopReconcilesActive(t *testing.T) {
+	dir := t.TempDir()
+	opts := DefaultOptions()
+	opts.MaxDuration = 30 * time.Millisecond
+	r := New(dir, "build", opts)
+	if _, err := r.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// checkBounds only runs on run()'s own 2s ticker (see recorder.go),
+	// so this needs real room past that first tick - not a race against
+	// it, matching TestRecorder_MaxDurationStopsSession's own note on
+	// why the OTHER checkBounds tests call it directly instead.
+	deadline := time.Now().Add(4 * time.Second)
+	for r.IsActive() {
+		if time.Now().After(deadline) {
+			t.Fatal("IsActive() still true 4s after MaxDuration should have self-triggered a stop - active was never reconciled")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// A subsequent explicit Stop() call must report "no active session",
+	// not hang or double-finalize.
+	if _, err := r.Stop(); err == nil {
+		t.Error("Stop() after a self-triggered stop returned no error, want \"no active session\"")
+	}
+}
+
 // TestRecorder_SecondSessionStopDoesNotHang locks in a real bug found in
 // a live daemon bench session: stopOnce (a sync.Once) was never reset in
 // Start(), so Stop() on any session after the first silently never sent

@@ -114,6 +114,18 @@ type Recorder struct {
 	doneCh     chan struct{}
 	stopOnce   sync.Once
 	stopReason string
+
+	// inflight counts RecordFrame/RecordGDL90/RecordSnapshot calls that
+	// have observed active==true (under mu, in the same critical section
+	// that increments this) and have not yet finished their own channel
+	// send/drop decision. Stop() waits for this to reach zero - after
+	// flipping active to false, but before telling the writer goroutine
+	// to stop - so no call can ever be counted in *Accepted and then
+	// silently lose its race to actually reach the channel before the
+	// writer's final drain has already moved on and closed the files.
+	// See Stop's own doc comment for the exact real-session evidence
+	// (a 2-record accounting gap) that found this race.
+	inflight sync.WaitGroup
 }
 
 // New creates a Recorder that will write under baseDir (the caller is
@@ -195,10 +207,14 @@ func (r *Recorder) RecordFrame(frame string) {
 	active := r.active
 	ch := r.frameCh
 	start := r.start
+	if active {
+		r.inflight.Add(1)
+	}
 	r.mu.Unlock()
 	if !active {
 		return
 	}
+	defer r.inflight.Done()
 	rec := FrameRecord{
 		Seq:          r.frameSeq.Add(1) - 1,
 		ElapsedNanos: time.Since(start).Nanoseconds(),
@@ -222,10 +238,14 @@ func (r *Recorder) RecordGDL90(connectionKey string, msg []byte) {
 	active := r.active
 	ch := r.gdl90Ch
 	start := r.start
+	if active {
+		r.inflight.Add(1)
+	}
 	r.mu.Unlock()
 	if !active {
 		return
 	}
+	defer r.inflight.Done()
 	cp := make([]byte, len(msg))
 	copy(cp, msg)
 	rec := GDL90Record{
@@ -251,10 +271,14 @@ func (r *Recorder) RecordSnapshot(label string, data interface{}) {
 	active := r.active
 	ch := r.snapshotCh
 	start := r.start
+	if active {
+		r.inflight.Add(1)
+	}
 	r.mu.Unlock()
 	if !active {
 		return
 	}
+	defer r.inflight.Done()
 	rec := Snapshot{
 		Seq:          r.snapshotSeq.Add(1) - 1,
 		ElapsedNanos: time.Since(start).Nanoseconds(),
@@ -273,8 +297,13 @@ func (r *Recorder) RecordSnapshot(label string, data interface{}) {
 // Stop ends the session: signals the writer goroutine to flush and close
 // every file, computes SHA-256 for each, and writes manifest.json. Safe
 // to call once; a second call returns the same result without error. If
-// the session already stopped itself (disk full, max duration/bytes),
-// Stop still returns the completed manifest with that StopReason.
+// the session already stopped itself (disk full, max duration/bytes) -
+// IsActive() already reflects that (see run's own doc comment) - Stop
+// returns the same "no active session" error a second explicit call
+// would; the manifest from a self-triggered stop is available via
+// readManifest's own path (main's fisbRecorderWatchdog never needs to
+// call Stop() after a self-triggered stop it already observed via
+// IsActive()==false).
 func (r *Recorder) Stop() (*Manifest, error) {
 	r.mu.Lock()
 	if !r.active {
@@ -290,10 +319,6 @@ func (r *Recorder) Stop() (*Manifest, error) {
 		}
 	})
 	<-r.doneCh
-
-	r.mu.Lock()
-	r.active = false
-	r.mu.Unlock()
 
 	return r.readManifest()
 }
@@ -364,6 +389,31 @@ drainLoop:
 		}
 	}
 
+	// Close the accounting race uniformly for BOTH ways drainLoop can
+	// exit (an external Stop() call via stopCh, or a self-triggered
+	// bound via checkBounds): flip active false, then wait for every
+	// RecordFrame/RecordGDL90/RecordSnapshot call that already observed
+	// active==true (incremented inflight under the same lock that read
+	// it) to finish its own send/drop decision, before the final drain
+	// below. Without this, a call already past its own unlock when
+	// drainLoop exits could still land in the channel *after* the final
+	// drain has already found it empty and moved on, orphaning it:
+	// counted in *Accepted, never written, never counted dropped either.
+	// Found live in a real ~25-minute device session under sustained
+	// real GDL90 traffic: the manifest claimed 82559 accepted, the file
+	// held 82557. Doing this here (not only in Stop()) also means
+	// IsActive() correctly reports false the moment a self-triggered
+	// stop actually happens, not only after some later external Stop()
+	// call reconciles it - main's own fisbRecorderWatchdog depends on
+	// this to notice a self-stopped session and (if the operator's
+	// setting is still on) start a fresh one, instead of believing a
+	// session is still active while its writer goroutine has already
+	// exited and abandoned its channels.
+	r.mu.Lock()
+	r.active = false
+	r.mu.Unlock()
+	r.inflight.Wait()
+
 	// Final drain: pick up anything queued at the moment of stop, bounded
 	// so a stop can never hang - at most one pass over whatever is
 	// already buffered, matching this package's own no-block contract.
@@ -428,6 +478,19 @@ drainRemaining:
 }
 
 func (r *Recorder) finishWithError(msg string) {
+	// Same reconciliation as run's own post-drainLoop fix, for the
+	// earlier failure path where run() never reaches drainLoop at all
+	// (one of the three output files could not even be opened): without
+	// this, active would stay true forever after a failed Start(),
+	// IsActive() would keep reporting a session that no writer goroutine
+	// is actually running for, and any RecordFrame/RecordGDL90/
+	// RecordSnapshot call in the meantime would keep queuing into
+	// channels nothing will ever drain.
+	r.mu.Lock()
+	r.active = false
+	r.mu.Unlock()
+	r.inflight.Wait()
+
 	m := Manifest{
 		FormatVersion:  FormatVersion,
 		SessionID:      r.sessionID,
