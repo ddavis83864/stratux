@@ -185,8 +185,26 @@ func TestRecorder_MaxBytesStopsSession(t *testing.T) {
 	}
 	// Simulate having already written more than the (tiny, test-only)
 	// byte budget by writing directly to one of the session's own files -
-	// checkBounds stats the real files on disk.
-	os.WriteFile(filepath.Join(r.dir, "frames.jsonl.gz"), make([]byte, 1000), 0o640)
+	// checkBounds stats the real files on disk. Start() spawns run() in
+	// its own goroutine, and run() opens (and O_TRUNCs) this same file
+	// before entering its drain loop - writing here before that open has
+	// happened is a real TOCTOU race (seen flaking in CI: run()'s own
+	// truncate landing after this write wiped it back to empty, so
+	// checkBounds correctly saw 0 bytes and never tripped). Wait for the
+	// file to exist first, so this write is deterministically the last
+	// one before checkBounds runs.
+	framesFile := filepath.Join(r.dir, "frames.jsonl.gz")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(framesFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("frames.jsonl.gz was never created by run() within %s", 2*time.Second)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	os.WriteFile(framesFile, make([]byte, 1000), 0o640)
 	r.opts.MaxBytes = 500
 
 	reason, stop := r.checkBounds()
