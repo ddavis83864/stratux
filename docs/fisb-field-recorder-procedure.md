@@ -16,16 +16,29 @@
 > that installation; it is the procedure to run once it has separately
 > been approved and completed.
 >
+> **ARS-Macbook is an Intel MacBookPro8,2 running Ubuntu 24.04 - `linux/amd64`,
+> NOT macOS.** Despite its name, it never runs a `darwin` binary. Build
+> `fisb-recording-tool` for `GOOS=linux GOARCH=amd64` (native if built
+> directly on the laptop itself, or cross-compiled from ARS01 with those
+> two env vars set - never `GOOS=darwin`, which an earlier revision of
+> this document incorrectly suggested and which would simply fail to
+> execute there).
+>
 > **Rehearsal status (as of this revision):** every command below has
 > been exercised against the real instrumented daemon in an isolated
 > bench environment on ARS01 (not the grounded device, not the MacBook -
-> see the final report's bench-session evidence). The MacBook/device
-> portion specifically (SSH, Wi-Fi routing, physical hardware) has **not**
-> been rehearsed in this pass - ARS01 had no live network path to
-> ARS-Macbook or the grounded device available. `fisb-recording-tool` was
-> cross-compiled for macOS (`GOOS=darwin GOARCH=arm64`) and confirmed to
-> build cleanly, but not run there. That remains an open gate before a
-> field trip - see the final report's ready/not-ready determination.
+> see the final report's bench-session evidence). The `linux/amd64`
+> `fisb-recording-tool` binary itself has been built and smoke-tested
+> (usage output, a `validate`/`replay` round trip against a real
+> daemon-produced bundle) on ARS01, which is also `linux/amd64` - that
+> confirms the binary itself works correctly for its target platform, but
+> **not** that it has been transferred to or executed on the actual
+> MacBook hardware. The MacBook/device portion specifically (SSH, Wi-Fi
+> routing, physical hardware) has **not** been rehearsed in this pass -
+> ARS01 had no live network path to ARS-Macbook or the grounded device
+> (confirmed by a direct SSH/ping attempt, not just an idle status flag).
+> That remains an open gate before a field trip - see the final report's
+> ready/not-ready determination.
 
 ## What this adds to the existing kit
 
@@ -46,12 +59,25 @@ running it through `fisb-recording-tool validate`/`replay`/`compare`
    `True` means this build has the setting. `False`/`KeyError` means the
    device is still running a build from before this branch was installed
    - stop, this is not the instrumented build, do not proceed.
-2. `fisb-recording-tool` is built and present on the MacBook:
+2. `fisb-recording-tool` is built and present on the MacBook - built
+   directly there (Ubuntu 24.04, `linux/amd64`, so an ordinary native
+   build, no cross-toolchain or `GOOS`/`GOARCH` override needed on the
+   laptop itself):
    ```
    go build -o ~/stratux-field-acceptance/kit/fisb-recording-tool ./cmd/fisb-recording-tool/
    ```
-   (run from a checkout of this branch; the binary is pure Go, no cgo, so
-   it builds natively on the Mac with no cross-toolchain).
+   or cross-compiled from ARS01 and transferred over:
+   ```
+   GOOS=linux GOARCH=amd64 go build -o fisb-recording-tool ./cmd/fisb-recording-tool/
+   scp fisb-recording-tool ARS-Macbook:~/stratux-field-acceptance/kit/
+   ssh ARS-Macbook 'chmod +x ~/stratux-field-acceptance/kit/fisb-recording-tool'
+   ```
+   Either way, confirm the SHA-256 matches on both ends before trusting
+   it:
+   ```
+   sha256sum fisb-recording-tool                                    # on ARS01
+   ssh ARS-Macbook 'sha256sum ~/stratux-field-acceptance/kit/fisb-recording-tool'
+   ```
 3. SSH reaches the device: `ssh pi@192.168.10.1 true`.
 
 ## Start (before entering 978 MHz reception range)
