@@ -14,6 +14,7 @@
 //	fisb-recording-tool validate <sessionDir>
 //	fisb-recording-tool replay [-speed=1.0] [-stopAfter=0] <sessionDir>
 //	fisb-recording-tool compare <dirA> <dirB>
+//	fisb-recording-tool compare-weather <dirA> <dirB>
 //
 // See docs/fisb-field-recorder-procedure.md for the field kit's own use
 // of this tool as part of start->monitor->stop->verify->preserve.
@@ -41,6 +42,8 @@ func main() {
 		err = runReplay(os.Args[2:])
 	case "compare":
 		err = runCompare(os.Args[2:])
+	case "compare-weather":
+		err = runCompareWeather(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -55,6 +58,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: fisb-recording-tool validate <sessionDir>")
 	fmt.Fprintln(os.Stderr, "       fisb-recording-tool replay [-speed=1.0] [-stopAfter=0] <sessionDir>")
 	fmt.Fprintln(os.Stderr, "       fisb-recording-tool compare <dirA> <dirB>")
+	fmt.Fprintln(os.Stderr, "       fisb-recording-tool compare-weather <dirA> <dirB>")
 }
 
 // runValidate prints the Result as indented JSON and sets the process
@@ -123,6 +127,34 @@ func runCompare(args []string) error {
 		return err
 	}
 	printJSON(rep)
+	return nil
+}
+
+// runCompareWeather prints the WeatherGDL90Report as indented JSON - the
+// narrow, product-focused alternative to `compare`'s raw byte-for-byte
+// GDL90 comparison: isolates FIS-B/weather-bearing packets (GDL90
+// message ID 0x07) per destination connection, so a session-duration
+// difference (which inflates non-weather heartbeat/traffic counts, see
+// fisbrecorder.CompareWeatherGDL90's own doc comment) cannot dilute the
+// result. No normalization is applied here either - see that same doc
+// comment for why a genuine byte-for-byte match is the expected,
+// provable result for this specific message type.
+func runCompareWeather(args []string) error {
+	fs := flag.NewFlagSet("compare-weather", flag.ExitOnError)
+	fs.Parse(args)
+	if fs.NArg() != 2 {
+		return fmt.Errorf("compare-weather: expected exactly two arguments: <dirA> <dirB>")
+	}
+	rep, err := fisbrecorder.CompareWeatherGDL90(fs.Arg(0), fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	printJSON(rep)
+	for _, cc := range rep.PerConnection {
+		if len(cc.Mismatched) > 0 || cc.OnlyInA > 0 || cc.OnlyInB > 0 {
+			return fmt.Errorf("compare-weather: %s: %d mismatched, %d only-in-A, %d only-in-B weather packets - see the report above", cc.ConnectionKey, len(cc.Mismatched), cc.OnlyInA, cc.OnlyInB)
+		}
+	}
 	return nil
 }
 
