@@ -137,6 +137,18 @@ window was not established. These counters are in-memory, so they reset at
 daemon restart. No cache behavior was changed; any sizing question is separate
 follow-up work.
 
+**Delivery-state telemetry for the next field test (no production change).** The same session showed
+ForeFlight `No Towers`/`Marginal` states, ForeFlight radar 20-24 minutes old, and a `SYSTEM_CAUTION` bell while
+Stratux kept receiving. The preserved GDL90 stream shows weather uplinks (0x07) reached the one ForeFlight-like
+client only in bursts, and that during every gap *every* non-heartbeat message stopped together and then resumed
+together: the signature of `main/network.go collectMessages` withholding traffic from a client that
+`main/clientconnection.go IsSleeping()` considers asleep (no ping/pong for 10 s, or ICMP unreachable), with uplinks
+held in a 15-minute queue and flushed on wake. Why the client was judged asleep was not recorded. Run
+`scripts/fisb-field-observer.sh` alongside the recording: it polls existing read-only endpoints (`/getClients`
+SleepFlag and ping/pong/unreachable times, `/getAlerts`, `/getPreflightReport`, `/getStatus`, `/getTowers`,
+`/getFISBRecorderStatus`, `/getFISBCacheStatus`) and logs one JSON line per sample. Note app switches by hand
+(ForeFlight <-> Safari) in a notes file. This is observation only; the GDL90/client delivery implementation is unchanged.
+
 **Qualification level: `LAB_VALIDATED_FIELD_RETEST_REQUIRED`.** Source and bench
 tests do not close the live-RF gate. Another bounded recording through the
 actual external low-power UAT radio is still required.
