@@ -394,3 +394,30 @@ func TestRecorder_ElapsedNanosIsMonotonicNotWallClock(t *testing.T) {
 		t.Errorf("elapsed gap between frames = %dns, want >= ~20ms (the real sleep)", gap)
 	}
 }
+
+func TestRecorder_StatusReportsLiveCountersAndMatchesTheManifest(t *testing.T) {
+	r := New(t.TempDir(), "build", DefaultOptions())
+	if st := r.Status(); st.Active || st.FramesAccepted != 0 || st.SessionID != "" {
+		t.Fatalf("idle status = %+v, want inactive/zero", st)
+	}
+	sid, err := r.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.RecordFrame("+aa;ss=1;")
+	r.RecordFrame("+bb;ss=2;")
+	// Live, before Stop: the counter must already be authoritative even
+	// though the gzip file may still be buffered at 0 bytes.
+	st := r.Status()
+	if !st.Active || st.SessionID != sid || st.FramesAccepted != 2 || st.DroppedFrames != 0 || st.StartWallClock == "" {
+		t.Fatalf("live status = %+v, want active %s with 2 frames", st, sid)
+	}
+	m, err := r.Stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := r.Status()
+	if after.Active || after.FramesAccepted != m.FrameCount {
+		t.Fatalf("post-stop status = %+v, manifest frames = %d", after, m.FrameCount)
+	}
+}
