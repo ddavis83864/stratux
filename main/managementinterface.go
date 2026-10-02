@@ -1458,6 +1458,7 @@ func managementInterface() {
 	http.HandleFunc("/startRecording", handleStartRecordingRequest)
 	http.HandleFunc("/stopRecording", handleStopRecordingRequest)
 	http.HandleFunc("/getRecordingStatus", handleRecordingStatusRequest)
+	http.HandleFunc("/getFISBRecorderStatus", handleGetFISBRecorderStatus)
 	http.HandleFunc("/getRecordings", handleListRecordingsRequest)
 	http.HandleFunc("/exportRecording", handleExportRecordingRequest)
 	http.HandleFunc("/downloadRecording", handleDownloadRecordingRequest)

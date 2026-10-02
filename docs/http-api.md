@@ -308,6 +308,15 @@ Stops the active session, if any; a safe no-op if nothing is active. Returns `{s
 Current (or last) session status: `{id, state, startedAt, stoppedAt, sampleCount, lastError}`.
 `state` is one of `idle`, `active`, `error`.
 
+#### `GET /getFISBRecorderStatus`
+Live counters of the FIS-B **field recorder** (the opt-in `FISBRecordingEnabled` facility;
+unrelated to the flight-recording `/getRecordingStatus` above): `{active, sessionId,
+startWallClock, elapsedSeconds, framesAccepted, droppedFrames, gdl90Accepted, droppedGdl90,
+snapshotsAccepted, droppedSnapshots}`. Read-only (other methods return `405`); never starts or
+stops a session. `framesAccepted` is the authoritative proof that raw UAT frames are being
+admitted while a session is still running (the gzip output files buffer, so their size is not).
+See [fisb-field-recorder-procedure.md](fisb-field-recorder-procedure.md).
+
 #### `GET /getRecordings`
 Lists sessions: `[{id, sizeBytes, fileCount, startedAt, metadataAvailable,
 metadataCorrupt, metadataSchemaVersion, preflightStateAtStart, profileNameAtStart,

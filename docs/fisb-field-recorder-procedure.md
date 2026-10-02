@@ -33,8 +33,13 @@
 > candidate onto the grounded device (build confirmed matching, cache
 > recovery proven across the reboot with real, trusted-GNSS-time
 > persisted products); a real, bounded, at-home start->monitor->stop
-> sequence (frame count honestly zero - no 978 MHz reception at that
-> location/time, GDL90/snapshot traffic captured normally); the bundle
+> sequence (frame count zero; GDL90/snapshot traffic captured normally.
+> **Correction, 2026-10-01:** the original text here attributed the zero
+> frames to "no 978 MHz reception at that location/time". That was never
+> established. The production receiver is the external low-power UAT radio,
+> and until the fix described under "2026-10-01 field failure" below the
+> recorder could not see that radio's frames at all, so zero frames was the
+> expected result whether or not RF was present); the bundle
 > copied off the device, hash-verified on both the MacBook and the
 > device; and `validate` run on the copy. That real session is *how* a
 > genuine record-accounting race in `Stop()` was found and fixed (see
@@ -45,15 +50,108 @@
 > matched `manifest.gdl90Count` with no accounting-mismatch warning,
 > versus the pre-fix session's own re-validated `manifest claims 82559
 > gdl90 records, file contains 82557`. `validate`'s classification was
-> still `partial` on this second session too - correctly so, for the
-> unrelated, honest "zero frames captured" reason (no 978 MHz reception
-> at home), not the accounting defect. Do not read "partial" here as the
+> still `partial` on this second session too, because zero frames were
+> captured (cause: the low-power-UAT recorder bypass, see the 2026-10-01
+> correction above - not established as "no RF at home"), not because of the
+> accounting defect. Do not read "partial" here as the
 > fix having failed; read the counted-vs-manifest numbers directly. This
 > is still **not** field acceptance: no real 978 MHz tower or FIS-B
 > product was received in this rehearsal, and no ForeFlight
 > observation was made - see the final report's explicit separation of
 > synthetic bench proof, grounded-device rehearsal, and real field
 > RF/ForeFlight acceptance.
+
+## 2026-10-01 field failure and remediation
+
+**Field result: `FISB_FIELD_RECORDING_ACCEPTANCE_FAIL`.** Session
+`20261001-225508` (22:55:08-23:47:12 UTC, 52m04s, build `ea1c3e43`) ran at a
+site with strong live 978 MHz FIS-B (12,404 UAT messages, 561 METAR, 445 TAF,
+4,129 NEXRAD, 615 NOTAM, one tower) yet recorded 262,266 GDL90 records, 1,872
+snapshots and **zero raw frames** (`frames.jsonl.gz` was a valid, empty
+28-byte gzip stream). The session is preserved read-only and hash-verified as
+permanent negative evidence; it is not a regression corpus.
+
+**Root cause (confirmed from source and runtime).** The installed receiver is
+the external low-power UAT radio (`UATRadio_connected=true`,
+`UAT_Detected=false`, `UAT_AssignmentSource=external`; no RTL-SDR on 978). Its
+path was `radioSerialPortReader` -> `processRadioMessage`
+(`main/lowpower_uat.go`) -> `parseInput` -> `relayMessage`, which never called
+`handleUatMessage`, the only place `fisbRecorder.RecordFrame` is hooked. GDL90
+and snapshots attach downstream of / independent of any receiver, so they
+worked. The recorder's own tests and rehearsals only ever exercised the
+RTL-SDR/`godump978`, `-uatin`, `-replay` and `-fisbReplay` paths.
+
+**Remediation.** `processRadioMessage` now passes its post-FEC string to
+`handleUatMessage`. Reed-Solomon failures and unhandled sizes still never reach
+it. See `main/lowpower_uat.go`, `main/lowpower_uat_recorder_test.go`.
+
+Ingestion paths before/after (from source):
+
+| Input path | via `handleUatMessage` (before -> after) | `RecordFrame` (before -> after) |
+|---|---|---|
+| RTL-SDR / `godump978` (`uatReader`) | yes -> yes | yes -> yes |
+| External low-power UAT radio | **no -> yes** | **no -> yes** |
+| `-uatin` | yes -> yes | yes -> yes |
+| `-replay` / `-uatlog` | yes -> yes | yes -> yes |
+| `-fisbReplay` | yes -> yes | yes -> yes |
+| Trace replay `CONTEXT_GODUMP978` | yes -> yes | yes -> yes |
+| Trace replay `CONTEXT_LOWPOWERUAT` | no -> yes (re-enters `processRadioMessage`) | no -> yes |
+| uAvionix Ping (`main/ping.go`) | no -> no | no -> no |
+| uAvionix Pong (`main/pong.go`) | no -> no | no -> no |
+
+**Known remaining gap (not the installed receiver, not fixed here):** the Ping
+and Pong receivers also call `parseInput` directly and are still not recorded.
+`TestUATIngestion_NoNewDirectParseInputCallers` lists them as explicit,
+documented exceptions so a *new* bypass fails the build; closing these two is
+follow-up work.
+
+**Frame representation.** `godump978` yields `+hex;rs=N;ss=N;`; the low-power
+radio yields `+hex;ss=N;` (no `rs=`; `ss` is the signed radio RSSI). Both are
+post-FEC and both are handed to `parseInput` unchanged, so replay (which never
+re-applies FEC) is byte-equivalent to live processing for either receiver.
+Observation, deliberately not changed: `parseInput` reads signal strength from
+the third `;`-separated field, so the low-power string's `ss=` is not parsed
+into the signal-strength statistic (pre-existing behavior, unchanged).
+
+**Early detection (new).** File size cannot reveal this failure (gzip output
+buffers and can sit at 0 bytes mid-session). `GET /getFISBRecorderStatus`
+exposes the live counters, and `scripts/fisb-recorder-early-check.sh` compares
+`UAT_messages_total` (all receivers) with `framesAccepted` within minutes. Run
+it right after enabling recording; see "Early check" under Start. Requires a
+build that includes the endpoint (the field-failure build `ea1c3e43` does not).
+
+**Cache counters seen in that session (documented, no code change made).**
+`droppedWrites` rose 1,098 -> 1,935 early and then stayed at 1,935 for the final
+eight 5-minute samples; `pressureRejected` was 5 and `expiredOnArrival` was 4.
+From `main/fisbcacherun.go` and `main/fisbcachereserve.go`: `droppedWrites`
+counts cache-admission offers refused because 256 distinct product keys were
+already queued or in flight (`fisbCachePendingCapacity`; the offer is dropped,
+not retried, and a rebroadcast re-offers it) - it is **not** lost RF (the frame
+was already counted and decoded) and **not** a failed disk write.
+`pressureRejected` counts arrivals refused while storage-lifecycle pressure was
+HIGH, CRITICAL or UNKNOWN. `expiredOnArrival` counts products whose own source
+time was already past expiry when received. The plateau is consistent with a
+one-time burst of many distinct products (e.g. NEXRAD tiles) outrunning the
+single admission worker after boot; *why* the jump fell inside the recording
+window was not established. These counters are in-memory, so they reset at
+daemon restart. No cache behavior was changed; any sizing question is separate
+follow-up work.
+
+**Delivery-state telemetry for the next field test (no production change).** The same session showed
+ForeFlight `No Towers`/`Marginal` states, ForeFlight radar 20-24 minutes old, and a `SYSTEM_CAUTION` bell while
+Stratux kept receiving. The preserved GDL90 stream shows weather uplinks (0x07) reached the one ForeFlight-like
+client only in bursts, and that during every gap *every* non-heartbeat message stopped together and then resumed
+together: the signature of `main/network.go collectMessages` withholding traffic from a client that
+`main/clientconnection.go IsSleeping()` considers asleep (no ping/pong for 10 s, or ICMP unreachable), with uplinks
+held in a 15-minute queue and flushed on wake. Why the client was judged asleep was not recorded. Run
+`scripts/fisb-field-observer.sh` alongside the recording: it polls existing read-only endpoints (`/getClients`
+SleepFlag and ping/pong/unreachable times, `/getAlerts`, `/getPreflightReport`, `/getStatus`, `/getTowers`,
+`/getFISBRecorderStatus`, `/getFISBCacheStatus`) and logs one JSON line per sample. Note app switches by hand
+(ForeFlight <-> Safari) in a notes file. This is observation only; the GDL90/client delivery implementation is unchanged.
+
+**Qualification level: `LAB_VALIDATED_FIELD_RETEST_REQUIRED`.** Source and bench
+tests do not close the live-RF gate. Another bounded recording through the
+actual external low-power UAT radio is still required.
 
 ## What this adds to the existing kit
 
@@ -108,12 +206,34 @@ ssh pi@192.168.10.1 '
 ```
 Expect `"FISBRecordingEnabled":true` echoed back. `fisbRecorderWatchdog`
 (main/fisbrecorderwiring.go) polls this setting once a second and starts
-the session; allow up to ~2s for the start log line, visible via:
+the session; allow up to ~2s for the start log line. **The daemon does not
+log to the journal** (`debian/stratux.service` sets `StandardOutput=null`; the
+daemon writes `/var/log/stratux.log`), so an earlier revision of this kit that
+grepped `journalctl -u stratux` could never find it - that, not a missing
+message, is why the 2026-10-01 session showed no `started` line. Use:
 ```
-ssh pi@192.168.10.1 'sudo journalctl -u stratux -n 20 --no-pager | grep fisbRecorder'
+ssh pi@192.168.10.1 'sudo grep fisbRecorder /var/log/stratux.log | tail -5'
 ```
 Expect a `field-recording session <YYYYMMDD-HHMMSS> started` line. Note
 the session ID - it names the bundle directory you'll pull back later.
+(Device-side confirmation of that file's contents on the failed session's
+device is still pending; the path above is established from source.)
+
+### Early check (do this before leaving the recorder unattended)
+
+Within the first few minutes, from the MacBook:
+```
+scripts/fisb-recorder-early-check.sh 192.168.10.1 240 50
+```
+It polls `/getStatus` and `/getFISBRecorderStatus` over HTTP only and prints
+one verdict (exit code in parentheses): `PASS_EARLY` (0, frames are being
+admitted), **`RECORDER_PATH_FAILURE` (2, live UAT is arriving but
+`framesAccepted` is 0 - stop, do not run the window)**, `UNSUPPORTED_BUILD`
+(3, build lacks the endpoint), `INCONCLUSIVE_NO_RF` (4), `RECORDER_NOT_ACTIVE`
+(5), `DEVICE_UNREACHABLE` (6). It is receiver-agnostic: it does not read any
+RTL-SDR or assignment state. Caveat: `UAT_messages_total` also counts frames
+from receivers the recorder does not yet cover (Ping/Pong); on those a failure
+verdict is expected and correct.
 
 **If this line does not appear within 10 seconds**, do not proceed into
 the field window on the assumption recording is running - stop and
@@ -128,15 +248,14 @@ ssh pi@192.168.10.1 'sudo -n ls -la /var/lib/stratux-data/fisb-recordings/<sessi
 ```
 The session directory is `root:root 0750` (the recorder runs as root) -
 `sudo` is required; a plain `ls` as `pi` fails with "Permission denied"
-(confirmed live, not assumed). Growing `frames.jsonl.gz`/`gdl90.jsonl.gz`/
-`snapshots.jsonl.gz` file sizes across successive checks is the simplest
-live evidence that capture is progressing - a real session showed
-`gdl90.jsonl.gz` growing steadily (real heartbeat/traffic output) even
-with `frames.jsonl.gz` staying at 0 bytes the whole time (no 978 MHz
-reception that session - an honest, valid outcome, not a fault). There is
-no separate live counter API yet - this direct file-size check is
-deliberately the same low-tech method the design favors over adding a new
-HTTP endpoint mid-trip. For free space and settings state, no `sudo`/SSH
+(confirmed live, not assumed). Growing `gdl90.jsonl.gz`/`snapshots.jsonl.gz` show the
+recorder process is alive, but **file size must not be used to judge
+`frames.jsonl.gz`**: gzip output buffers, and on 2026-10-01 a zero-byte
+`frames.jsonl.gz` for the whole session was a real defect (the recorder was
+not receiving the low-power radio's frames), not a benign "no RF" outcome. The
+authoritative live signal is `GET /getFISBRecorderStatus` (`framesAccepted`,
+`droppedFrames`, ...), which the early-check script and a periodic
+`curl http://192.168.10.1/getFISBRecorderStatus` both read. For free space and settings state, no `sudo`/SSH
 is needed at all - `curl http://192.168.10.1/getStatus` (watch
 `DiskBytesFree`) and `curl http://192.168.10.1/getSettings` (confirm
 `FISBRecordingEnabled`) work directly from the MacBook's own shell.
@@ -150,7 +269,7 @@ ssh pi@192.168.10.1 '
     -H "Content-Type: application/json" \
     -d "{\"FISBRecordingEnabled\": false}" \
   && sleep 2 \
-  && sudo journalctl -u stratux -n 20 --no-pager | grep fisbRecorder
+  && sudo grep fisbRecorder /var/log/stratux.log | tail -5
 '
 ```
 Expect a `field-recording session <id> stopped (stopReason=requested,
@@ -300,6 +419,9 @@ missing, not calling the dataset complete:
 - [ ] Recorder confirmed active (the `started` log line, or
       `/getSettings`'s `FISBRecordingEnabled:true`) **before** entering
       the reception area - not started after arriving.
+- [ ] `scripts/fisb-recorder-early-check.sh` returned `PASS_EARLY` within the
+      first minutes (not `RECORDER_PATH_FAILURE`), on the **production
+      external low-power UAT radio** - not on a substituted RTL-SDR 978.
 - [ ] At least one real tower derived from actually-captured uplink
       frames (a non-empty `frames.jsonl.gz`, confirmed via `validate`'s
       `countedFrames`, and a real `/getTowers` entry while recording).

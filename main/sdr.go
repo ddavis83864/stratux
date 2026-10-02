@@ -618,7 +618,10 @@ func uatReader() {
 }
 
 // handleUatMessage is the single chokepoint for every decoded UAT uplink
-// string, regardless of origin: live reception (uatReader above),
+// string, regardless of origin: live RTL-SDR reception (uatReader above),
+// live reception from the external low-power UAT radio (processRadioMessage
+// in main/lowpower_uat.go - the production receiver, which bypassed this
+// function until the 2026-10-01 field failure was found),
 // TraceLog.Replay's own CONTEXT_GODUMP978 injection (main/trace.go's
 // injectTraceMessage), the -uatin stdin path, and the -replay/-fisbReplay
 // file-replay paths (all in main/gen_gdl90.go) now call this function

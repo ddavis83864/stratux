@@ -152,9 +152,12 @@ func processRadioMessage(msg []byte) {
 	}
 
 	if len(toRelay) > 0 && rs_errors != 9999 {
-		o, msgtype := parseInput(toRelay)
-		if o != nil && msgtype != 0 {
-			relayMessage(msgtype, o)
-		}
+		// The post-FEC string goes through handleUatMessage, the same
+		// chokepoint the RTL-SDR/godump978 path uses, so the FIS-B field
+		// recorder (fisbRecorder.RecordFrame) sees this receiver's frames
+		// too. handleUatMessage then does exactly the parseInput/relayMessage
+		// work that used to be inlined here. A frame that failed Reed-Solomon
+		// never reaches it, so it is neither relayed nor recorded.
+		handleUatMessage(toRelay)
 	}
 }

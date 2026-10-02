@@ -23,11 +23,15 @@ import "time"
 // is no earlier version: this is the first release of this recorder.
 const FormatVersion = 1
 
-// FrameRecord is one decoded UAT uplink frame, exactly as received from
-// godump978.OutChan and handed to handleUatMessage - see
-// main/sdr.go's uatReader(), the capture point this package hooks
-// alongside (not instead of) main/trace.go's own, separate
-// TraceLog.Record(CONTEXT_GODUMP978, ...) call.
+// FrameRecord is one decoded (post-FEC) UAT frame, exactly as handed to
+// main's handleUatMessage - the single capture point this package hooks.
+// Two receivers feed it: the RTL-SDR/godump978 path (main/sdr.go's
+// uatReader, string "+hex;rs=N;ss=N;") and the external low-power UAT
+// radio (main/lowpower_uat.go's processRadioMessage, string "+hex;ss=N;",
+// after its own Reed-Solomon correction). Replay hands the string back to
+// handleUatMessage unchanged and never re-applies FEC, so both receivers'
+// frames replay identically. This is separate from main/trace.go's own
+// TraceLog.Record calls.
 type FrameRecord struct {
 	// Seq is a per-session, gap-free, 0-based sequence number assigned at
 	// capture time - independent of ElapsedNanos, so a reader can detect a

@@ -144,6 +144,48 @@ func (r *Recorder) IsActive() bool {
 	return r.active
 }
 
+// Status is a point-in-time, read-only view of the live session counters.
+// It exists so an operator or field script can prove, while recording is
+// still running, that raw frames are actually being admitted: the gzip
+// output files buffer and can legitimately sit at 0 bytes for many minutes,
+// so file size alone cannot distinguish "buffered" from "nothing recorded"
+// (the 2026-10-01 field failure). All counters are the same atomics the
+// manifest is built from, so a clean Stop()'s manifest agrees with the
+// last Status() taken.
+type Status struct {
+	Active            bool    `json:"active"`
+	SessionID         string  `json:"sessionId,omitempty"`
+	StartWallClock    string  `json:"startWallClock,omitempty"`
+	ElapsedSeconds    float64 `json:"elapsedSeconds"`
+	FramesAccepted    uint64  `json:"framesAccepted"`
+	DroppedFrames     uint64  `json:"droppedFrames"`
+	GDL90Accepted     uint64  `json:"gdl90Accepted"`
+	DroppedGDL90      uint64  `json:"droppedGdl90"`
+	SnapshotsAccepted uint64  `json:"snapshotsAccepted"`
+	DroppedSnapshots  uint64  `json:"droppedSnapshots"`
+}
+
+// Status returns the current session counters. When no session is active
+// the identity fields are empty and Active is false; the counters then
+// show the final values of the most recent session (or zero).
+func (r *Recorder) Status() Status {
+	r.mu.Lock()
+	st := Status{Active: r.active}
+	if r.active {
+		st.SessionID = r.sessionID
+		st.StartWallClock = r.startWall.UTC().Format(time.RFC3339Nano)
+		st.ElapsedSeconds = time.Since(r.start).Seconds()
+	}
+	r.mu.Unlock()
+	st.FramesAccepted = r.framesAccepted.Load()
+	st.DroppedFrames = r.droppedFrames.Load()
+	st.GDL90Accepted = r.gdl90Accepted.Load()
+	st.DroppedGDL90 = r.droppedGDL90.Load()
+	st.SnapshotsAccepted = r.snapshotsAccepted.Load()
+	st.DroppedSnapshots = r.droppedSnapshots.Load()
+	return st
+}
+
 // Start begins a new session, named by its own start time
 // (YYYYMMDD-HHMMSS, filesystem- and shell-safe). Returns an error without
 // starting anything if baseDir cannot be created/written, or if a session

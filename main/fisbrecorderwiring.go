@@ -25,7 +25,9 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"time"
@@ -171,4 +173,20 @@ func recordFISBRecorderSnapshots() {
 		MonotonicSeconds: monotonicSeconds(),
 		StratuxClockTime: stratuxClock.Time(),
 	})
+}
+
+// handleGetFISBRecorderStatus serves GET /getFISBRecorderStatus: the live
+// field-recorder counters (fisbrecorder.Status). Read-only and cheap; it
+// never starts, stops, or otherwise touches a session. The field kit polls
+// it to detect "live UAT is arriving but framesAccepted is 0" within
+// minutes instead of after a whole session - see
+// docs/fisb-field-recorder-procedure.md.
+func handleGetFISBRecorderStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	setNoCache(w)
+	setJSONHeaders(w)
+	json.NewEncoder(w).Encode(fisbRecorder.Status())
 }
