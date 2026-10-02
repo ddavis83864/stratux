@@ -10,6 +10,8 @@
 #                      LastUnreachable  (the GDL90 client sleep/throttle inputs)
 #   /getAlerts         active alerts (what SYSTEM_CAUTION is)
 #   /getPreflightReport which preflight items drive an overall CAUTION
+#   /getHealth         component health, GPS, time-trust (GNSS sync) and persistent-storage free space
+#   /getStorageLifecycle storage pressure
 #   /getStatus         UAT/product counters; /getTowers tower msgs per minute
 #   /getFISBRecorderStatus (only on builds that have it) live recorder counters
 #   /getFISBCacheStatus cache state and counters
@@ -19,7 +21,7 @@
 # Annotate app switches by hand with:  echo "$(date -u +%FT%TZ) ForeFlight -> Safari" >> notes.txt
 set -u
 OUT="${1:?usage: $0 outfile.jsonl [host] [interval_seconds]}"; HOST="${2:-192.168.10.1}"; IV="${3:-15}"
-EPS="getClients getAlerts getPreflightReport getStatus getTowers getFISBRecorderStatus getFISBCacheStatus"
+EPS="getClients getAlerts getPreflightReport getHealth getStorageLifecycle getStatus getTowers getFISBRecorderStatus getFISBCacheStatus"
 while :; do
   python3 - "$OUT" "$HOST" $EPS <<'P'
 import json,sys,time,datetime,urllib.request
